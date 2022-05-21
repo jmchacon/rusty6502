@@ -293,28 +293,28 @@ pub fn step(pc: u16, r: &dyn Memory) -> (String, u16) {
         AddressMode::Absolute => {
             out += &String::from(format!(
                 "{:02X} {:02X}   {} {:02X}{:02X}",
-                pc1, pc2, op, pc2, pc1
+                pc1, pc2, opcode, pc2, pc1
             ));
             count += 1
         }
         AddressMode::AbsoluteX => {
             out += &String::from(format!(
                 "{:02X} {:02X}   {} {:02X}{:02X},X",
-                pc1, pc2, op, pc2, pc1
+                pc1, pc2, opcode, pc2, pc1
             ));
             count += 1
         }
         AddressMode::AbsoluteY => {
             out += &String::from(format!(
                 "{:02X} {:02X}   {} {:02X}{:02X},Y",
-                pc1, pc2, op, pc2, pc1
+                pc1, pc2, opcode, pc2, pc1
             ));
             count += 1
         }
         AddressMode::Indirect => {
             out += &String::from(format!(
                 "{:02X} {:02X}   {} ({:02X}{:02X})",
-                pc1, pc2, op, pc2, pc1
+                pc1, pc2, opcode, pc2, pc1
             ));
             count += 1
         }
