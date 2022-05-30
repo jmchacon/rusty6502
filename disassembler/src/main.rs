@@ -1,5 +1,3 @@
-#![feature(destructuring_assignment)]
-
 use disassemble::*;
 use rusty6502::prelude::*;
 use std::fs::read;
@@ -20,17 +18,13 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!(
-        "start: {} offset: {} args: {} addr: {:04X} val: {:02X}",
-        START_PC.flag,
-        OFFSET.flag,
-        args[0],
-        0 as u16,
-        ram.read(0)
-    );
-
-    let mut bytes = read(args[0]).expect(format!("can't read file: {}", args[0]).as_str());
+    let start = START_PC.flag;
     let mut addr = OFFSET.flag;
+    let filename = args[0];
+    let mut pc = 0u16;
+    println!("start: {start} offset: {addr} args: {filename}",);
+
+    let mut bytes = read(args[0]).expect(format!("can't read file: {filename}").as_str());
     let max = u16::MAX - addr;
 
     if bytes.len() > max.into() {
@@ -41,13 +35,12 @@ fn main() {
         addr += 1;
     }
 
-    let mut pc = 0u16 + START_PC.flag;
-    let start_pc = pc;
+    pc += start;
     let mut dis;
     loop {
         (dis, pc) = step(pc, &ram);
-        println!("{}", dis);
-        if pc >= start_pc + bytes.len() as u16 {
+        println!("{dis}");
+        if pc >= (OFFSET.flag + bytes.len() as u16) {
             break;
         }
     }
