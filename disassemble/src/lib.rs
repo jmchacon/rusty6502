@@ -268,66 +268,55 @@ pub fn step(pc: u16, r: &dyn Memory) -> (String, u16) {
         0xFF => ("ISC", AddressMode::AbsoluteX),
     };
 
-    let mut out = String::from(format!("{:04X} {:02X} ", pc, op));
+    let mut out = String::from(format!("{pc:04X} {op:02X} "));
     let mut count = pc + 2;
 
     match mode {
         AddressMode::Immediate => {
-            out += &String::from(format!("{:02X}      {} #{:02X}", pc1, opcode, pc1))
+            out += &String::from(format!("{pc1:02X}      {opcode} #{pc1:02X}"))
         }
-        AddressMode::ZeroPage => {
-            out += &String::from(format!("{:02X}      {} {:02X}", pc1, opcode, pc1))
-        }
+        AddressMode::ZeroPage => out += &String::from(format!("{pc1:02X}      {opcode} {pc1:02X}")),
         AddressMode::ZeroPageX => {
-            out += &String::from(format!("{:02X}      {} {:02X},X", pc1, opcode, pc1))
+            out += &String::from(format!("{pc1:02X}      {opcode} {pc1:02X},X"))
         }
         AddressMode::ZeroPageY => {
-            out += &String::from(format!("{:02X}      {} {:02X},Y", pc1, opcode, pc1))
+            out += &String::from(format!("{pc1:02X}      {opcode} {pc1:02X},Y"))
         }
         AddressMode::IndirectX => {
-            out += &String::from(format!("{:02X}      {} ({:02X},X)", pc1, opcode, pc1))
+            out += &String::from(format!("{pc1:02X}      {opcode} ({pc1:02X},X)",))
         }
         AddressMode::IndirectY => {
-            out += &String::from(format!("{:02X}      {} ({:02X},Y)", pc1, opcode, pc1))
+            out += &String::from(format!("{pc1:02X}      {opcode} ({pc1:02X},Y)"))
         }
         AddressMode::Absolute => {
-            out += &String::from(format!(
-                "{:02X} {:02X}   {} {:02X}{:02X}",
-                pc1, pc2, opcode, pc2, pc1
-            ));
+            out += &String::from(format!("{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X}",));
             count += 1
         }
         AddressMode::AbsoluteX => {
             out += &String::from(format!(
-                "{:02X} {:02X}   {} {:02X}{:02X},X",
-                pc1, pc2, opcode, pc2, pc1
+                "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},X",
             ));
             count += 1
         }
         AddressMode::AbsoluteY => {
             out += &String::from(format!(
-                "{:02X} {:02X}   {} {:02X}{:02X},Y",
-                pc1, pc2, opcode, pc2, pc1
+                "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},Y",
             ));
             count += 1
         }
         AddressMode::Indirect => {
             out += &String::from(format!(
-                "{:02X} {:02X}   {} ({:02X}{:02X})",
-                pc1, pc2, opcode, pc2, pc1
+                "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X})",
             ));
             count += 1
         }
         AddressMode::Implied => {
-            out += &String::from(format!("        {}", opcode));
+            out += &String::from(format!("        {opcode}"));
             count -= 1
         }
         AddressMode::Relative => {
             out += &String::from(format!(
-                "{:02X}      {} {:02X} ({:04X})",
-                pc1,
-                opcode,
-                pc1,
+                "{pc1:02X}      {opcode} {pc1:02X} ({:04X})",
                 Wrapping(pc) + pc116 + Wrapping(2u16)
             ))
         }
