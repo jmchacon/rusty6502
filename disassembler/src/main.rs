@@ -16,7 +16,7 @@ gflags::define! {
 // remaining after will be disassembled as assembly.
 fn main() {
     let args = gflags::parse();
-    let mut ram = FlatRAM::default();
+    let mut ram = FlatRAM::new();
 
     if args.len() != 1 {
         eprintln!("Must supply a single filename to load");
