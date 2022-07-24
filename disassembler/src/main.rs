@@ -3,15 +3,20 @@ use rusty6502::prelude::*;
 use std::fs::read;
 
 gflags::define! {
+    /// The PC value to start disassembly.
     --start_pc: u16 = 0
 }
 gflags::define! {
+    /// Offset into RAM to start loading data. All other RAM will be zero'd out. Ignored for PRG files.
     --offset: u16 = 0
 }
 
+// Disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
+// and disassemble it. If it's a c64 basic program the basic code will be interpreted and anything
+// remaining after will be disassembled as assembly.
 fn main() {
     let args = gflags::parse();
-    let mut ram = FlatRAM::new();
+    let mut ram = FlatRAM::default();
 
     if args.len() != 1 {
         eprintln!("Must supply a single filename to load");
@@ -24,7 +29,7 @@ fn main() {
     let mut pc = 0u16;
     println!("start: {start} offset: {addr} args: {filename}",);
 
-    let mut bytes = read(args[0]).expect(format!("can't read file: {filename}").as_str());
+    let mut bytes = read(filename).unwrap_or_else(|_| panic!("can't read file: {filename}"));
     let max = u16::MAX - addr;
 
     if bytes.len() > max.into() {

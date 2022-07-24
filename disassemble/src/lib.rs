@@ -1,7 +1,8 @@
 use rusty6502::prelude::*;
-use std::num::Wrapping;
+use std::fmt::Write as _;
+use std::num::Wrapping; // import without risk of name clashing
 
-pub fn step(pc: u16, r: &dyn Memory) -> (String, u16) {
+pub fn step(pc: u16, r: &impl Memory) -> (String, u16) {
     let pc1 = r.read(pc + 1);
     let pc2 = r.read(pc + 2);
 
@@ -268,57 +269,54 @@ pub fn step(pc: u16, r: &dyn Memory) -> (String, u16) {
         0xFF => ("ISC", AddressMode::AbsoluteX),
     };
 
-    let mut out = String::from(format!("{pc:04X} {op:02X} "));
+    let mut out = format!("{pc:04X} {op:02X} ");
     let mut count = pc + 2;
 
     match mode {
         AddressMode::Immediate => {
-            out += &String::from(format!("{pc1:02X}      {opcode} #{pc1:02X}"))
+            let _ = write!(out, "{pc1:02X}      {opcode} #{pc1:02X}");
         }
-        AddressMode::ZeroPage => out += &String::from(format!("{pc1:02X}      {opcode} {pc1:02X}")),
+        AddressMode::ZeroPage => {
+            let _ = write!(out, "{pc1:02X}      {opcode} {pc1:02X}");
+        }
         AddressMode::ZeroPageX => {
-            out += &String::from(format!("{pc1:02X}      {opcode} {pc1:02X},X"))
+            let _ = write!(out, "{pc1:02X}      {opcode} {pc1:02X},X");
         }
         AddressMode::ZeroPageY => {
-            out += &String::from(format!("{pc1:02X}      {opcode} {pc1:02X},Y"))
+            let _ = write!(out, "{pc1:02X}      {opcode} {pc1:02X},Y");
         }
         AddressMode::IndirectX => {
-            out += &String::from(format!("{pc1:02X}      {opcode} ({pc1:02X},X)",))
+            let _ = write!(out, "{pc1:02X}      {opcode} ({pc1:02X},X)",);
         }
         AddressMode::IndirectY => {
-            out += &String::from(format!("{pc1:02X}      {opcode} ({pc1:02X},Y)"))
+            let _ = write!(out, "{pc1:02X}      {opcode} ({pc1:02X},Y)");
         }
         AddressMode::Absolute => {
-            out += &String::from(format!("{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X}",));
+            let _ = write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X}",);
             count += 1
         }
         AddressMode::AbsoluteX => {
-            out += &String::from(format!(
-                "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},X",
-            ));
+            let _ = write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},X",);
             count += 1
         }
         AddressMode::AbsoluteY => {
-            out += &String::from(format!(
-                "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},Y",
-            ));
+            let _ = write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},Y",);
             count += 1
         }
         AddressMode::Indirect => {
-            out += &String::from(format!(
-                "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X})",
-            ));
+            let _ = write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X})",);
             count += 1
         }
         AddressMode::Implied => {
-            out += &String::from(format!("        {opcode}"));
+            let _ = write!(out, "        {opcode}");
             count -= 1
         }
         AddressMode::Relative => {
-            out += &String::from(format!(
+            let _ = write!(
+                out,
                 "{pc1:02X}      {opcode} {pc1:02X} ({:04X})",
                 Wrapping(pc) + pc116 + Wrapping(2u16)
-            ))
+            );
         }
     }
 
