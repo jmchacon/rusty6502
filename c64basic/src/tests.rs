@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use super::super::list;
+    use super::super::{list, BASIC_LOAD_ADDR};
     use rusty6502::prelude::*;
     use std::fmt::Write as _;
     use std::fs::read;
@@ -27,15 +27,15 @@ mod tests {
 
                         let bytes = read(Path::new("../testdata/").join($file)).unwrap_or_else(|_| panic!("can't read file: {}", $file));
 
-                        assert!(bytes[0] == 0x01 && bytes[1] == 0x08, "{} doesn't appear to be a valid Basic PRG file. Start address not 0x0801 but: 0x{:02X}{:02X}", $file, bytes[1], bytes[0]);
+                        assert!(bytes[0] == (BASIC_LOAD_ADDR&0xFF) as u8 && bytes[1] == ((BASIC_LOAD_ADDR >> 8)&0xFF) as u8, "{} doesn't appear to be a valid Basic PRG file. Start address not 0x0801 but: 0x{:02X}{:02X}", $file, bytes[1], bytes[0]);
 
                         // Copy the program into place.
                         for i in 2..bytes.len() {
-                            r.write(0x0801+(i-2) as u16, bytes[i]);
+                            r.write(BASIC_LOAD_ADDR+(i-2) as u16, bytes[i]);
                         }
 
                         let mut got = String::new();
-                        let mut pc: u16 = 0x0801;
+                        let mut pc: u16 = BASIC_LOAD_ADDR;
                         loop {
                             let res = list(pc, &r).unwrap_or_else(|_| panic!("error from list"));
                             println!("{}", res.0);
@@ -48,7 +48,6 @@ mod tests {
                             assert!(pc != res.1, "Looping");
                             pc = res.1;
                         }
-                        println!("{got}");
                         assert_eq!(got, "1993 SYSPEEK(43)+256*PEEK(44)+26");
                         Ok(())
                     }

@@ -4,6 +4,8 @@ use std::str;
 
 mod tests;
 
+pub const BASIC_LOAD_ADDR: u16 = 0x0801;
+
 fn read_addr(r: &impl Memory, pc: u16) -> u16 {
     let low = r.read(pc);
     let high = r.read(pc + 1);
