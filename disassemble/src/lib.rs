@@ -274,49 +274,50 @@ pub fn step(pc: u16, r: &impl Memory) -> (String, u16) {
 
     match mode {
         AddressMode::Immediate => {
-            let _ = write!(out, "{pc1:02X}      {opcode} #{pc1:02X}");
+            write!(out, "{pc1:02X}      {opcode} #{pc1:02X}").unwrap();
         }
         AddressMode::ZeroPage => {
-            let _ = write!(out, "{pc1:02X}      {opcode} {pc1:02X}");
+            write!(out, "{pc1:02X}      {opcode} {pc1:02X}").unwrap();
         }
         AddressMode::ZeroPageX => {
-            let _ = write!(out, "{pc1:02X}      {opcode} {pc1:02X},X");
+            write!(out, "{pc1:02X}      {opcode} {pc1:02X},X").unwrap();
         }
         AddressMode::ZeroPageY => {
-            let _ = write!(out, "{pc1:02X}      {opcode} {pc1:02X},Y");
+            write!(out, "{pc1:02X}      {opcode} {pc1:02X},Y").unwrap();
         }
         AddressMode::IndirectX => {
-            let _ = write!(out, "{pc1:02X}      {opcode} ({pc1:02X},X)",);
+            write!(out, "{pc1:02X}      {opcode} ({pc1:02X},X)",).unwrap();
         }
         AddressMode::IndirectY => {
-            let _ = write!(out, "{pc1:02X}      {opcode} ({pc1:02X},Y)");
+            write!(out, "{pc1:02X}      {opcode} ({pc1:02X},Y)").unwrap();
         }
         AddressMode::Absolute => {
-            let _ = write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X}",);
+            write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X}",).unwrap();
             count += 1
         }
         AddressMode::AbsoluteX => {
-            let _ = write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},X",);
+            write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},X",).unwrap();
             count += 1
         }
         AddressMode::AbsoluteY => {
-            let _ = write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},Y",);
+            write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},Y",).unwrap();
             count += 1
         }
         AddressMode::Indirect => {
-            let _ = write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X})",);
+            write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X})",).unwrap();
             count += 1
         }
         AddressMode::Implied => {
-            let _ = write!(out, "        {opcode}");
+            write!(out, "        {opcode}").unwrap();
             count -= 1
         }
         AddressMode::Relative => {
-            let _ = write!(
+            write!(
                 out,
                 "{pc1:02X}      {opcode} {pc1:02X} ({:04X})",
                 Wrapping(pc) + pc116 + Wrapping(2u16)
-            );
+            )
+            .unwrap();
         }
     }
 
