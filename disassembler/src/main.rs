@@ -1,3 +1,4 @@
+use c64basic::{list, BASIC_LOAD_ADDR};
 use disassemble::*;
 use rusty6502::prelude::*;
 use std::fs::read;
@@ -23,29 +24,72 @@ fn main() {
         std::process::exit(1);
     }
 
-    let start = START_PC.flag;
-    let mut addr = OFFSET.flag;
     let filename = args[0];
-    let mut pc = 0u16;
-    println!("start: {start} offset: {addr} args: {filename}",);
+
+    // Check if this is a c64 binary.
+    let mut c64 = false;
+    let f = filename.to_string();
+    let v = f.split('.').collect::<Vec<&str>>();
+    let mut last = v[v.len() - 1].to_string();
+    last.make_ascii_lowercase();
+    if last == "prg" {
+        c64 = true;
+        println!("C64 program file");
+    }
 
     let mut bytes = read(filename).unwrap_or_else(|_| panic!("can't read file: {filename}"));
-    let max = u16::MAX - addr;
 
+    let mut start = START_PC.flag;
+    let mut addr = OFFSET.flag;
+    let mut pc = 0u16;
+
+    if c64 {
+        // The load addr is actually the first 2 bytes and then data goes there.
+        // This overrides --offset.
+        addr = ((bytes[1] as u16) << 8) + bytes[0] as u16;
+
+        // It's also the start PC
+        start = addr;
+
+        // Trim these bytes off. Yes this isn't efficient but it's 2 bytes also.
+        bytes.remove(0);
+        bytes.remove(0);
+    }
+
+    let max = u16::MAX - addr;
     if bytes.len() > max.into() {
+        println!(
+            "Length {} at offset {addr} too long, truncating to 64k",
+            bytes.len()
+        );
         bytes.truncate(max as usize);
     }
     for b in bytes.iter() {
         ram.write(addr, *b);
         addr += 1;
     }
+    println!("0x{:2X} bytes at pc: {pc:04X}\n", bytes.len());
 
     pc += start;
+    if c64 && start == BASIC_LOAD_ADDR {
+        // Start with basic first
+        loop {
+            let res = list(pc, &ram).unwrap_or_else(|_| panic!("error from list"));
+            if res.1 == 0x0000 {
+                // Account for 3 NULs indicating end of program
+                pc += 2;
+                println!("PC: {pc:04X}");
+                break;
+            }
+            println!("{pc:04X} {}\n", res.0);
+            pc = res.1;
+        }
+    }
     let mut dis;
     loop {
         (dis, pc) = step(pc, &ram);
         println!("{dis}");
-        if pc >= (OFFSET.flag + bytes.len() as u16) {
+        if pc >= (start + bytes.len() as u16) {
             break;
         }
     }
