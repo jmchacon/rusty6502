@@ -48,6 +48,12 @@ impl Memory for FlatRAM {
     }
 }
 
+impl Default for FlatRAM {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FlatRAM {
     pub fn new() -> Self {
         FlatRAM {
