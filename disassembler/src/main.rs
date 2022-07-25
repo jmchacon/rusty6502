@@ -56,8 +56,8 @@ fn main() {
         bytes.remove(0);
     }
 
-    let max = u16::MAX - addr;
-    if bytes.len() > max.into() {
+    let max = (u16::MAX as usize) + 1 - (addr as usize);
+    if bytes.len() > max {
         println!(
             "Length {} at offset {addr} too long, truncating to 64k",
             bytes.len()
@@ -66,11 +66,16 @@ fn main() {
     }
     for b in bytes.iter() {
         ram.write(addr, *b);
-        addr += 1;
+        // Don't add in this case as we'll wrap and panic.
+        // Could make addr a Wrapping but not needed otherwise.
+        if addr != u16::MAX {
+            addr += 1;
+        }
     }
-    println!("0x{:2X} bytes at pc: {pc:04X}\n", bytes.len());
-
     pc += start;
+
+    println!("0x{:04X} bytes at pc: {pc:04X}\n", bytes.len());
+
     if c64 && start == BASIC_LOAD_ADDR {
         // Start with basic first
         loop {
@@ -86,11 +91,15 @@ fn main() {
         }
     }
     let mut dis;
+    let mut newpc: u16;
     loop {
-        (dis, pc) = step(pc, &ram);
+        (dis, newpc) = step(pc, &ram);
         println!("{dis}");
-        if pc >= (start + bytes.len() as u16) {
+        // Check if we went off the end, or the newpc wrapped
+        // as step() internally uses Wrapping and will overflow.
+        if newpc > (start + (bytes.len() - 1) as u16) || newpc < pc {
             break;
         }
+        pc = newpc;
     }
 }

@@ -2,9 +2,15 @@ use rusty6502::prelude::*;
 use std::fmt::Write as _;
 use std::num::Wrapping; // import without risk of name clashing
 
+/// step will take the given pc and Memory implementation and disassemble the segment
+/// at that location. It will return a string of the dissembly as well as the next pc
+/// to continue disassembling.
+/// As a real 6502 will wrap around if it's asked to step off the end
+/// this will do the same. i.e. disassembling 0xFFFF with a multi-byte opcode will result
+/// in reading 0x0000 and 0x0001 and returning a pc from that area as well.
 pub fn step(pc: u16, r: &impl Memory) -> (String, u16) {
-    let pc1 = r.read(pc + 1);
-    let pc2 = r.read(pc + 2);
+    let pc1 = r.read((Wrapping(pc) + Wrapping(1)).0);
+    let pc2 = r.read((Wrapping(pc) + Wrapping(2)).0);
 
     // Sign extend a 16 bit value so it can be added to PC for branch offsets
     let pc116 = Wrapping(pc1 as i8 as i16 as u16);
@@ -270,7 +276,7 @@ pub fn step(pc: u16, r: &impl Memory) -> (String, u16) {
     };
 
     let mut out = format!("{pc:04X} {op:02X} ");
-    let mut count = pc + 2;
+    let mut count = (Wrapping(pc) + Wrapping(2)).0;
 
     match mode {
         AddressMode::Immediate => {
