@@ -1,6 +1,6 @@
 [workspace]
-members = ["./c64basic", "./disassemble", "./disassembler", "./convertprg"]
-default-members = ["./c64basic", "./disassemble", "./disassembler", "./convertprg"]
+members = ["./c64basic", "./disassemble", "./disassembler", "./convertprg", "./irq"]
+default-members = ["./c64basic", "./disassemble", "./disassembler", "./convertprg", "./irq"]
 
 [package]
 name = "rusty6502"
