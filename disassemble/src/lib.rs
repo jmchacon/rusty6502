@@ -1,3 +1,6 @@
+//! disassemble provides functions for disassembling a given
+//! location.
+
 use rusty6502::prelude::*;
 use std::fmt::Write as _;
 use std::num::Wrapping; // import without risk of name clashing

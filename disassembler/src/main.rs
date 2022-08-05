@@ -1,3 +1,6 @@
+//! Disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
+//! and disassemble it.
+
 use c64basic::{list, BASIC_LOAD_ADDR};
 use clap::Parser;
 use color_eyre::eyre::Result;

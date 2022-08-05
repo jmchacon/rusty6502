@@ -1,3 +1,7 @@
+//! convertprg takes a C64 style PRG file
+//! and converts it into a 64k bin image for
+//! running as a test cart.
+
 use clap::Parser;
 use color_eyre::eyre::Result;
 use std::{ffi::OsStr, fs::read, fs::write, path::Path};

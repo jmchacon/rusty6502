@@ -1,3 +1,5 @@
+//! c64basic provides support for decoding c64 basic programs.
+
 use rusty6502::prelude::*;
 use std::fmt::{self, Write};
 use std::num::Wrapping;
@@ -5,6 +7,8 @@ use std::str;
 
 mod tests;
 
+/// `BASIC_LOAD_ADDR` is the memory location where c64 basic programs
+/// are loaded by default. i.e. load "foo",8
 pub const BASIC_LOAD_ADDR: u16 = 0x0801;
 
 fn read_addr(r: &impl Memory, pc: u16) -> u16 {
