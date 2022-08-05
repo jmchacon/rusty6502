@@ -10,18 +10,18 @@ mod tests {
         ($suite:ident, $($name:ident: $file:literal,)*) => {
             mod $suite {
                 use std::error::Error;
+                use std::num::Wrapping;
 
                 use super::*;
                 $(
                     #[test]
                     fn $name() -> Result<(), Box<dyn Error>> {
                         // This should halt the cpu if a test goes off the rails.
-                        let mut r = FlatRAM::new();
-                        r.vectors = Vectors {
+                        let mut r = FlatRAM::new().vectors(Vectors {
                             nmi: 0x0202,
                             reset: 0x1FFe,
                             irq: 0xD001,
-                        };
+                        });
                         r.power_on();
 
 
@@ -35,13 +35,13 @@ mod tests {
                         }
 
                         let mut got = String::new();
-                        let mut pc: u16 = BASIC_LOAD_ADDR;
+                        let mut pc = Wrapping::<u16>(BASIC_LOAD_ADDR);
                         loop {
                             let res = list(pc, &r).unwrap_or_else(|_| panic!("error from list"));
                             println!("{}", res.0);
 
                             // A 0 PC means we're done.
-                            if res.1 == 0x0000 {
+                            if res.1.0 == 0x0000 {
                                 break;
                             }
                             _ = write!(got, "{}", res.0);

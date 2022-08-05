@@ -7,17 +7,18 @@ pub trait Memory {
     fn power_on(&mut self);
 }
 
-pub const MAX_SIZE: usize = 65536;
+pub const MAX_SIZE: usize = 1 << 16;
 
-/// FlatRAM gives a flat 64k RAM block to use.
-/// It will be initialized to all zeros and power_on
-/// can use a different value if fill_value is set.
+/// `FlatRAM` gives a flat 64k RAM block to use.
+/// It will be initialized to all zeros and `power_on`
+/// can use a different value if `fill_value` is set.
 /// Additionally the irq/reset and nmi vectors can be set as well.
 /// Generally used only for testing.
 #[derive(Debug, Clone, Copy)]
+#[must_use]
 pub struct FlatRAM {
-    pub fill_value: u8,
-    pub vectors: Vectors,
+    fill_value: u8,
+    vectors: Vectors,
     memory: [u8; MAX_SIZE],
 }
 
@@ -33,7 +34,7 @@ impl Memory for FlatRAM {
         self.memory[addr as usize]
     }
     fn write(&mut self, addr: u16, val: u8) {
-        self.memory[addr as usize] = val
+        self.memory[addr as usize] = val;
     }
     fn power_on(&mut self) {
         for i in 0..self.memory.len() {
@@ -55,13 +56,25 @@ impl Default for FlatRAM {
 }
 
 impl FlatRAM {
+    /// new will return a `FlatRAM` with 0x00 set for everything (vectors, fill value, etc).
+    /// Use other builders to set additional items.
     pub fn new() -> Self {
-        FlatRAM {
+        Self {
             fill_value: 0,
             vectors: Vectors {
                 ..Default::default()
             },
             memory: [0; MAX_SIZE],
         }
+    }
+
+    pub const fn fill_value(mut self, value: u8) -> Self {
+        self.fill_value = value;
+        self
+    }
+
+    pub const fn vectors(mut self, vectors: Vectors) -> Self {
+        self.vectors = vectors;
+        self
     }
 }

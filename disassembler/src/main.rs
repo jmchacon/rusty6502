@@ -1,52 +1,67 @@
 use c64basic::{list, BASIC_LOAD_ADDR};
-use disassemble::*;
+use clap::Parser;
+use color_eyre::eyre::Result;
+use disassemble::step;
 use rusty6502::prelude::*;
-use std::fs::read;
+use std::{ffi::OsStr, fs::read, num::Wrapping, path::Path};
 
-gflags::define! {
-    /// The PC value to start disassembly.
-    --start_pc: u16 = 0
-}
-gflags::define! {
-    /// Offset into RAM to start loading data. All other RAM will be zero'd out. Ignored for PRG files.
-    --offset: u16 = 0
+/// Disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
+/// and disassemble it.
+///
+/// If it's a c64 basic program the basic code will be interpreted and anything
+/// remaining after will be disassembled as assembly.#[derive(Parser)]
+#[derive(Parser)]
+#[clap(author, version)]
+struct Args {
+    #[clap()]
+    filename: String,
+
+    #[clap(
+        long,
+        default_value_t = 0,
+        help = "Offset into RAM to start loading data. All other RAM will be zero'd out. Ignored for PRG files."
+    )]
+    offset: u16,
+
+    #[clap(long, default_value_t = 0, help = "The PC value to start disassembly.")]
+    start_pc: u16,
 }
 
-// Disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
-// and disassemble it. If it's a c64 basic program the basic code will be interpreted and anything
-// remaining after will be disassembled as assembly.
-fn main() {
-    let args = gflags::parse();
+fn main() -> Result<()> {
+    color_eyre::install()?;
+    let args: Args = Args::parse();
+
     let mut ram = FlatRAM::new();
-
-    if args.len() != 1 {
-        eprintln!("Must supply a single filename to load");
-        std::process::exit(1);
-    }
-
-    let filename = args[0];
 
     // Check if this is a c64 binary.
     let mut c64 = false;
-    let f = filename.to_string();
-    let v = f.split('.').collect::<Vec<&str>>();
-    let mut last = v[v.len() - 1].to_string();
-    last.make_ascii_lowercase();
-    if last == "prg" {
+    let filename = args.filename;
+    let ext = match Path::new(filename.as_str())
+        .extension()
+        .and_then(OsStr::to_str)
+    {
+        Some(ext) => ext,
+        None => {
+            eprintln!("{filename} has no extension");
+            std::process::exit(1);
+        }
+    };
+
+    if ext == "prg" {
         c64 = true;
         println!("C64 program file");
     }
 
-    let mut bytes = read(filename).unwrap_or_else(|_| panic!("can't read file: {filename}"));
+    let mut bytes = read(filename)?;
 
-    let mut start = START_PC.flag;
-    let mut addr = OFFSET.flag;
-    let mut pc = 0u16;
+    let mut start = Wrapping::<u16>(args.start_pc);
+    let mut addr = Wrapping::<u16>(args.offset);
+    let mut pc = Wrapping::<u16>(0);
 
     if c64 {
         // The load addr is actually the first 2 bytes and then data goes there.
         // This overrides --offset.
-        addr = ((bytes[1] as u16) << 8) + bytes[0] as u16;
+        addr = Wrapping::<u16>((u16::from(bytes[1]) << 8) + u16::from(bytes[0]));
 
         // It's also the start PC
         start = addr;
@@ -56,31 +71,37 @@ fn main() {
         bytes.remove(0);
     }
 
-    let max = (u16::MAX as usize) + 1 - (addr as usize);
+    let max = (1 << 16) - (addr.0 as usize);
     if bytes.len() > max {
         println!(
             "Length {} at offset {addr} too long, truncating to 64k",
             bytes.len()
         );
-        bytes.truncate(max as usize);
+        bytes.truncate(max);
     }
-    for b in bytes.iter() {
-        ram.write(addr, *b);
+    for b in &bytes {
+        ram.write(addr.0, *b);
         // Don't add in this case as we'll wrap and panic.
         // Could make addr a Wrapping but not needed otherwise.
-        if addr != u16::MAX {
+        if addr.0 != u16::MAX {
             addr += 1;
         }
     }
     pc += start;
 
-    println!("0x{:04X} bytes at pc: {pc:04X}\n", bytes.len());
+    println!("{:#06X} bytes at pc: {pc:#06X}\n", bytes.len());
 
-    if c64 && start == BASIC_LOAD_ADDR {
+    if c64 && start == Wrapping::<u16>(BASIC_LOAD_ADDR) {
         // Start with basic first
         loop {
-            let res = list(pc, &ram).unwrap_or_else(|_| panic!("error from list"));
-            if res.1 == 0x0000 {
+            let res = match list(pc, &ram) {
+                Ok((out, pc)) => (out, pc),
+                Err(err) => {
+                    eprintln!("{}", err);
+                    std::process::exit(1);
+                }
+            };
+            if res.1 .0 == 0x0000 {
                 // Account for 3 NULs indicating end of program
                 pc += 2;
                 println!("PC: {pc:04X}");
@@ -91,15 +112,21 @@ fn main() {
         }
     }
     let mut dis;
-    let mut newpc: u16;
+    let mut newpc: Wrapping<u16>;
+    println!("start: {start:04X} len {:04X}", bytes.len());
+    // Set the most we'll do. If start was moved this will limit further.
+    #[allow(clippy::cast_possible_truncation)]
+    let limit = Wrapping((usize::from(start.0) + bytes.len() - 1) as u16);
+    println!("limit {limit:04X}");
     loop {
         (dis, newpc) = step(pc, &ram);
         println!("{dis}");
         // Check if we went off the end, or the newpc wrapped
-        // as step() internally uses Wrapping and will overflow.
-        if newpc > (start + (bytes.len() - 1) as u16) || newpc < pc {
+        // as step() can overflow.
+        if newpc > limit || newpc < pc {
             break;
         }
         pc = newpc;
     }
+    Ok(())
 }
