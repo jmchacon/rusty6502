@@ -45,8 +45,8 @@ fn main() -> Result<()> {
     {
         Some(ext) => ext,
         None => {
-            eprintln!("{filename} has no extension");
-            std::process::exit(1);
+            eprintln!("{filename} has no extension can't verify c64 program");
+            ""
         }
     };
 
