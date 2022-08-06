@@ -72,6 +72,15 @@ fn main() -> Result<()> {
             continue;
         }
 
+        // If the first field isn't 4 chars it's not an addr.
+        if fields[0].len() != 4 {
+            continue;
+        }
+        // 2nd field has to be 2 chars.
+        if fields[1].len() != 2 {
+            continue;
+        }
+
         // There's always an address (16 bit but we parse as usize so it can index into block) and at least one opcode
         let addr: usize;
         let op: u8;
@@ -93,10 +102,10 @@ fn main() -> Result<()> {
         };
 
         // The next 2 are optional
-        if fields.len() > 2 {
+        if fields.len() > 2 && fields[2].len() == 2 {
             op1 = u8::from_str_radix(fields[2], 16).ok();
         }
-        if fields.len() > 3 {
+        if fields.len() > 3 && fields[3].len() == 2 {
             op2 = u8::from_str_radix(fields[3], 16).ok();
         }
 
