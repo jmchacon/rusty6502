@@ -56,11 +56,8 @@ fn main() -> Result<()> {
     // Always emit 64k so just allocate a block.
     let mut block: [u8; 1 << 16] = [0; 1 << 16];
 
-    let mut line_num = 0;
-
     // Consumes the iterator, return Strings
-    for line in lines.flatten() {
-        line_num += 1;
+    for (line_num, line) in lines.flatten().enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
 
         // If there aren't 2 fields don't even try.
@@ -82,22 +79,20 @@ fn main() -> Result<()> {
         }
 
         // There's always an address (16 bit but we parse as usize so it can index into block) and at least one opcode
-        let addr: usize;
-        let op: u8;
         let mut op1 = None;
         let mut op2 = None;
 
         // If the first field matches as an addr this must be something we can use.
-        addr = match usize::from_str_radix(fields[0], 16) {
+        let addr = match usize::from_str_radix(fields[0], 16) {
             Ok(addr) => addr,
             Err(_) => continue,
         };
 
         // If we have an addr opcode is required or this is a bad line and we should stop.
-        op = match u8::from_str_radix(fields[1], 16) {
+        let op = match u8::from_str_radix(fields[1], 16) {
             Ok(op) => op,
             Err(_) => {
-                return Err(eyre!("Error parsing line {}: {}", line_num, line));
+                return Err(eyre!("Error parsing line {}: {}", line_num + 1, line));
             }
         };
 
