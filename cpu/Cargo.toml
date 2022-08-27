@@ -1,6 +1,9 @@
 [package]
-name = "cpu"
-version = "0.1.0"
 edition = "2021"
+name    = "cpu"
+version = "0.1.0"
 
 [dependencies]
+strum_macros = "0.24.1"
+strum = "0.24.1"
+lazy_static = "1.4.0"
