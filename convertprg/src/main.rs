@@ -47,13 +47,13 @@ fn main() -> Result<()> {
 
     let filename = args.filename;
     let p = Path::new(filename.as_str());
-    let ext = match p.extension().and_then(OsStr::to_str) {
-        Some(ext) => ext,
-        None => {
-            eprintln!("{filename} has no extension");
-            std::process::exit(1);
-        }
+    let ext = if let Some(ext) = p.extension().and_then(OsStr::to_str) {
+        ext
+    } else {
+        eprintln!("{filename} has no extension");
+        std::process::exit(1);
     };
+
     if ext != "prg" {
         eprintln!("filename {filename} not a prg file?");
         std::process::exit(1);
