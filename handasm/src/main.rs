@@ -50,7 +50,7 @@ fn main() -> Result<()> {
     let filename = args.filename;
     let output = Path::new(&args.output);
 
-    // File hosts must exist in current path before this produces output
+    // Just read everything into RAM to process.
     let lines = read_lines(filename)?;
 
     // Always emit 64k so just allocate a block.
