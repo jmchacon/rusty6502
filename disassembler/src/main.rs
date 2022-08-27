@@ -39,15 +39,14 @@ fn main() -> Result<()> {
     // Check if this is a c64 binary.
     let mut c64 = false;
     let filename = args.filename;
-    let ext = match Path::new(filename.as_str())
+    let ext = if let Some(ext) = Path::new(filename.as_str())
         .extension()
         .and_then(OsStr::to_str)
     {
-        Some(ext) => ext,
-        None => {
-            eprintln!("{filename} has no extension can't verify c64 program");
-            ""
-        }
+        ext
+    } else {
+        eprintln!("{filename} has no extension can't verify c64 program");
+        ""
     };
 
     if ext == "prg" {
