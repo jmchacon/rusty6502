@@ -7,6 +7,7 @@ members = [
     "./irq",
     "./handasm",
     "./assemble",
+    "./assembler",
 ]
 default-members = [
     "./c64basic",
@@ -16,6 +17,7 @@ default-members = [
     "./irq",
     "./handasm",
     "./assemble",
+    "./assembler",
 ]
 
 [package]
