@@ -16,7 +16,7 @@ VF    equ 0x0E
 NF    equ 0x0F
 ZF    equ 0x10
 	
-ORG C000
+ORG $C000
 	TEST    LDY #1    		; initialize Y (used to loop through carry flag values)
 	        STY ERROR 	; store 1 in ERROR until the test passes
 	        LDA #0    	; initialize N1 and N2
