@@ -298,14 +298,12 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                         l.push(Token::Op(operation));
                         State::Comment(String::from(&token[1..]))
                     } else {
-                        if let Some(op) = OPCODES.get(&operation.op) {
-                            if op.contains_key(&AddressMode::Relative) {
-                                // Ops which are relative only have this mode so we can just assign
-                                // and parse the val which must be 8 bit.
-                                // Can't validate value now as while it's 8 bit this can be 16 bit
-                                // and mean a PC difference.
-                                operation.mode = AddressMode::Relative;
-                            }
+                        if resolve_opcode(&operation.op, &AddressMode::Relative).is_ok() {
+                            // Ops which are relative only have this mode so we can just assign
+                            // and parse the val which must be 8 bit.
+                            // Can't validate value now as while it's 8 bit this can be 16 bit
+                            // and mean a PC difference.
+                            operation.mode = AddressMode::Relative;
                         }
                         // NOTE: We don't validate here if op_val is the right size
                         //       that gets handled on a later pass.
@@ -515,6 +513,17 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                         let op = &o.op;
                         let width: u16;
                         let mut replace: Option<OpVal> = None;
+                        if o.mode != AddressMode::Implied {
+                            // Implied gets handled in the match as it could resolve
+                            // into another mode.
+                            if resolve_opcode(op, &o.mode).is_err() {
+                                return Err(eyre!(
+                                    "Error parsing line {}: opcode {op} doesn't support mode {}",
+                                    line_num + 1,
+                                    o.mode
+                                ));
+                            }
+                        }
                         match o.mode {
                             AddressMode::Implied => {
                                 // Check the operand and if there is one it means
@@ -566,17 +575,17 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                         width = 3;
                                     }
                                     None => {
-                                        // If there isn't an opval this is a real implied so check it.
-                                        if !get_address_mode(op).contains_key(&AddressMode::Implied)
-                                        {
-                                            return Err(eyre!(
-                                                "Error parsing line {}: opcode {op} doesn't support implied mode",
-                                                line_num + 1
-                                            ));
-                                        }
                                         width = 1;
                                     }
                                 };
+                                // Check mode here since it was either implied, ZP, or Absolute and didn't get
+                                // checked yet for this opcode.
+                                if resolve_opcode(op, &o.mode).is_err() {
+                                    return Err(eyre!(
+                                       "Error parsing line {}: opcode {op} doesn't support mode {}",
+                                        line_num + 1, o.mode
+                                    ));
+                                }
                             }
                             AddressMode::Immediate => {
                                 let op_val = if let Some(op_val) = &o.op_val {
@@ -622,12 +631,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 };
                             }
                             AddressMode::ZeroPage => {
-                                if !get_address_mode(op).contains_key(&AddressMode::ZeroPage) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support ZeroPage mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -653,12 +656,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 2;
                             }
                             AddressMode::ZeroPageX => {
-                                if !get_address_mode(op).contains_key(&AddressMode::ZeroPageX) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support ZeroPageX mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -683,12 +680,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 2;
                             }
                             AddressMode::ZeroPageY => {
-                                if !get_address_mode(op).contains_key(&AddressMode::ZeroPageY) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support ZeroPageY mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -713,12 +704,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 2;
                             }
                             AddressMode::Absolute => {
-                                if !get_address_mode(op).contains_key(&AddressMode::Absolute) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support Absolute mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -745,12 +730,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 3;
                             }
                             AddressMode::AbsoluteX => {
-                                if !get_address_mode(op).contains_key(&AddressMode::AbsoluteX) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support AbsoluteX mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -777,12 +756,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 3;
                             }
                             AddressMode::AbsoluteY => {
-                                if !get_address_mode(op).contains_key(&AddressMode::AbsoluteY) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support AbsoluteY mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -809,12 +782,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 3;
                             }
                             AddressMode::Indirect => {
-                                if !get_address_mode(op).contains_key(&AddressMode::Indirect) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support Indirect mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -841,12 +808,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 3;
                             }
                             AddressMode::IndirectX => {
-                                if !get_address_mode(op).contains_key(&AddressMode::IndirectX) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support IndirectX mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -871,12 +832,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 2;
                             }
                             AddressMode::IndirectY => {
-                                if !get_address_mode(op).contains_key(&AddressMode::IndirectY) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support IndirectY mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 let mut ok = false;
                                 if let Some(v) = &o.op_val {
                                     match v {
@@ -901,12 +856,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 2;
                             }
                             AddressMode::Relative => {
-                                if !get_address_mode(op).contains_key(&AddressMode::Relative) {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} doesn't support Relative mode",
-                                        line_num + 1
-                                    ));
-                                }
                                 // On pass 0 it's ok to not be able to compute this.
                                 if pass > 0 {
                                     let mut ok = false;
@@ -1005,35 +954,22 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
     for (line_num, line) in ast.iter().enumerate() {
         for t in line {
             if let Token::Op(o) = t {
-                let modes = if let Some(modes) = OPCODES.get(&o.op) {
-                    modes
-                } else {
-                    return Err(eyre!(
-                        "Internal error on line {}: Opcode {} invalid",
-                        line_num + 1,
-                        o.op
-                    ));
+                let modes = match resolve_opcode(&o.op, &o.mode) {
+                    Ok(modes) => modes,
+                    Err(err) => {
+                        return Err(eyre!("Internal error on line {}: {err}", line_num + 1));
+                    }
                 };
-                let mode = o.mode;
-                let bytes = if let Some(bytes) = modes.get(&mode) {
-                    bytes
-                } else {
-                    return Err(eyre!(
-                        "Internal error on line {}: address mode {mode} isn't valid for opcode {}",
-                        line_num + 1,
-                        o.op
-                    ));
-                };
-                if o.op_val.is_none() && mode != AddressMode::Implied {
+                if o.op_val.is_none() && o.mode != AddressMode::Implied {
                     return Err(eyre!("Internal error on line {}: no op val but not implied instruction for opcode {}", line_num+1, o.op));
                 }
-                if mode == AddressMode::Implied && o.width != 1 {
+                if o.mode == AddressMode::Implied && o.width != 1 {
                     return Err(eyre!("Internal error on line {}: implied mode for opcode {} but width not 1: {o:#?}", line_num+1, o.op));
                 }
 
                 // Grab the first entry in the bytes vec for the opcode value.
                 // TODO: If > 1 pick one randomly.
-                block[usize::from(o.pc)] = bytes[0];
+                block[usize::from(o.pc)] = modes[0];
                 if let Some(val) = &o.op_val {
                     let val = match val {
                         OpVal::Label(s) => {
@@ -1051,13 +987,13 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                     match val {
                         TokenVal::Val8(b) => {
                             if o.width != 2 {
-                                return Err(eyre!("Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {mode}", line_num+1, o.op));
+                                return Err(eyre!("Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode));
                             }
                             block[usize::from(o.pc + 1)] = *b;
                         }
                         TokenVal::Val16(b) => {
                             if o.width != 3 {
-                                return Err(eyre!("Internal error on line {}: got 16 bit value and expect 8 bit for op {} and mode {mode}", line_num+1, o.op));
+                                return Err(eyre!("Internal error on line {}: got 16 bit value and expect 8 bit for op {} and mode {}", line_num+1, o.op, o.mode));
                             }
                             // Store 16 bit values in little endian.
                             let low = (b & 0x00FF) as u8;
@@ -1071,12 +1007,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
         }
     }
     Ok(block)
-}
-
-fn get_address_mode(op: &Opcode) -> &HashMap<AddressMode, Vec<u8>> {
-    // Safety: When OPCODES was built it validated all Opcode's were inserted
-    //         therefore retrieval is safe since we never mutate it.
-    unsafe { OPCODES.get(op).unwrap_unchecked() }
 }
 
 // parse_val returns a parsed TokenVal8/16 or nothing. Set is_u16 to force returning a Val16 always.

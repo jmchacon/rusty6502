@@ -21,7 +21,7 @@ pub fn step(pc: Wrapping<u16>, r: &impl Memory) -> (String, Wrapping<u16>) {
     let op = r.read(pc.0);
 
     let (opcode, mode) = {
-        let operation = OPCODES_VALUES[usize::from(op)];
+        let operation = opcode_op(op);
         (operation.op.to_string(), operation.mode)
     };
 

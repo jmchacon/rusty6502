@@ -7,3 +7,4 @@ version = "0.1.0"
 strum_macros = "0.24.1"
 strum = "0.24.1"
 lazy_static = "1.4.0"
+color-eyre = { version = "0.6.2", default-features = false }
