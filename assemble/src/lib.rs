@@ -6,7 +6,7 @@ use color_eyre::eyre::{eyre, Result};
 use lazy_static::lazy_static;
 use regex::Regex;
 use rusty6502::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Write};
 use std::io::BufReader;
 use std::num::Wrapping;
@@ -122,7 +122,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
     // Always emit 64k so just allocate a block.
     let mut block: [u8; 1 << 16] = [0; 1 << 16];
 
-    // Assemblers generally are 2 pass. One pass to tokenize as much as possible
+    // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
     // while filling in a label mapping. The 2nd one does actual assembly over
     // the tokens with labels getting filled in from the map or computed as needed.
 
@@ -130,7 +130,8 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
     // for our AST.
     let mut ast = Vec::<Vec<Token>>::new();
     let mut labels = HashMap::new();
-    let mut label_locs: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut label_locs = HashMap::new();
+    let mut location_labels = HashSet::new();
 
     for (line_num, line) in lines.flatten().enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -191,11 +192,12 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                         _ => match Opcode::from_str(upper.as_str()) {
                             Ok(op) => {
                                 if labels.get(&label).is_some() {
-                                    let locs = if let Some(locs) = label_locs.get(&label) {
-                                        locs
-                                    } else {
-                                        return Err(eyre!("can't find {label} in label_locs!"));
-                                    };
+                                    let locs: &Vec<usize> =
+                                        if let Some(locs) = label_locs.get(&label) {
+                                            locs
+                                        } else {
+                                            return Err(eyre!("can't find {label} in label_locs!"));
+                                        };
                                     return Err(eyre!("Error parsing line {}: can't redefine location label {label}. Already defined at line {:#?} - {line}", line_num+1, locs));
                                 }
                                 // Don't have to validate label since State::Begin did it above before
@@ -388,13 +390,13 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                             None => match parse_label(op_val) {
                                 Ok(label) => {
                                     // We don't define another label since this is a lookup, not a definition.
-                                    // A later pass will fill in all definitions and when a lookup fails
-                                    // then it's an error.
+                                    // A later pass will fill in all definitions and we check then all got done.
                                     if let Some(locs) = label_locs.get_mut(&label) {
                                         locs.push(line_num + 1);
                                     } else {
                                         label_locs.insert(label.clone(), vec![line_num + 1]);
                                     }
+                                    location_labels.insert(label.clone());
                                     Some(OpVal::Label(label))
                                 }
                                 Err(err) => {
@@ -470,7 +472,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
 
                     write!(output, "{op:?}").unwrap();
                     match o.mode {
-                        AddressMode::Implied => {}
                         AddressMode::Immediate => {
                             write!(output, " #{val}").unwrap();
                         }
@@ -484,7 +485,9 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                             write!(output, " ({val},Y)").unwrap();
                         }
                         _ => {
-                            write!(output, " {val}").unwrap();
+                            if !val.is_empty() {
+                                write!(output, " {val}").unwrap();
+                            }
                         }
                     };
                 }
@@ -493,11 +496,10 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
         // If this was a blank line that also auto-parses for output purposes.
         println!("{output}");
     }
-    println!("\nLabels:\n{labels:#?}\n\nLocs:\n{label_locs:#?}");
 
     // Do another run so we can fill in label references. Also compute addressing mode, validate and set pc.
-    let mut pc: u16 = 0;
-    for pass in 0..2 {
+    {
+        let mut pc: u16 = 0;
         for (line_num, line) in ast.iter_mut().enumerate() {
             for t in line.iter_mut() {
                 match t {
@@ -512,7 +514,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                     Token::Op(o) => {
                         let op = &o.op;
                         let width: u16;
-                        let mut replace: Option<OpVal> = None;
                         if o.mode != AddressMode::Implied {
                             // Implied gets handled in the match as it could resolve
                             // into another mode.
@@ -582,9 +583,10 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 // checked yet for this opcode.
                                 if resolve_opcode(op, &o.mode).is_err() {
                                     return Err(eyre!(
-                                       "Error parsing line {}: opcode {op} doesn't support mode {}",
-                                        line_num + 1, o.mode
-                                    ));
+                                    "Error parsing line {}: opcode {op} doesn't support mode {}",
+                                    line_num + 1,
+                                    o.mode
+                                ));
                                 }
                             }
                             AddressMode::Immediate => {
@@ -624,9 +626,9 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                     }
                                     TokenVal::Val16(_) => {
                                         return Err(eyre!(
-                                            "Error parsing line {}: immediate value cannot be 16 bit",
-                                            line_num + 1
-                                        ));
+                                        "Error parsing line {}: immediate value cannot be 16 bit",
+                                        line_num + 1
+                                    ));
                                     }
                                 };
                             }
@@ -856,64 +858,17 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                                 width = 2;
                             }
                             AddressMode::Relative => {
-                                // On pass 0 it's ok to not be able to compute this.
-                                if pass > 0 {
-                                    let mut ok = false;
-                                    if let Some(v) = &o.op_val {
-                                        match v {
-                                            OpVal::Label(l) => {
-                                                match labels.get(l) {
-                                                    Some(Some(TokenVal::Val8(_))) => {
-                                                        ok = true;
-                                                    }
-                                                    Some(Some(TokenVal::Val16(p))) => {
-                                                        #[allow(clippy::cast_possible_wrap)]
-                                                        // The actual diff is from the pc following the instruction.
-                                                        let diff = (Wrapping(*p) - Wrapping(pc + 2))
-                                                            .0
-                                                            as i16;
-                                                        if (i16::from(i8::MIN)..=i16::from(i8::MAX))
-                                                            .contains(&diff)
-                                                        {
-                                                            ok = true;
-                                                            // Remove the label ref here and insert the relative offset
-                                                            // as the value now. We can blind cast this as we know
-                                                            // it's in signed i8 range so bit casting to u8 is fine.
-                                                            #[allow(clippy::cast_sign_loss)]
-                                                            let val = (diff & 0x00FF) as u8;
-                                                            replace = Some(OpVal::Val(
-                                                                TokenVal::Val8(val),
-                                                            ));
-                                                        }
-                                                    }
-                                                    _ => {}
-                                                }
-                                                if let Some(Some(TokenVal::Val8(_))) = labels.get(l)
-                                                {
-                                                    ok = true;
-                                                };
-                                            }
-                                            OpVal::Val(t) => {
-                                                if let TokenVal::Val8(_) = t {
-                                                    ok = true;
-                                                };
-                                            }
-                                        };
-                                    };
-                                    if !ok {
-                                        return Err(eyre!("Error parsing line {}: either not 8 bit or out of range", line_num + 1));
-                                    }
-                                }
+                                // We just add width here. In byte emission below it'll compute and validate
+                                // the actual offset. This is due to forward label refs. i.e. BEQ DONE before DONE
+                                // has been processed so we don't know the PC value yet but will below.
                                 width = 2;
                             }
                         };
 
-                        // On the 2nd pass all labels must be resolvable so validate that here.
-                        if pass > 0 {
-                            if let Some(OpVal::Label(l)) = &o.op_val {
-                                if labels.get(l).is_none() {
-                                    return Err(eyre!("Error parsing line {}: cannot determine value for label {l} after 2 passes", line_num+1));
-                                }
+                        // Handle special case of * reference location labels
+                        if let Some(OpVal::Label(s)) = &o.op_val {
+                            if s == "*" {
+                                o.op_val = Some(OpVal::Val(TokenVal::Val16(pc)));
                             }
                         }
                         if !(1..=3).contains(&width) {
@@ -925,10 +880,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                         o.pc = pc;
                         o.width = width;
                         pc += width;
-                        if replace.is_some() {
-                            o.op_val = replace;
-                        }
-                        println!("pc: {:#06X} new: {pc:#06X}", o.pc);
                         continue;
                     }
                 };
@@ -936,23 +887,34 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
         }
     }
 
-    for k in labels.keys() {
-        if labels.get(k).is_none() {
-            let locs = if let Some(locs) = label_locs.get(k) {
-                locs
-            } else {
-                return Err(eyre!("Internal error: can't find locations for label {k}"));
-            };
-            return Err(eyre!(
-                "Parsing error: Label {k} never was defined. Located on lines {:#?}",
-                locs
-            ));
-        }
+    // Verify all the labels defined got values (EQU and location definitions)
+    let mut errors = String::new();
+    let mut hm = HashMap::new();
+    for (k, _) in labels.iter().filter(|(_, v)| v.is_none()) {
+        let locs = get_locs(&label_locs, k)?;
+        hm.insert(k, locs);
     }
-    println!("\nLabels pass 2:\n{labels:#?}\n\n");
+    // Also verify all the location references (i.e. JMP XXX) also resolve. Ignore *.
+    for k in location_labels
+        .iter()
+        .filter(|l| *l != "*" && !labels.contains_key(*l))
+    {
+        let locs = get_locs(&label_locs, k)?;
+        hm.insert(k, locs);
+    }
+    for (k, locs) in hm {
+        writeln!(
+            errors,
+            "Parsing error: Label {k} was never defined. Located on lines {locs}"
+        )
+        .unwrap();
+    }
+    if !errors.is_empty() {
+        return Err(eyre!(errors));
+    }
 
-    for (line_num, line) in ast.iter().enumerate() {
-        for t in line {
+    for (line_num, line) in ast.iter_mut().enumerate() {
+        for t in line.iter_mut() {
             if let Token::Op(o) = t {
                 let modes = match resolve_opcode(&o.op, &o.mode) {
                     Ok(modes) => modes,
@@ -967,29 +929,67 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                     return Err(eyre!("Internal error on line {}: implied mode for opcode {} but width not 1: {o:#?}", line_num+1, o.op));
                 }
 
+                // Things are mutable here as we may have to fixup op_val for branches before
+                // emitting bytes below.
+                if o.mode == AddressMode::Relative {
+                    let mut ok = false;
+                    if let Some(v) = &o.op_val {
+                        match v {
+                            OpVal::Label(l) => {
+                                match labels.get(l) {
+                                    Some(Some(TokenVal::Val8(_))) => {
+                                        ok = true;
+                                    }
+                                    Some(Some(TokenVal::Val16(p))) => {
+                                        #[allow(clippy::cast_possible_wrap)]
+                                        // The actual diff is from the pc following the instruction.
+                                        let diff = (Wrapping(*p) - Wrapping(o.pc + 2)).0 as i16;
+                                        if (i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&diff)
+                                        {
+                                            ok = true;
+                                            // Remove the label ref here and insert the relative offset
+                                            // as the value now. We can blind cast this as we know
+                                            // it's in signed i8 range so bit casting to u8 is fine.
+                                            #[allow(clippy::cast_sign_loss)]
+                                            let val = (diff & 0x00FF) as u8;
+                                            o.op_val = Some(OpVal::Val(TokenVal::Val8(val)));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            OpVal::Val(t) => {
+                                if let TokenVal::Val8(_) = t {
+                                    ok = true;
+                                };
+                            }
+                        };
+                    };
+                    if !ok {
+                        return Err(eyre!(
+                            "Error parsing line {}: either not 8 bit or out of range for relative instruction",
+                            line_num + 1
+                        ));
+                    }
+                }
+
                 // Grab the first entry in the bytes vec for the opcode value.
                 // TODO: If > 1 pick one randomly.
                 block[usize::from(o.pc)] = modes[0];
                 if let Some(val) = &o.op_val {
                     let val = match val {
                         OpVal::Label(s) => {
-                            if let Some(Some(t)) = labels.get(s) {
-                                t
-                            } else {
-                                return Err(eyre!(
-                                    "Internal error on line {}: label {s} not defined or has no value",
-                                    line_num + 1
-                                ));
-                            }
+                            // Safety: We just checked labels above has everything referenced and filled in.
+                            unsafe { labels.get(s).unwrap_unchecked().unwrap_unchecked() }
                         }
-                        OpVal::Val(t) => t,
+                        OpVal::Val(t) => *t,
                     };
                     match val {
                         TokenVal::Val8(b) => {
                             if o.width != 2 {
                                 return Err(eyre!("Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode));
                             }
-                            block[usize::from(o.pc + 1)] = *b;
+                            block[usize::from(o.pc + 1)] = b;
                         }
                         TokenVal::Val16(b) => {
                             if o.width != 3 {
@@ -1007,6 +1007,17 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
         }
     }
     Ok(block)
+}
+
+// Given a label and the locations map return a nicely formatter command separated value of the lines
+// the label is on.
+fn get_locs(hm: &HashMap<String, Vec<usize>>, k: &String) -> Result<String> {
+    if let Some(locs) = hm.get(k) {
+        let vals: Vec<_> = locs.iter().map(|x| format!("{x}")).collect();
+        Ok(vals.join(","))
+    } else {
+        Err(eyre!("Internal error: can't find locations for label {k}"))
+    }
 }
 
 // parse_val returns a parsed TokenVal8/16 or nothing. Set is_u16 to force returning a Val16 always.
@@ -1048,6 +1059,11 @@ fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
 
 fn parse_label(label: &str) -> Result<String> {
     const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-]+$";
+
+    // * is special case where it's always ok
+    if label == "*" {
+        return Ok(String::from(label));
+    }
     lazy_static! {
         static ref RE: Regex = {
             match Regex::new(LABEL) {
