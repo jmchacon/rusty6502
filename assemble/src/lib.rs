@@ -865,12 +865,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                             }
                         };
 
-                        // Handle special case of * reference location labels
-                        if let Some(OpVal::Label(s)) = &o.op_val {
-                            if s == "*" {
-                                o.op_val = Some(OpVal::Val(TokenVal::Val16(pc)));
-                            }
-                        }
                         if !(1..=3).contains(&width) {
                             return Err(eyre!(
                                 "Internal error. Width {width} invalid for {o:#?} on line {}",
@@ -889,20 +883,21 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
 
     // Verify all the labels defined got values (EQU and location definitions)
     let mut errors = String::new();
-    let mut hm = HashMap::new();
-    for (k, _) in labels.iter().filter(|(_, v)| v.is_none()) {
-        let locs = get_locs(&label_locs, k)?;
-        hm.insert(k, locs);
-    }
-    // Also verify all the location references (i.e. JMP XXX) also resolve. Ignore *.
-    for k in location_labels
+    let mut hm = HashSet::new();
+    labels
+        .iter()
+        .filter(|(_, v)| v.is_none())
+        .for_each(|(k, _)| {
+            hm.insert(k);
+        });
+    location_labels
         .iter()
         .filter(|l| *l != "*" && !labels.contains_key(*l))
-    {
+        .for_each(|k| {
+            hm.insert(k);
+        });
+    for k in hm {
         let locs = get_locs(&label_locs, k)?;
-        hm.insert(k, locs);
-    }
-    for (k, locs) in hm {
         writeln!(
             errors,
             "Parsing error: Label {k} was never defined. Located on lines {locs}"
@@ -936,26 +931,34 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                     if let Some(v) = &o.op_val {
                         match v {
                             OpVal::Label(l) => {
+                                let mut r: Option<u16> = None;
+                                // Handle * usages in branches.
+                                if l == "*" {
+                                    r = Some(o.pc);
+                                }
                                 match labels.get(l) {
                                     Some(Some(TokenVal::Val8(_))) => {
                                         ok = true;
                                     }
                                     Some(Some(TokenVal::Val16(p))) => {
-                                        #[allow(clippy::cast_possible_wrap)]
-                                        // The actual diff is from the pc following the instruction.
-                                        let diff = (Wrapping(*p) - Wrapping(o.pc + 2)).0 as i16;
-                                        if (i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&diff)
-                                        {
-                                            ok = true;
-                                            // Remove the label ref here and insert the relative offset
-                                            // as the value now. We can blind cast this as we know
-                                            // it's in signed i8 range so bit casting to u8 is fine.
-                                            #[allow(clippy::cast_sign_loss)]
-                                            let val = (diff & 0x00FF) as u8;
-                                            o.op_val = Some(OpVal::Val(TokenVal::Val8(val)));
-                                        }
+                                        r = Some(*p);
                                     }
+                                    // Technically not possible as we already validated all labels resolve.
                                     _ => {}
+                                }
+                                if let Some(r) = r {
+                                    #[allow(clippy::cast_possible_wrap)]
+                                    // The actual diff is from the pc following the instruction.
+                                    let diff = (Wrapping(r) - Wrapping(o.pc + 2)).0 as i16;
+                                    if (i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&diff) {
+                                        ok = true;
+                                        // Remove the label ref here and insert the relative offset
+                                        // as the value now. We can blind cast this as we know
+                                        // it's in signed i8 range so bit casting to u8 is fine.
+                                        #[allow(clippy::cast_sign_loss)]
+                                        let val = (diff & 0x00FF) as u8;
+                                        o.op_val = Some(OpVal::Val(TokenVal::Val8(val)));
+                                    }
                                 }
                             }
                             OpVal::Val(t) => {
@@ -979,8 +982,13 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
                 if let Some(val) = &o.op_val {
                     let val = match val {
                         OpVal::Label(s) => {
-                            // Safety: We just checked labels above has everything referenced and filled in.
-                            unsafe { labels.get(s).unwrap_unchecked().unwrap_unchecked() }
+                            if s == "*" {
+                                TokenVal::Val16(o.pc)
+                            } else {
+                                // Safety: We just checked labels above has everything referenced and filled in.
+                                // The one exception is * which we just handled.
+                                unsafe { labels.get(s).unwrap_unchecked().unwrap_unchecked() }
+                            }
                         }
                         OpVal::Val(t) => *t,
                     };
@@ -1013,17 +1021,20 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
 // the label is on.
 fn get_locs(hm: &HashMap<String, Vec<usize>>, k: &String) -> Result<String> {
     if let Some(locs) = hm.get(k) {
-        let vals: Vec<_> = locs.iter().map(|x| format!("{x}")).collect();
-        Ok(vals.join(","))
+        Ok(locs
+            .iter()
+            .map(|x| format!("{x}"))
+            .collect::<Vec<_>>()
+            .join(","))
     } else {
         Err(eyre!("Internal error: can't find locations for label {k}"))
     }
 }
 
-// parse_val returns a parsed TokenVal8/16 or nothing. Set is_u16 to force returning a Val16 always.
+// parse_val returns a parsed TokenVal8/16 or nothing. Set is_u16 to force returning a Val16 always
+// if a value would parse.
 fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
-    let vb = val.as_bytes();
-    let (trimmed, base) = match vb {
+    let (trimmed, base) = match val.as_bytes() {
         // Remove any possibly leading 0x or $. If we did this is also base 16
         // Can index back into val without worry about utf8 since we only matched
         // ascii chars here.
@@ -1038,42 +1049,34 @@ fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
     }
 
     if let Ok(v) = usize::from_str_radix(trimmed, base) {
-        if v > 65535 {
-            None
-        } else if v < 256 && !is_u16 {
-            // Even if we're under 256 this might be something we're
-            // forcing to 16 bit.
-
-            // It's ok, we just range checked it.
+        // All of the casts are ok as we range check before assigning.
+        match v {
+            65536.. => None,
+            0..=255 => {
+                if is_u16 {
+                    #[allow(clippy::cast_possible_truncation)]
+                    Some(TokenVal::Val16(v as u16))
+                } else {
+                    #[allow(clippy::cast_possible_truncation)]
+                    Some(TokenVal::Val8(v as u8))
+                }
+            }
             #[allow(clippy::cast_possible_truncation)]
-            Some(TokenVal::Val8(v as u8))
-        } else {
-            // It's ok, we just range checked it.
-            #[allow(clippy::cast_possible_truncation)]
-            Some(TokenVal::Val16(v as u16))
+            _ => Some(TokenVal::Val16(v as u16)),
         }
     } else {
         None
     }
 }
 
+// parse_label will validate a label is of the right form (letter followed by 0..N letter/number/some punc).
+// NOTE: * is a special case and always allowed.
 fn parse_label(label: &str) -> Result<String> {
-    const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-]+$";
-
     // * is special case where it's always ok
     if label == "*" {
         return Ok(String::from(label));
     }
-    lazy_static! {
-        static ref RE: Regex = {
-            match Regex::new(LABEL) {
-                Ok(re) => re,
-                Err(err) => {
-                    panic!("Error parsing regex {LABEL} - {err}");
-                }
-            }
-        };
-    }
+
     if RE.is_match(label) {
         Ok(String::from(label))
     } else {
@@ -1081,4 +1084,17 @@ fn parse_label(label: &str) -> Result<String> {
             "Error parsing label - {label}. Must be of the form {LABEL}"
         ))
     }
+}
+
+const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-]+$";
+
+lazy_static! {
+    static ref RE: Regex = {
+        match Regex::new(LABEL) {
+            Ok(re) => re,
+            Err(err) => {
+                panic!("Error parsing regex {LABEL} - {err}");
+            }
+        }
+    };
 }
