@@ -28,8 +28,9 @@ fn main() -> Result<()> {
 
     match parse(lines) {
         Err(e) => Err(e),
-        Ok(block) => {
-            write(Path::new(args.output.as_str()), block)?;
+        Ok(res) => {
+            write(Path::new(args.output.as_str()), res.bin)?;
+            print!("{}", res.listing.join(""));
             Ok(())
         }
     }

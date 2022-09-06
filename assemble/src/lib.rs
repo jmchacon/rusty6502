@@ -98,15 +98,28 @@ struct LabelDef {
     refs: Vec<usize>,
 }
 
+/// Assembly defines the output from an assemble pass.
+/// Both a binary image and a listing file are returned.
+pub struct Assembly {
+    /// The binary image. Always 64k to represent a complete
+    /// memory image (often used to simulate a cartridge).
+    pub bin: [u8; 1 << 16],
+    /// A listing file of the translated input.
+    pub listing: Vec<String>,
+}
+
 /// `parse` will take the given filename, read it into RAM
 /// and assemble it into 6502 assembly written back as the 64k
 /// array returned.
 ///
 /// # Errors
 /// Any parsing error of the input stream can be returned in Result.
-pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
+pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
     // Always emit 64k so just allocate a block.
-    let mut block: [u8; 1 << 16] = [0; 1 << 16];
+    let mut res = Assembly {
+        bin: [0; 1 << 16],
+        listing: Vec::new(),
+    };
 
     // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
     // while filling in a label mapping. The 2nd one does actual assembly over
@@ -435,74 +448,6 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
     // The labels map is now complete. Any further references can use get_label and
     // get_label_mut to get references to a LabelDef.
 
-    for (line_num, line) in ast.iter().enumerate() {
-        let mut output = String::new();
-        for (index, t) in line.iter().enumerate() {
-            match t {
-                Token::Label(td) => {
-                    write!(output, "{td} ").unwrap();
-                }
-                Token::Org(pc) => {
-                    write!(output, "ORG {pc:04X}").unwrap();
-                }
-                Token::Equ(td) => {
-                    let ld = get_label(&labels, td);
-                    match ld.val {
-                        Some(TokenVal::Val8(v)) => {
-                            write!(output, "{td} EQU {v:02X}").unwrap();
-                        }
-                        Some(TokenVal::Val16(v)) => {
-                            write!(output, "{td} EQU {v:04X}").unwrap();
-                        }
-                        _ => {
-                            return Err(eyre!(
-                                "Error parsing line {}: can't find EQU label {td} value",
-                                line_num + 1
-                            ));
-                        }
-                    };
-                }
-                Token::Comment(c) => {
-                    if index != 0 {
-                        write!(output, " ").unwrap();
-                    }
-                    write!(output, "{c}").unwrap();
-                }
-                Token::Op(o) => {
-                    let op = &o.op;
-                    let val = if let Some(val) = &o.op_val {
-                        format!("{val}")
-                    } else {
-                        String::from("")
-                    };
-
-                    write!(output, "{op:?}").unwrap();
-                    match o.mode {
-                        AddressMode::Immediate => {
-                            write!(output, " #{val}").unwrap();
-                        }
-                        AddressMode::Indirect => {
-                            write!(output, " ({val})").unwrap();
-                        }
-                        AddressMode::ZeroPageX => {
-                            write!(output, " ({val}),X").unwrap();
-                        }
-                        AddressMode::ZeroPageY => {
-                            write!(output, " ({val},Y)").unwrap();
-                        }
-                        _ => {
-                            if !val.is_empty() {
-                                write!(output, " {val}").unwrap();
-                            }
-                        }
-                    };
-                }
-            }
-        }
-        // If this was a blank line that also auto-parses for output purposes.
-        println!("{output}");
-    }
-
     // Do another run so we can fill in label references. Also compute addressing mode, validate and set pc.
     {
         let mut pc: u16 = 0;
@@ -708,112 +653,194 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<[u8; 1 << 16]> {
     }
 
     for (line_num, line) in ast.iter_mut().enumerate() {
-        for t in line.iter_mut() {
-            if let Token::Op(o) = t {
-                let modes = match resolve_opcode(&o.op, &o.mode) {
-                    Ok(modes) => modes,
-                    Err(err) => {
-                        return Err(eyre!("Internal error on line {}: {err}", line_num + 1));
-                    }
-                };
-                if o.op_val.is_none() && o.mode != AddressMode::Implied {
-                    return Err(eyre!("Internal error on line {}: no op val but not implied instruction for opcode {}", line_num+1, o.op));
+        let mut output = String::new();
+        let mut label_out = String::new();
+        for (index, t) in line.iter_mut().enumerate() {
+            match t {
+                Token::Label(td) => {
+                    write!(label_out, "{td:<8}").unwrap();
                 }
-                if o.mode == AddressMode::Implied && o.width != 1 {
-                    return Err(eyre!("Internal error on line {}: implied mode for opcode {} but width not 1: {o:#?}", line_num+1, o.op));
+                Token::Org(pc) => {
+                    write!(output, "ORG           {pc:04X}").unwrap();
                 }
-
-                // Things are mutable here as we may have to fixup op_val for branches before
-                // emitting bytes below.
-                if o.mode == AddressMode::Relative {
-                    let mut ok = false;
-                    if let Some(v) = &o.op_val {
-                        match v {
-                            OpVal::Label(l) => {
-                                let mut r: Option<u16> = None;
-                                // Handle * usages in branches.
-                                if l == "*" {
-                                    r = Some(o.pc);
-                                }
-                                match get_label(&labels, l).val {
-                                    Some(TokenVal::Val8(_)) => {
-                                        ok = true;
-                                    }
-                                    Some(TokenVal::Val16(p)) => {
-                                        r = Some(p);
-                                    }
-                                    // Technically not possible as we already validated all labels resolve.
-                                    _ => {}
-                                }
-                                if let Some(r) = r {
-                                    #[allow(clippy::cast_possible_wrap)]
-                                    // The actual diff is from the pc following the instruction.
-                                    let diff = (Wrapping(r) - Wrapping(o.pc + 2)).0 as i16;
-                                    if (i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&diff) {
-                                        ok = true;
-                                        // Remove the label ref here and insert the relative offset
-                                        // as the value now. We can blind cast this as we know
-                                        // it's in signed i8 range so bit casting to u8 is fine.
-                                        #[allow(clippy::cast_sign_loss)]
-                                        let val = (diff & 0x00FF) as u8;
-                                        o.op_val = Some(OpVal::Val(TokenVal::Val8(val)));
-                                    }
-                                }
-                            }
-                            OpVal::Val(t) => {
-                                if let TokenVal::Val8(_) = t {
-                                    ok = true;
-                                };
-                            }
-                        };
+                Token::Equ(td) => {
+                    let val: TokenVal;
+                    // Safety: EQU is defined always per above parsing.
+                    unsafe { val = get_label(&labels, td).val.unwrap_unchecked() }
+                    match val {
+                        TokenVal::Val8(v) => {
+                            write!(output, "{td:<13} EQU      {v:02X}").unwrap();
+                        }
+                        TokenVal::Val16(v) => {
+                            write!(output, "{td:<13} EQU      {v:04X}").unwrap();
+                        }
                     };
-                    if !ok {
-                        return Err(eyre!(
+                }
+                Token::Comment(c) => {
+                    if index != 0 {
+                        write!(output, " ").unwrap();
+                    }
+                    write!(output, "{c}").unwrap();
+                }
+                Token::Op(o) => {
+                    let modes = match resolve_opcode(&o.op, &o.mode) {
+                        Ok(modes) => modes,
+                        Err(err) => {
+                            return Err(eyre!("Internal error on line {}: {err}", line_num + 1));
+                        }
+                    };
+                    if o.op_val.is_none() && o.mode != AddressMode::Implied {
+                        return Err(eyre!("Internal error on line {}: no op val but not implied instruction for opcode {}", line_num+1, o.op));
+                    }
+                    if o.mode == AddressMode::Implied && o.width != 1 {
+                        return Err(eyre!("Internal error on line {}: implied mode for opcode {} but width not 1: {o:#?}", line_num+1, o.op));
+                    }
+
+                    // Things are mutable here as we may have to fixup op_val for branches before
+                    // emitting bytes below.
+                    if o.mode == AddressMode::Relative {
+                        let mut ok = false;
+                        if let Some(v) = &o.op_val {
+                            match v {
+                                OpVal::Label(l) => {
+                                    let mut r: Option<u16> = None;
+                                    // Handle * usages in branches.
+                                    if l == "*" {
+                                        r = Some(o.pc);
+                                    }
+                                    match get_label(&labels, l).val {
+                                        Some(TokenVal::Val8(_)) => {
+                                            ok = true;
+                                        }
+                                        Some(TokenVal::Val16(p)) => {
+                                            r = Some(p);
+                                        }
+                                        // Technically not possible as we already validated all labels resolve.
+                                        _ => {}
+                                    }
+                                    if let Some(r) = r {
+                                        #[allow(clippy::cast_possible_wrap)]
+                                        // The actual diff is from the pc following the instruction.
+                                        let diff = (Wrapping(r) - Wrapping(o.pc + 2)).0 as i16;
+                                        if (i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&diff)
+                                        {
+                                            ok = true;
+                                            // Remove the label ref here and insert the relative offset
+                                            // as the value now. We can blind cast this as we know
+                                            // it's in signed i8 range so bit casting to u8 is fine.
+                                            #[allow(clippy::cast_sign_loss)]
+                                            let val = (diff & 0x00FF) as u8;
+                                            o.op_val = Some(OpVal::Val(TokenVal::Val8(val)));
+                                        }
+                                    }
+                                }
+                                OpVal::Val(t) => {
+                                    if let TokenVal::Val8(_) = t {
+                                        ok = true;
+                                    };
+                                }
+                            };
+                        };
+                        if !ok {
+                            return Err(eyre!(
                             "Error parsing line {}: either not 8 bit or out of range for relative instruction",
                             line_num + 1
                         ));
+                        }
                     }
-                }
 
-                // Grab the first entry in the bytes vec for the opcode value.
-                // TODO: If > 1 pick one randomly.
-                block[usize::from(o.pc)] = modes[0];
-                if let Some(val) = &o.op_val {
-                    let val = match val {
-                        OpVal::Label(s) => {
-                            if s == "*" {
-                                TokenVal::Val16(o.pc)
-                            } else {
-                                // Safety: We just checked labels above has everything referenced and filled in.
-                                // The one exception is * which we just handled.
-                                unsafe { get_label(&labels, s).val.unwrap_unchecked() }
+                    // Grab the first entry in the bytes vec for the opcode value.
+                    // TODO: If > 1 pick one randomly.
+                    res.bin[usize::from(o.pc)] = modes[0];
+                    if label_out.is_empty() {
+                        label_out = String::from("        ");
+                    }
+                    if let Some(val) = &o.op_val {
+                        let val = match val {
+                            OpVal::Label(s) => {
+                                if s == "*" {
+                                    TokenVal::Val16(o.pc)
+                                } else {
+                                    // Safety: We just checked labels above has everything referenced and filled in.
+                                    // The one exception is * which we just handled.
+                                    unsafe { get_label(&labels, s).val.unwrap_unchecked() }
+                                }
                             }
-                        }
-                        OpVal::Val(t) => *t,
-                    };
-                    match val {
-                        TokenVal::Val8(b) => {
-                            if o.width != 2 {
-                                return Err(eyre!("Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode));
+                            OpVal::Val(t) => *t,
+                        };
+                        match val {
+                            TokenVal::Val8(b) => {
+                                if o.width != 2 {
+                                    return Err(eyre!("Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode));
+                                }
+                                res.bin[usize::from(o.pc + 1)] = b;
+                                write!(
+                                    output,
+                                    "{:04X} {:02X} {b:02X}    {label_out} ",
+                                    o.pc, modes[0]
+                                )
+                                .unwrap();
                             }
-                            block[usize::from(o.pc + 1)] = b;
-                        }
-                        TokenVal::Val16(b) => {
-                            if o.width != 3 {
-                                return Err(eyre!("Internal error on line {}: got 16 bit value and expect 8 bit for op {} and mode {}", line_num+1, o.op, o.mode));
+                            TokenVal::Val16(b) => {
+                                if o.width != 3 {
+                                    return Err(eyre!("Internal error on line {}: got 16 bit value and expect 8 bit for op {} and mode {}", line_num+1, o.op, o.mode));
+                                }
+                                // Store 16 bit values in little endian.
+                                let low = (b & 0x00FF) as u8;
+                                let high = ((b & 0xFF00) >> 8) as u8;
+                                res.bin[usize::from(o.pc + 1)] = low;
+                                res.bin[usize::from(o.pc + 2)] = high;
+                                write!(
+                                    output,
+                                    "{:04X} {:02X} {low:02X} {high:02X} {label_out} ",
+                                    o.pc, modes[0]
+                                )
+                                .unwrap();
                             }
-                            // Store 16 bit values in little endian.
-                            let low = (b & 0x00FF) as u8;
-                            let high = ((b & 0xFF00) >> 8) as u8;
-                            block[usize::from(o.pc + 1)] = low;
-                            block[usize::from(o.pc + 2)] = high;
-                        }
-                    };
+                        };
+                        let op = &o.op;
+                        let val = if let Some(val) = &o.op_val {
+                            format!("{val}")
+                        } else {
+                            String::from("")
+                        };
+
+                        write!(output, "{op:?}").unwrap();
+                        match o.mode {
+                            AddressMode::Immediate => {
+                                write!(output, " #{val}").unwrap();
+                            }
+                            AddressMode::Indirect => {
+                                write!(output, " ({val})").unwrap();
+                            }
+                            AddressMode::ZeroPageX => {
+                                write!(output, " ({val}),X").unwrap();
+                            }
+                            AddressMode::ZeroPageY => {
+                                write!(output, " ({val},Y)").unwrap();
+                            }
+                            _ => {
+                                if !val.is_empty() {
+                                    write!(output, " {val}").unwrap();
+                                }
+                            }
+                        };
+                    } else {
+                        write!(
+                            output,
+                            "{:04X} {:02X}       {label_out} {:?}",
+                            o.pc, modes[0], o.op
+                        )
+                        .unwrap();
+                    }
                 }
             }
         }
+        // If this was a blank line that also auto-parses for output purposes.
+        write!(output, "\n").unwrap();
+        res.listing.push(output);
     }
-    Ok(block)
+    Ok(res)
 }
 
 // Given a labels map (label->LabelDef) return the labeldef directly w/o checking.
