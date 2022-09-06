@@ -837,7 +837,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
             }
         }
         // If this was a blank line that also auto-parses for output purposes.
-        write!(output, "\n").unwrap();
+        writeln!(output).unwrap();
         res.listing.push(output);
     }
     Ok(res)
