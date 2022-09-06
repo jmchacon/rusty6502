@@ -6,10 +6,11 @@ mod lookup;
 pub use crate::lookup::*;
 
 /// `AddressMode` defines the 6502 addressing modes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumString)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, EnumString)]
 pub enum AddressMode {
     /// `Immediate` mode uses the constant following the opcode to perform the operation.
     /// Example: LDA #04 loads 0x04 into A.
+    #[default]
     Immediate,
 
     /// `ZeroPage` references the first 256 bytes.
@@ -81,7 +82,7 @@ pub enum AddressMode {
 // http://obelisk.me.uk/6502/reference.html
 
 /// `Opcode` defines all the unique 6502 opcodes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, EnumIter, EnumString)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, EnumIter, EnumString)]
 pub enum Opcode {
     /// Add with Carry A with the value at the operand address.
     #[strum(ascii_case_insensitive)]
@@ -145,6 +146,7 @@ pub enum Opcode {
 
     /// Break execution. Same as an IRQ but software defined. B bit is set in P on stack to indicate source.
     #[strum(ascii_case_insensitive)]
+    #[default]
     BRK,
 
     /// Branch if overflow (V) is clear.
