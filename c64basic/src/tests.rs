@@ -2,8 +2,10 @@
 mod tests {
     use super::super::{list, BASIC_LOAD_ADDR};
     use rusty6502::prelude::*;
+    use std::error::Error;
     use std::fmt::Write as _;
     use std::fs::read;
+    use std::num::Wrapping;
     use std::path::Path;
 
     macro_rules! list_test {
@@ -27,7 +29,7 @@ mod tests {
 
                         let bytes = read(Path::new("../testdata/").join($file)).unwrap_or_else(|_| panic!("can't read file: {}", $file));
 
-                        assert!(bytes[0] == (BASIC_LOAD_ADDR&0xFF) as u8 && bytes[1] == ((BASIC_LOAD_ADDR >> 8)&0xFF) as u8, "{} doesn't appear to be a valid Basic PRG file. Start address not 0x0801 but: 0x{:02X}{:02X}", $file, bytes[1], bytes[0]);
+                        assert!(bytes[0] == (BASIC_LOAD_ADDR&0xFF) as u8 && bytes[1] == ((BASIC_LOAD_ADDR >> 8)&0xFF) as u8, "{} doesn't appear to be a valid Basic PRG file. Start address not 0x0801 but: {:#04X}{:02X}", $file, bytes[1], bytes[0]);
 
                         // Copy the program into place.
                         for i in 2..bytes.len() {
@@ -56,6 +58,8 @@ mod tests {
         }
     }
 
+    // These tests are images we use in cpu testing but they are c64 PRG files so
+    // also work for basic sanity checking here.
     list_test!(
         list_tests,
         dadc: "dadc.prg",
@@ -67,4 +71,42 @@ mod tests {
         sbx: "sbx.prg",
         vsbx: "vsbx.prg",
     );
+
+    #[test]
+    fn bad_token() -> Result<(), Box<dyn Error>> {
+        // This should halt the cpu if a test goes off the rails.
+        let mut r = FlatRAM::new().vectors(Vectors {
+            nmi: 0x0202,
+            reset: 0x1FFe,
+            irq: 0xD001,
+        });
+        r.power_on();
+
+        // Create a single line which is
+        // 10 ILLEGAL_OPCODE
+
+        // NOTE: All address/line numbers are in little endian.
+
+        // Next PC
+        r.write(BASIC_LOAD_ADDR, 0x07);
+        r.write(BASIC_LOAD_ADDR + 1, 0x08);
+
+        // Line number
+        r.write(BASIC_LOAD_ADDR + 2, 0x0A);
+        r.write(BASIC_LOAD_ADDR + 3, 0x00);
+
+        // Operation
+        r.write(BASIC_LOAD_ADDR + 4, 0xCC);
+
+        // NUL for end of line
+        r.write(BASIC_LOAD_ADDR + 5, 0x00);
+
+        // Next PC which is 0x0000 indicating done.
+        r.write(BASIC_LOAD_ADDR + 6, 0x00);
+        r.write(BASIC_LOAD_ADDR + 7, 0x00);
+
+        let res = list(Wrapping(BASIC_LOAD_ADDR), &r);
+        assert!(res.is_err());
+        Ok(())
+    }
 }
