@@ -105,12 +105,12 @@ pub struct Assembly {
     /// memory image (often used to simulate a cartridge).
     pub bin: [u8; 1 << 16],
     /// A listing file of the translated input.
-    pub listing: Vec<String>,
+    pub listing: String,
 }
 
 /// `parse` will take the given filename, read it into RAM
 /// and assemble it into 6502 assembly written back as the 64k
-/// array returned.
+/// array returned along with a listing file.
 ///
 /// # Errors
 /// Any parsing error of the input stream can be returned in Result.
@@ -118,7 +118,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
     // Always emit 64k so just allocate a block.
     let mut res = Assembly {
         bin: [0; 1 << 16],
-        listing: Vec::new(),
+        listing: String::new(),
     };
 
     // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
@@ -837,8 +837,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
             }
         }
         // If this was a blank line that also auto-parses for output purposes.
-        writeln!(output).unwrap();
-        res.listing.push(output);
+        writeln!(res.listing, "{output}").unwrap();
     }
     Ok(res)
 }

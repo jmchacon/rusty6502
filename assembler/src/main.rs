@@ -30,7 +30,7 @@ fn main() -> Result<()> {
         Err(e) => Err(e),
         Ok(res) => {
             write(Path::new(args.output.as_str()), res.bin)?;
-            print!("{}", res.listing.join(""));
+            print!("{}", res.listing);
             Ok(())
         }
     }
