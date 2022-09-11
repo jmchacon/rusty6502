@@ -1,12 +1,11 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
-use std::fmt;
-use strum_macros::{EnumIter, EnumString};
+use strum_macros::{Display, EnumIter, EnumString};
 
 mod lookup;
 pub use crate::lookup::*;
 
 /// `AddressMode` defines the 6502 addressing modes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, EnumString)]
+#[derive(Clone, Copy, Display, Debug, Default, PartialEq, Eq, Hash, EnumString)]
 pub enum AddressMode {
     /// `Immediate` mode uses the constant following the opcode to perform the operation.
     /// Example: LDA #04 loads 0x04 into A.
@@ -82,7 +81,7 @@ pub enum AddressMode {
 // http://obelisk.me.uk/6502/reference.html
 
 /// `Opcode` defines all the unique 6502 opcodes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, EnumIter, EnumString)]
+#[derive(Clone, Copy, Debug, Display, Default, PartialEq, Eq, Hash, EnumIter, EnumString)]
 #[strum(ascii_case_insensitive)]
 pub enum Opcode {
     /// Add with Carry A with the value at the operand address.
@@ -327,18 +326,6 @@ pub struct Operation {
     pub op: Opcode,
     /// AddressMode is a valid addressing mode for this opcode such as Absolute.
     pub mode: AddressMode,
-}
-
-impl fmt::Display for Opcode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl fmt::Display for AddressMode {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
 }
 
 /// `NMI_VECTOR` is the location in memory the 6502 uses for NMI interrupts.
