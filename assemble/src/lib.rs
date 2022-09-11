@@ -108,27 +108,20 @@ pub struct Assembly {
     pub listing: String,
 }
 
-/// `parse` will take the given filename, read it into RAM
-/// and assemble it into 6502 assembly written back as the 64k
-/// array returned along with a listing file.
-///
-/// # Errors
-/// Any parsing error of the input stream can be returned in Result.
-pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
-    // Always emit 64k so just allocate a block.
-    let mut res = Assembly {
-        bin: [0; 1 << 16],
-        listing: String::new(),
+struct ASTOutput {
+    ast: Vec<Vec<Token>>,
+    labels: HashMap<String, LabelDef>,
+}
+
+// pass1 does the initial AST build for the input given.
+// It will compute an AST from the file reader along with a label map
+// that has references to both fully defined labels (EQU) and references
+// to location labels (either defs or refs).
+fn pass1(lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
+    let mut ret = ASTOutput {
+        ast: Vec::<Vec<Token>>::new(),
+        labels: HashMap::new(),
     };
-
-    // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
-    // while filling in a label mapping. The 2nd one does actual assembly over
-    // the tokens with labels getting filled in from the map or computed as needed.
-
-    // Pass one, read over the file line by line generating a set of tokens per line
-    // for our AST.
-    let mut ast = Vec::<Vec<Token>>::new();
-    let mut labels: HashMap<String, LabelDef> = HashMap::new();
 
     for (line_num, line) in lines.flatten().enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
@@ -188,7 +181,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                         // into tokens. Phase 2 will figure out its value.
                         _ => match Opcode::from_str(upper.as_str()) {
                             Ok(op) => {
-                                if let Some(ld) = labels.get_mut(&label) {
+                                if let Some(ld) = ret.labels.get_mut(&label) {
                                     // Could be a reference created this so there's no line number. If there is one this is a duplicate.
                                     if ld.line != 0 {
                                         return Err(eyre!("Error parsing line {}: can't redefine location label {label}. Already defined at line {} - {line}", line_num+1, ld.line));
@@ -197,7 +190,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                                 } else {
                                     // Don't have to validate label since State::Begin did it above before
                                     // progressing here.
-                                    labels.insert(
+                                    ret.labels.insert(
                                         label.clone(),
                                         LabelDef {
                                             val: None,
@@ -267,7 +260,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                             ));
                         }
                     };
-                    if let Some(ld) = labels.get_mut(&label) {
+                    if let Some(ld) = ret.labels.get_mut(&label) {
                         // Could be a reference created this so there's no line number. If there is one this is a duplicate.
                         if ld.line != 0 {
                             return Err(eyre!("Error parsing line {}: can't redefine EQU label {label}. Already defined at line {} - {line}", line_num+1, ld.line));
@@ -277,7 +270,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                     } else {
                         // Don't have to validate label since State::Begin did it above before
                         // progressing here.
-                        labels.insert(
+                        ret.labels.insert(
                             label.clone(),
                             LabelDef {
                                 val: Some(val),
@@ -390,12 +383,12 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                             }
                             None => match parse_label(op_val) {
                                 Ok(label) => {
-                                    if let Some(ld) = labels.get_mut(&label) {
+                                    if let Some(ld) = ret.labels.get_mut(&label) {
                                         ld.refs.push(line_num + 1);
                                     } else {
                                         // If this is the first mention of this label we'll have to create a placeholder
                                         // definition.
-                                        labels.insert(
+                                        ret.labels.insert(
                                             label.clone(),
                                             LabelDef {
                                                 val: None,
@@ -442,32 +435,95 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                 ));
             }
         };
-        ast.push(l);
+        ret.ast.push(l);
     }
+    Ok(ret)
+}
 
-    // The labels map is now complete. Any further references can use get_label and
-    // get_label_mut to get references to a LabelDef.
-
-    // Do another run so we can fill in label references. Also compute addressing mode, validate and set pc.
-    {
-        let mut pc: u16 = 0;
-        for (line_num, line) in ast.iter_mut().enumerate() {
-            for t in line.iter_mut() {
-                match t {
-                    Token::Label(s) => {
-                        // A left side label is the PC value.
-                        get_label_mut(&mut labels, s).val = Some(TokenVal::Val16(pc));
+fn compute_refs(ast_output: &mut ASTOutput) -> Result<()> {
+    let mut pc: u16 = 0;
+    for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
+        for t in line.iter_mut() {
+            match t {
+                Token::Label(s) => {
+                    // A left side label is the PC value.
+                    get_label_mut(&mut ast_output.labels, s).val = Some(TokenVal::Val16(pc));
+                }
+                Token::Org(npc) => {
+                    pc = *npc;
+                }
+                Token::Equ(_) | Token::Comment(_) => {}
+                Token::Op(o) => {
+                    let op = &o.op;
+                    let width: u16;
+                    if o.mode != AddressMode::Implied {
+                        // Implied gets handled in the match as it could resolve
+                        // into another mode.
+                        if resolve_opcode(op, &o.mode).is_err() {
+                            return Err(eyre!(
+                                "Error parsing line {}: opcode {op} doesn't support mode {}",
+                                line_num + 1,
+                                o.mode
+                            ));
+                        }
                     }
-                    Token::Org(npc) => {
-                        pc = *npc;
-                    }
-                    Token::Equ(_) | Token::Comment(_) => {}
-                    Token::Op(o) => {
-                        let op = &o.op;
-                        let width: u16;
-                        if o.mode != AddressMode::Implied {
-                            // Implied gets handled in the match as it could resolve
-                            // into another mode.
+                    match o.mode {
+                        AddressMode::Implied => {
+                            // Check the operand and if there is one it means
+                            // this isn't Implied and we need to use this to compute either ZeroPage or Absolute
+                            match &o.op_val {
+                                Some(OpVal::Label(l)) => {
+                                    let ld = get_label(&ast_output.labels, l);
+                                    if let Some(TokenVal::Val8(_)) = ld.val {
+                                        match (o.x_index, o.y_index) {
+                                            (true, false) => {
+                                                o.mode = AddressMode::ZeroPageX;
+                                            }
+                                            (false, true) => {
+                                                o.mode = AddressMode::ZeroPageY;
+                                            }
+                                            (false, false) => {
+                                                o.mode = AddressMode::ZeroPage;
+                                            }
+                                            (true, true) => {
+                                                return Err(eyre!("Error parsing line {}: can't have both x and y index", line_num+1));
+                                            }
+                                        }
+                                        width = 2;
+                                    } else {
+                                        // Anything else is either 16 bit or a label we don't know which
+                                        // also must be 16 bit at this point.
+                                        match (o.x_index, o.y_index) {
+                                            (true, false) => {
+                                                o.mode = AddressMode::AbsoluteX;
+                                            }
+                                            (false, true) => {
+                                                o.mode = AddressMode::AbsoluteY;
+                                            }
+                                            (false, false) => {
+                                                o.mode = AddressMode::Absolute;
+                                            }
+                                            (true, true) => {
+                                                return Err(eyre!("Error parsing line {}: can't have both x and y index", line_num+1));
+                                            }
+                                        };
+                                        width = 3;
+                                    }
+                                }
+                                Some(OpVal::Val(TokenVal::Val8(_))) => {
+                                    o.mode = AddressMode::ZeroPage;
+                                    width = 2;
+                                }
+                                Some(OpVal::Val(TokenVal::Val16(_))) => {
+                                    o.mode = AddressMode::Absolute;
+                                    width = 3;
+                                }
+                                None => {
+                                    width = 1;
+                                }
+                            };
+                            // Check mode here since it was either implied, ZP, or Absolute and didn't get
+                            // checked yet for this opcode.
                             if resolve_opcode(op, &o.mode).is_err() {
                                 return Err(eyre!(
                                     "Error parsing line {}: opcode {op} doesn't support mode {}",
@@ -476,183 +532,105 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                                 ));
                             }
                         }
-                        match o.mode {
-                            AddressMode::Implied => {
-                                // Check the operand and if there is one it means
-                                // this isn't Implied and we need to use this to compute either ZeroPage or Absolute
-                                match &o.op_val {
-                                    Some(OpVal::Label(l)) => {
-                                        let ld = get_label(&labels, l);
-                                        if let Some(TokenVal::Val8(_)) = ld.val {
-                                            match (o.x_index, o.y_index) {
-                                                (true, false) => {
-                                                    o.mode = AddressMode::ZeroPageX;
-                                                }
-                                                (false, true) => {
-                                                    o.mode = AddressMode::ZeroPageY;
-                                                }
-                                                (false, false) => {
-                                                    o.mode = AddressMode::ZeroPage;
-                                                }
-                                                (true, true) => {
-                                                    return Err(eyre!("Error parsing line {}: can't have both x and y index", line_num+1));
-                                                }
-                                            }
-                                            width = 2;
-                                        } else {
-                                            // Anything else is either 16 bit or a label we don't know which
-                                            // also must be 16 bit at this point.
-                                            match (o.x_index, o.y_index) {
-                                                (true, false) => {
-                                                    o.mode = AddressMode::AbsoluteX;
-                                                }
-                                                (false, true) => {
-                                                    o.mode = AddressMode::AbsoluteY;
-                                                }
-                                                (false, false) => {
-                                                    o.mode = AddressMode::Absolute;
-                                                }
-                                                (true, true) => {
-                                                    return Err(eyre!("Error parsing line {}: can't have both x and y index", line_num+1));
-                                                }
-                                            };
-                                            width = 3;
+                        AddressMode::Immediate
+                        | AddressMode::ZeroPage
+                        | AddressMode::ZeroPageX
+                        | AddressMode::ZeroPageY
+                        | AddressMode::IndirectX
+                        | AddressMode::IndirectY => {
+                            let mut ok = false;
+                            width = 2;
+                            if let Some(v) = &o.op_val {
+                                match v {
+                                    OpVal::Label(l) => {
+                                        if let Some(TokenVal::Val8(_)) =
+                                            get_label(&ast_output.labels, l).val
+                                        {
+                                            ok = true;
                                         }
                                     }
-                                    Some(OpVal::Val(TokenVal::Val8(_))) => {
-                                        o.mode = AddressMode::ZeroPage;
-                                        width = 2;
-                                    }
-                                    Some(OpVal::Val(TokenVal::Val16(_))) => {
-                                        o.mode = AddressMode::Absolute;
-                                        width = 3;
-                                    }
-                                    None => {
-                                        width = 1;
+                                    OpVal::Val(t) => {
+                                        if let TokenVal::Val8(_) = t {
+                                            ok = true;
+                                        };
                                     }
                                 };
-                                // Check mode here since it was either implied, ZP, or Absolute and didn't get
-                                // checked yet for this opcode.
-                                if resolve_opcode(op, &o.mode).is_err() {
-                                    return Err(eyre!(
-                                    "Error parsing line {}: opcode {op} doesn't support mode {}",
+                            }
+                            if !ok {
+                                return Err(eyre!(
+                                    "Error parsing line {}: {} must have an 8 bit arg",
                                     line_num + 1,
                                     o.mode
                                 ));
-                                }
                             }
-                            AddressMode::Immediate
-                            | AddressMode::ZeroPage
-                            | AddressMode::ZeroPageX
-                            | AddressMode::ZeroPageY
-                            | AddressMode::IndirectX
-                            | AddressMode::IndirectY => {
-                                let mut ok = false;
-                                width = 2;
-                                if let Some(v) = &o.op_val {
-                                    match v {
-                                        OpVal::Label(l) => {
-                                            if let Some(TokenVal::Val8(_)) =
-                                                get_label(&labels, l).val
-                                            {
-                                                ok = true;
-                                            }
-                                        }
-                                        OpVal::Val(t) => {
-                                            if let TokenVal::Val8(_) = t {
-                                                ok = true;
-                                            };
-                                        }
-                                    };
-                                }
-                                if !ok {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: {} must have an 8 bit arg",
-                                        line_num + 1,
-                                        o.mode
-                                    ));
-                                }
-                            }
-                            AddressMode::Absolute
-                            | AddressMode::AbsoluteX
-                            | AddressMode::AbsoluteY
-                            | AddressMode::Indirect => {
-                                let mut ok = false;
-                                if let Some(v) = &o.op_val {
-                                    match v {
-                                        OpVal::Label(l) => {
-                                            if let Some(TokenVal::Val16(_)) =
-                                                get_label(&labels, l).val
-                                            {
-                                                ok = true;
-                                            }
-                                            // location ref which must be 16 bit.
-                                            if get_label(&labels, l).val.is_none() {
-                                                ok = true;
-                                            }
-                                        }
-                                        OpVal::Val(t) => {
-                                            if let TokenVal::Val16(_) = t {
-                                                ok = true;
-                                            };
-                                        }
-                                    };
-                                };
-                                if !ok {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: {} must have a 16 bit arg",
-                                        line_num + 1,
-                                        o.mode
-                                    ));
-                                }
-                                width = 3;
-                            }
-                            AddressMode::Relative => {
-                                // We just add width here. In byte emission below it'll compute and validate
-                                // the actual offset. This is due to forward label refs. i.e. BEQ DONE before DONE
-                                // has been processed so we don't know the PC value yet but will below.
-                                width = 2;
-                            }
-                        };
-
-                        if !(1..=3).contains(&width) {
-                            return Err(eyre!(
-                                "Internal error. Width {width} invalid for {o:#?} on line {}",
-                                line_num + 1
-                            ));
                         }
-                        o.pc = pc;
-                        o.width = width;
-                        pc += width;
-                        continue;
+                        AddressMode::Absolute
+                        | AddressMode::AbsoluteX
+                        | AddressMode::AbsoluteY
+                        | AddressMode::Indirect => {
+                            let mut ok = false;
+                            if let Some(v) = &o.op_val {
+                                match v {
+                                    OpVal::Label(l) => {
+                                        if let Some(TokenVal::Val16(_)) =
+                                            get_label(&ast_output.labels, l).val
+                                        {
+                                            ok = true;
+                                        }
+                                        // location ref which must be 16 bit.
+                                        if get_label(&ast_output.labels, l).val.is_none() {
+                                            ok = true;
+                                        }
+                                    }
+                                    OpVal::Val(t) => {
+                                        if let TokenVal::Val16(_) = t {
+                                            ok = true;
+                                        };
+                                    }
+                                };
+                            };
+                            if !ok {
+                                return Err(eyre!(
+                                    "Error parsing line {}: {} must have a 16 bit arg",
+                                    line_num + 1,
+                                    o.mode
+                                ));
+                            }
+                            width = 3;
+                        }
+                        AddressMode::Relative => {
+                            // We just add width here. In byte emission below it'll compute and validate
+                            // the actual offset. This is due to forward label refs. i.e. BEQ DONE before DONE
+                            // has been processed so we don't know the PC value yet but will below.
+                            width = 2;
+                        }
+                    };
+
+                    if !(1..=3).contains(&width) {
+                        return Err(eyre!(
+                            "Internal error. Width {width} invalid for {o:#?} on line {}",
+                            line_num + 1
+                        ));
                     }
-                };
-            }
+                    o.pc = pc;
+                    o.width = width;
+                    pc += width;
+                    continue;
+                }
+            };
         }
     }
+    Ok(())
+}
 
-    // Verify all the labels defined got values (EQU and location definitions/references line up)
-    let mut errors = String::new();
-    for (l, ld) in &labels {
-        let locs = ld
-            .refs
-            .iter()
-            .map(|x| format!("{x}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        if ld.line == 0 || ld.val.is_none() {
-            writeln!(
-                errors,
-                "Parsing error: Label {l} was never defined. Located on lines {locs}"
-            )
-            .unwrap();
-        }
-    }
-    if !errors.is_empty() {
-        return Err(eyre!(errors));
-    }
+fn generate_output(ast_output: &mut ASTOutput) -> Result<Assembly> {
+    // Always emit 64k so just allocate a block.
+    let mut res = Assembly {
+        bin: [0; 1 << 16],
+        listing: String::new(),
+    };
 
-    for (line_num, line) in ast.iter_mut().enumerate() {
+    for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
         let mut output = String::new();
         let mut label_out = String::new();
         for (index, t) in line.iter_mut().enumerate() {
@@ -666,7 +644,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                 Token::Equ(td) => {
                     let val: TokenVal;
                     // Safety: EQU is defined always per above parsing.
-                    unsafe { val = get_label(&labels, td).val.unwrap_unchecked() }
+                    unsafe { val = get_label(&ast_output.labels, td).val.unwrap_unchecked() }
                     match val {
                         TokenVal::Val8(v) => {
                             write!(output, "{td:<13} EQU      {v:02X}").unwrap();
@@ -708,7 +686,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                                     if l == "*" {
                                         r = Some(o.pc);
                                     }
-                                    match get_label(&labels, l).val {
+                                    match get_label(&ast_output.labels, l).val {
                                         Some(TokenVal::Val8(_)) => {
                                             ok = true;
                                         }
@@ -763,7 +741,9 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
                                 } else {
                                     // Safety: We just checked labels above has everything referenced and filled in.
                                     // The one exception is * which we just handled.
-                                    unsafe { get_label(&labels, s).val.unwrap_unchecked() }
+                                    unsafe {
+                                        get_label(&ast_output.labels, s).val.unwrap_unchecked()
+                                    }
                                 }
                             }
                             OpVal::Val(t) => *t,
@@ -840,6 +820,51 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
         writeln!(res.listing, "{output}").unwrap();
     }
     Ok(res)
+}
+
+/// `parse` will take the given filename, read it into RAM
+/// and assemble it into 6502 assembly written back as the 64k
+/// array returned along with a listing file.
+///
+/// # Errors
+/// Any parsing error of the input stream can be returned in Result.
+pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
+    // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
+    // while filling in a label mapping. The 2nd one does actual assembly over
+    // the tokens with labels getting filled in from the map or computed as needed.
+
+    // Pass one, read over the file line by line generating a set of tokens per line
+    // for our AST. The labels map that comes back is complete so referencing keys
+    // we lookup in later passes can use get_label to resolve them.
+    let mut ast_output = pass1(lines)?;
+    //    let (mut ast, mut labels) = pass1(lines)?;
+
+    // Do another run so we can fill in label references. Also compute addressing mode, validate and set pc.
+    compute_refs(&mut ast_output)?;
+
+    // Verify all the labels defined got values (EQU and location definitions/references line up)
+    let mut errors = String::new();
+    for (l, ld) in &ast_output.labels {
+        let locs = ld
+            .refs
+            .iter()
+            .map(|x| format!("{x}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        if ld.line == 0 || ld.val.is_none() {
+            writeln!(
+                errors,
+                "Parsing error: Label {l} was never defined. Located on lines {locs}"
+            )
+            .unwrap();
+        }
+    }
+    if !errors.is_empty() {
+        return Err(eyre!(errors));
+    }
+
+    // Finally generate the output
+    generate_output(&mut ast_output)
 }
 
 // Given a labels map (label->LabelDef) return the labeldef directly w/o checking.
