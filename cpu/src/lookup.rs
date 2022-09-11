@@ -9,612 +9,531 @@ lazy_static! {
     // This is a vector since NOP, HLT and a few others duplicate address mode and can do the same thing from N values.
     // An assembler should simply use the first value of each Vec unless they want to randomly chose.
     static ref OPCODES: HashMap<Opcode, HashMap<AddressMode, Vec<u8>>> = {
-        let mut m = HashMap::new();
-
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x8B];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0x6D];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x7D];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x79];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x69];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0x61];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x71];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x65];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x75];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::ADC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x9F];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x93];
-        hm.insert(AddressMode::IndirectY, v);
-        m.insert(Opcode::AHX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x4B];
-        hm.insert(AddressMode::Immediate, v);
-        m.insert(Opcode::ALR, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x0B, 0x2B];
-        hm.insert(AddressMode::Immediate, v);
-        m.insert(Opcode::ANC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x2D];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x3D];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x39];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x29];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0x21];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x31];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x25];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x35];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::AND, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x6B];
-        hm.insert(AddressMode::Immediate, v);
-        m.insert(Opcode::ARR, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x0E];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x1E];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x0A];
-        hm.insert(AddressMode::Implied, v);
-        let v: Vec<u8> = vec![0x06];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x16];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::ASL, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xCB];
-        hm.insert(AddressMode::Immediate, v);
-        m.insert(Opcode::AXS, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x90];
-        hm.insert(AddressMode::Relative, v);
-        m.insert(Opcode::BCC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xB0];
-        hm.insert(AddressMode::Relative, v);
-        m.insert(Opcode::BCS, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xF0];
-        hm.insert(AddressMode::Relative, v);
-        m.insert(Opcode::BEQ, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x2C];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x24];
-        hm.insert(AddressMode::ZeroPage, v);
-        m.insert(Opcode::BIT, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x30];
-        hm.insert(AddressMode::Relative, v);
-        m.insert(Opcode::BMI, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xD0];
-        hm.insert(AddressMode::Relative, v);
-        m.insert(Opcode::BNE, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x10];
-        hm.insert(AddressMode::Relative, v);
-        m.insert(Opcode::BPL, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x00];
-        hm.insert(AddressMode::Immediate, v);
-        m.insert(Opcode::BRK, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x50];
-        hm.insert(AddressMode::Relative, v);
-        m.insert(Opcode::BVC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x70];
-        hm.insert(AddressMode::Relative, v);
-        m.insert(Opcode::BVS, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x18];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::CLC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xD8];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::CLD, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x58];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::CLI, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xB8];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::CLV, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xCD];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xDD];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0xD9];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0xC9];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0xC1];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0xD1];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0xC5];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xD5];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::CMP, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xEC];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xE0];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0xE4];
-        hm.insert(AddressMode::ZeroPage, v);
-        m.insert(Opcode::CPX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xCC];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xC0];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0xC4];
-        hm.insert(AddressMode::ZeroPage, v);
-        m.insert(Opcode::CPY, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xCF];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xDF];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0xDB];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0xC3];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0xD3];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0xC7];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xD7];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::DCP, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xCE];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xDE];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0xC6];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xD6];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::DEC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xCA];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::DEX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x88];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::DEY, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x4D];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x5D];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x59];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x49];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0x41];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x51];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x45];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x55];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::EOR, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::HLT, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xEE];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xFE];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0xE6];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xF6];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::INC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xE8];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::INX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xC8];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::INY, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xEF];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xFF];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0xFB];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0xE3];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0xF3];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0xE7];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xF7];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::ISC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x4C];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x6C];
-        hm.insert(AddressMode::Indirect, v);
-        m.insert(Opcode::JMP, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x20];
-        hm.insert(AddressMode::Absolute, v);
-        m.insert(Opcode::JSR, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xBB];
-        hm.insert(AddressMode::AbsoluteY, v);
-        m.insert(Opcode::LAS, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xAF];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xBF];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0xA3];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0xB3];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0xA7];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xB7];
-        hm.insert(AddressMode::ZeroPageY, v);
-        m.insert(Opcode::LAX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xAD];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xBD];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0xB9];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0xA9];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0xA1];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0xB1];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0xA5];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xB5];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::LDA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xAE];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xBE];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0xA2];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0xA6];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xB6];
-        hm.insert(AddressMode::ZeroPageY, v);
-        m.insert(Opcode::LDX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xAC];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xBC];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0xA0];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0xA4];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xB4];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::LDY, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x4E];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x5E];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x4A];
-        hm.insert(AddressMode::Implied, v);
-        let v: Vec<u8> = vec![0x46];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x56];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::LSR, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x0C];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x80, 0x82, 0x89, 0xC2, 0xE2];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0x1A, 0x3A, 0x5A, 0x7A, 0xDA, 0xEA, 0xFA];
-        hm.insert(AddressMode::Implied, v);
-        let v: Vec<u8> = vec![0x04, 0x44, 0x64];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x14, 0x34, 0x54, 0x74, 0xD4, 0xF4];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::NOP, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xAB];
-        hm.insert(AddressMode::Immediate, v);
-        m.insert(Opcode::OAL, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x0D];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x1D];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x19];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x09];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0x01];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x11];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x05];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x15];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::ORA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x48];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::PHA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x08];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::PHP, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x68];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::PLA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x28];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::PLP, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x2F];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x3F];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x3B];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x23];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x33];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x27];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x37];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::RLA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x2E];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x3E];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x2A];
-        hm.insert(AddressMode::Implied, v);
-        let v: Vec<u8> = vec![0x26];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x36];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::ROL, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x6E];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x7E];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x6A];
-        hm.insert(AddressMode::Implied, v);
-        let v: Vec<u8> = vec![0x66];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x76];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::ROR, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x6F];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x7F];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x7B];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x63];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x73];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x67];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x77];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::RRA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x40];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::RTI, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x60];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::RTS, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x8F];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x83];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x87];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x97];
-        hm.insert(AddressMode::ZeroPageY, v);
-        m.insert(Opcode::SAX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xED];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0xFD];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0xF9];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0xE9, 0xEB];
-        hm.insert(AddressMode::Immediate, v);
-        let v: Vec<u8> = vec![0xE1];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0xF1];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0xE5];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0xF5];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::SBC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x38];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::SEC, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xF8];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::SED, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x78];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::SEI, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x9E];
-        hm.insert(AddressMode::AbsoluteY, v);
-        m.insert(Opcode::SHX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x9C];
-        hm.insert(AddressMode::AbsoluteX, v);
-        m.insert(Opcode::SHY, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x0F];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x1F];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x1B];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x03];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x13];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x07];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x17];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::SLO, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x4F];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x5F];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x5B];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x43];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x53];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x47];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x57];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::SRE, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x8D];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x9D];
-        hm.insert(AddressMode::AbsoluteX, v);
-        let v: Vec<u8> = vec![0x99];
-        hm.insert(AddressMode::AbsoluteY, v);
-        let v: Vec<u8> = vec![0x81];
-        hm.insert(AddressMode::IndirectX, v);
-        let v: Vec<u8> = vec![0x91];
-        hm.insert(AddressMode::IndirectY, v);
-        let v: Vec<u8> = vec![0x85];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x95];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::STA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x8E];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x86];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x96];
-        hm.insert(AddressMode::ZeroPageY, v);
-        m.insert(Opcode::STX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x8C];
-        hm.insert(AddressMode::Absolute, v);
-        let v: Vec<u8> = vec![0x84];
-        hm.insert(AddressMode::ZeroPage, v);
-        let v: Vec<u8> = vec![0x94];
-        hm.insert(AddressMode::ZeroPageX, v);
-        m.insert(Opcode::STY, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x9B];
-        hm.insert(AddressMode::AbsoluteY, v);
-        m.insert(Opcode::TAS, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xAA];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::TAX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xA8];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::TAY, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0xBA];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::TSX, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x8A];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::TXA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x9A];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::TXS, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x98];
-        hm.insert(AddressMode::Implied, v);
-        m.insert(Opcode::TYA, hm);
-        let mut hm = HashMap::new();
-        let v: Vec<u8> = vec![0x8B];
-        hm.insert(AddressMode::Immediate, v);
-        m.insert(Opcode::XAA, hm);
+        let m = HashMap::from([
+            (
+                Opcode::ADC,
+                HashMap::from([
+                    (AddressMode::AbsoluteX, vec![125]),
+                    (AddressMode::ZeroPage, vec![101]),
+                    (AddressMode::Absolute, vec![109]),
+                    (AddressMode::ZeroPageX, vec![117]),
+                    (AddressMode::IndirectY, vec![113]),
+                    (AddressMode::AbsoluteY, vec![121]),
+                    (AddressMode::Immediate, vec![105]),
+                    (AddressMode::IndirectX, vec![97]),
+                ]),
+            ),
+            (
+                Opcode::AHX,
+                HashMap::from([
+                    (AddressMode::IndirectY, vec![147]),
+                    (AddressMode::AbsoluteY, vec![159]),
+                ]),
+            ),
+            (
+                Opcode::ALR,
+                HashMap::from([(AddressMode::Immediate, vec![75])]),
+            ),
+            (
+                Opcode::ANC,
+                HashMap::from([(AddressMode::Immediate, vec![11, 43])]),
+            ),
+            (
+                Opcode::AND,
+                HashMap::from([
+                    (AddressMode::ZeroPageX, vec![53]),
+                    (AddressMode::Absolute, vec![45]),
+                    (AddressMode::IndirectX, vec![33]),
+                    (AddressMode::AbsoluteX, vec![61]),
+                    (AddressMode::AbsoluteY, vec![57]),
+                    (AddressMode::ZeroPage, vec![37]),
+                    (AddressMode::Immediate, vec![41]),
+                    (AddressMode::IndirectY, vec![49]),
+                ]),
+            ),
+            (
+                Opcode::ARR,
+                HashMap::from([(AddressMode::Immediate, vec![107])]),
+            ),
+            (
+                Opcode::ASL,
+                HashMap::from([
+                    (AddressMode::ZeroPageX, vec![22]),
+                    (AddressMode::ZeroPage, vec![6]),
+                    (AddressMode::Absolute, vec![14]),
+                    (AddressMode::AbsoluteX, vec![30]),
+                    (AddressMode::Implied, vec![10]),
+                ]),
+            ),
+            (
+                Opcode::AXS,
+                HashMap::from([(AddressMode::Immediate, vec![203])]),
+            ),
+            (
+                Opcode::BCC,
+                HashMap::from([(AddressMode::Relative, vec![144])]),
+            ),
+            (
+                Opcode::BCS,
+                HashMap::from([(AddressMode::Relative, vec![176])]),
+            ),
+            (
+                Opcode::BEQ,
+                HashMap::from([(AddressMode::Relative, vec![240])]),
+            ),
+            (
+                Opcode::BIT,
+                HashMap::from([
+                    (AddressMode::Absolute, vec![44]),
+                    (AddressMode::ZeroPage, vec![36]),
+                ]),
+            ),
+            (
+                Opcode::BMI,
+                HashMap::from([(AddressMode::Relative, vec![48])]),
+            ),
+            (
+                Opcode::BNE,
+                HashMap::from([(AddressMode::Relative, vec![208])]),
+            ),
+            (
+                Opcode::BPL,
+                HashMap::from([(AddressMode::Relative, vec![16])]),
+            ),
+            (
+                Opcode::BRK,
+                HashMap::from([(AddressMode::Immediate, vec![0])]),
+            ),
+            (
+                Opcode::BVC,
+                HashMap::from([(AddressMode::Relative, vec![80])]),
+            ),
+            (
+                Opcode::BVS,
+                HashMap::from([(AddressMode::Relative, vec![112])]),
+            ),
+            (
+                Opcode::CLC,
+                HashMap::from([(AddressMode::Implied, vec![24])]),
+            ),
+            (
+                Opcode::CLD,
+                HashMap::from([(AddressMode::Implied, vec![216])]),
+            ),
+            (
+                Opcode::CLI,
+                HashMap::from([(AddressMode::Implied, vec![88])]),
+            ),
+            (
+                Opcode::CLV,
+                HashMap::from([(AddressMode::Implied, vec![184])]),
+            ),
+            (
+                Opcode::CMP,
+                HashMap::from([
+                    (AddressMode::IndirectX, vec![193]),
+                    (AddressMode::AbsoluteY, vec![217]),
+                    (AddressMode::IndirectY, vec![209]),
+                    (AddressMode::ZeroPage, vec![197]),
+                    (AddressMode::AbsoluteX, vec![221]),
+                    (AddressMode::Immediate, vec![201]),
+                    (AddressMode::ZeroPageX, vec![213]),
+                    (AddressMode::Absolute, vec![205]),
+                ]),
+            ),
+            (
+                Opcode::CPX,
+                HashMap::from([
+                    (AddressMode::Immediate, vec![224]),
+                    (AddressMode::ZeroPage, vec![228]),
+                    (AddressMode::Absolute, vec![236]),
+                ]),
+            ),
+            (
+                Opcode::CPY,
+                HashMap::from([
+                    (AddressMode::Absolute, vec![204]),
+                    (AddressMode::Immediate, vec![192]),
+                    (AddressMode::ZeroPage, vec![196]),
+                ]),
+            ),
+            (
+                Opcode::DCP,
+                HashMap::from([
+                    (AddressMode::IndirectY, vec![211]),
+                    (AddressMode::ZeroPageX, vec![215]),
+                    (AddressMode::AbsoluteX, vec![223]),
+                    (AddressMode::AbsoluteY, vec![219]),
+                    (AddressMode::Absolute, vec![207]),
+                    (AddressMode::IndirectX, vec![195]),
+                    (AddressMode::ZeroPage, vec![199]),
+                ]),
+            ),
+            (
+                Opcode::DEC,
+                HashMap::from([
+                    (AddressMode::AbsoluteX, vec![222]),
+                    (AddressMode::ZeroPageX, vec![214]),
+                    (AddressMode::Absolute, vec![206]),
+                    (AddressMode::ZeroPage, vec![198]),
+                ]),
+            ),
+            (
+                Opcode::DEX,
+                HashMap::from([(AddressMode::Implied, vec![202])]),
+            ),
+            (
+                Opcode::DEY,
+                HashMap::from([(AddressMode::Implied, vec![136])]),
+            ),
+            (
+                Opcode::EOR,
+                HashMap::from([
+                    (AddressMode::Absolute, vec![77]),
+                    (AddressMode::AbsoluteX, vec![93]),
+                    (AddressMode::Immediate, vec![73]),
+                    (AddressMode::AbsoluteY, vec![89]),
+                    (AddressMode::ZeroPage, vec![69]),
+                    (AddressMode::ZeroPageX, vec![85]),
+                    (AddressMode::IndirectX, vec![65]),
+                    (AddressMode::IndirectY, vec![81]),
+                ]),
+            ),
+            (
+                Opcode::HLT,
+                HashMap::from([(
+                    AddressMode::Implied,
+                    vec![2, 18, 34, 50, 66, 82, 98, 114, 146, 178, 210, 242],
+                )]),
+            ),
+            (
+                Opcode::INC,
+                HashMap::from([
+                    (AddressMode::Absolute, vec![238]),
+                    (AddressMode::AbsoluteX, vec![254]),
+                    (AddressMode::ZeroPage, vec![230]),
+                    (AddressMode::ZeroPageX, vec![246]),
+                ]),
+            ),
+            (
+                Opcode::INX,
+                HashMap::from([(AddressMode::Implied, vec![232])]),
+            ),
+            (
+                Opcode::INY,
+                HashMap::from([(AddressMode::Implied, vec![200])]),
+            ),
+            (
+                Opcode::ISC,
+                HashMap::from([
+                    (AddressMode::IndirectX, vec![227]),
+                    (AddressMode::Absolute, vec![239]),
+                    (AddressMode::AbsoluteY, vec![251]),
+                    (AddressMode::IndirectY, vec![243]),
+                    (AddressMode::ZeroPageX, vec![247]),
+                    (AddressMode::ZeroPage, vec![231]),
+                    (AddressMode::AbsoluteX, vec![255]),
+                ]),
+            ),
+            (
+                Opcode::JMP,
+                HashMap::from([
+                    (AddressMode::Indirect, vec![108]),
+                    (AddressMode::Absolute, vec![76]),
+                ]),
+            ),
+            (
+                Opcode::JSR,
+                HashMap::from([(AddressMode::Absolute, vec![32])]),
+            ),
+            (
+                Opcode::LAS,
+                HashMap::from([(AddressMode::AbsoluteY, vec![187])]),
+            ),
+            (
+                Opcode::LAX,
+                HashMap::from([
+                    (AddressMode::AbsoluteY, vec![191]),
+                    (AddressMode::ZeroPageY, vec![183]),
+                    (AddressMode::Absolute, vec![175]),
+                    (AddressMode::ZeroPage, vec![167]),
+                    (AddressMode::IndirectY, vec![179]),
+                    (AddressMode::IndirectX, vec![163]),
+                ]),
+            ),
+            (
+                Opcode::LDA,
+                HashMap::from([
+                    (AddressMode::AbsoluteY, vec![185]),
+                    (AddressMode::Absolute, vec![173]),
+                    (AddressMode::Immediate, vec![169]),
+                    (AddressMode::IndirectY, vec![177]),
+                    (AddressMode::IndirectX, vec![161]),
+                    (AddressMode::ZeroPage, vec![165]),
+                    (AddressMode::ZeroPageX, vec![181]),
+                    (AddressMode::AbsoluteX, vec![189]),
+                ]),
+            ),
+            (
+                Opcode::LDX,
+                HashMap::from([
+                    (AddressMode::Immediate, vec![162]),
+                    (AddressMode::Absolute, vec![174]),
+                    (AddressMode::ZeroPage, vec![166]),
+                    (AddressMode::ZeroPageY, vec![182]),
+                    (AddressMode::AbsoluteY, vec![190]),
+                ]),
+            ),
+            (
+                Opcode::LDY,
+                HashMap::from([
+                    (AddressMode::ZeroPage, vec![164]),
+                    (AddressMode::Absolute, vec![172]),
+                    (AddressMode::AbsoluteX, vec![188]),
+                    (AddressMode::Immediate, vec![160]),
+                    (AddressMode::ZeroPageX, vec![180]),
+                ]),
+            ),
+            (
+                Opcode::LSR,
+                HashMap::from([
+                    (AddressMode::ZeroPageX, vec![86]),
+                    (AddressMode::Implied, vec![74]),
+                    (AddressMode::AbsoluteX, vec![94]),
+                    (AddressMode::ZeroPage, vec![70]),
+                    (AddressMode::Absolute, vec![78]),
+                ]),
+            ),
+            (
+                Opcode::NOP,
+                HashMap::from([
+                    (AddressMode::Immediate, vec![128, 130, 137, 194, 226]),
+                    (AddressMode::Implied, vec![26, 58, 90, 122, 218, 234, 250]),
+                    (AddressMode::AbsoluteX, vec![28, 60, 92, 124, 220, 252]),
+                    (AddressMode::Absolute, vec![12]),
+                    (AddressMode::ZeroPage, vec![4, 68, 100]),
+                    (AddressMode::ZeroPageX, vec![20, 52, 84, 116, 212, 244]),
+                ]),
+            ),
+            (
+                Opcode::OAL,
+                HashMap::from([(AddressMode::Immediate, vec![171])]),
+            ),
+            (
+                Opcode::ORA,
+                HashMap::from([
+                    (AddressMode::AbsoluteY, vec![25]),
+                    (AddressMode::ZeroPage, vec![5]),
+                    (AddressMode::IndirectX, vec![1]),
+                    (AddressMode::AbsoluteX, vec![29]),
+                    (AddressMode::IndirectY, vec![17]),
+                    (AddressMode::Immediate, vec![9]),
+                    (AddressMode::ZeroPageX, vec![21]),
+                    (AddressMode::Absolute, vec![13]),
+                ]),
+            ),
+            (
+                Opcode::PHA,
+                HashMap::from([(AddressMode::Implied, vec![72])]),
+            ),
+            (
+                Opcode::PHP,
+                HashMap::from([(AddressMode::Implied, vec![8])]),
+            ),
+            (
+                Opcode::PLA,
+                HashMap::from([(AddressMode::Implied, vec![104])]),
+            ),
+            (
+                Opcode::PLP,
+                HashMap::from([(AddressMode::Implied, vec![40])]),
+            ),
+            (
+                Opcode::RLA,
+                HashMap::from([
+                    (AddressMode::AbsoluteY, vec![59]),
+                    (AddressMode::ZeroPage, vec![39]),
+                    (AddressMode::ZeroPageX, vec![55]),
+                    (AddressMode::IndirectX, vec![35]),
+                    (AddressMode::Absolute, vec![47]),
+                    (AddressMode::AbsoluteX, vec![63]),
+                    (AddressMode::IndirectY, vec![51]),
+                ]),
+            ),
+            (
+                Opcode::ROL,
+                HashMap::from([
+                    (AddressMode::Absolute, vec![46]),
+                    (AddressMode::AbsoluteX, vec![62]),
+                    (AddressMode::ZeroPageX, vec![54]),
+                    (AddressMode::Implied, vec![42]),
+                    (AddressMode::ZeroPage, vec![38]),
+                ]),
+            ),
+            (
+                Opcode::ROR,
+                HashMap::from([
+                    (AddressMode::ZeroPage, vec![102]),
+                    (AddressMode::AbsoluteX, vec![126]),
+                    (AddressMode::ZeroPageX, vec![118]),
+                    (AddressMode::Implied, vec![106]),
+                    (AddressMode::Absolute, vec![110]),
+                ]),
+            ),
+            (
+                Opcode::RRA,
+                HashMap::from([
+                    (AddressMode::AbsoluteY, vec![123]),
+                    (AddressMode::ZeroPageX, vec![119]),
+                    (AddressMode::ZeroPage, vec![103]),
+                    (AddressMode::AbsoluteX, vec![127]),
+                    (AddressMode::Absolute, vec![111]),
+                    (AddressMode::IndirectX, vec![99]),
+                    (AddressMode::IndirectY, vec![115]),
+                ]),
+            ),
+            (
+                Opcode::RTI,
+                HashMap::from([(AddressMode::Implied, vec![64])]),
+            ),
+            (
+                Opcode::RTS,
+                HashMap::from([(AddressMode::Implied, vec![96])]),
+            ),
+            (
+                Opcode::SAX,
+                HashMap::from([
+                    (AddressMode::ZeroPageY, vec![151]),
+                    (AddressMode::ZeroPage, vec![135]),
+                    (AddressMode::IndirectX, vec![131]),
+                    (AddressMode::Absolute, vec![143]),
+                ]),
+            ),
+            (
+                Opcode::SBC,
+                HashMap::from([
+                    (AddressMode::AbsoluteY, vec![249]),
+                    (AddressMode::ZeroPage, vec![229]),
+                    (AddressMode::IndirectY, vec![241]),
+                    (AddressMode::ZeroPageX, vec![245]),
+                    (AddressMode::Immediate, vec![233, 235]),
+                    (AddressMode::AbsoluteX, vec![253]),
+                    (AddressMode::Absolute, vec![237]),
+                    (AddressMode::IndirectX, vec![225]),
+                ]),
+            ),
+            (
+                Opcode::SEC,
+                HashMap::from([(AddressMode::Implied, vec![56])]),
+            ),
+            (
+                Opcode::SED,
+                HashMap::from([(AddressMode::Implied, vec![248])]),
+            ),
+            (
+                Opcode::SEI,
+                HashMap::from([(AddressMode::Implied, vec![120])]),
+            ),
+            (
+                Opcode::SHX,
+                HashMap::from([(AddressMode::AbsoluteY, vec![158])]),
+            ),
+            (
+                Opcode::SHY,
+                HashMap::from([(AddressMode::AbsoluteX, vec![156])]),
+            ),
+            (
+                Opcode::SLO,
+                HashMap::from([
+                    (AddressMode::Absolute, vec![15]),
+                    (AddressMode::ZeroPageX, vec![23]),
+                    (AddressMode::AbsoluteY, vec![27]),
+                    (AddressMode::IndirectY, vec![19]),
+                    (AddressMode::IndirectX, vec![3]),
+                    (AddressMode::AbsoluteX, vec![31]),
+                    (AddressMode::ZeroPage, vec![7]),
+                ]),
+            ),
+            (
+                Opcode::SRE,
+                HashMap::from([
+                    (AddressMode::AbsoluteY, vec![91]),
+                    (AddressMode::ZeroPageX, vec![87]),
+                    (AddressMode::IndirectX, vec![67]),
+                    (AddressMode::IndirectY, vec![83]),
+                    (AddressMode::ZeroPage, vec![71]),
+                    (AddressMode::Absolute, vec![79]),
+                    (AddressMode::AbsoluteX, vec![95]),
+                ]),
+            ),
+            (
+                Opcode::STA,
+                HashMap::from([
+                    (AddressMode::ZeroPageX, vec![149]),
+                    (AddressMode::AbsoluteX, vec![157]),
+                    (AddressMode::IndirectY, vec![145]),
+                    (AddressMode::IndirectX, vec![129]),
+                    (AddressMode::Absolute, vec![141]),
+                    (AddressMode::AbsoluteY, vec![153]),
+                    (AddressMode::ZeroPage, vec![133]),
+                ]),
+            ),
+            (
+                Opcode::STX,
+                HashMap::from([
+                    (AddressMode::Absolute, vec![142]),
+                    (AddressMode::ZeroPage, vec![134]),
+                    (AddressMode::ZeroPageY, vec![150]),
+                ]),
+            ),
+            (
+                Opcode::STY,
+                HashMap::from([
+                    (AddressMode::Absolute, vec![140]),
+                    (AddressMode::ZeroPage, vec![132]),
+                    (AddressMode::ZeroPageX, vec![148]),
+                ]),
+            ),
+            (
+                Opcode::TAS,
+                HashMap::from([(AddressMode::AbsoluteY, vec![155])]),
+            ),
+            (
+                Opcode::TAX,
+                HashMap::from([(AddressMode::Implied, vec![170])]),
+            ),
+            (
+                Opcode::TAY,
+                HashMap::from([(AddressMode::Implied, vec![168])]),
+            ),
+            (
+                Opcode::TSX,
+                HashMap::from([(AddressMode::Implied, vec![186])]),
+            ),
+            (
+                Opcode::TXA,
+                HashMap::from([(AddressMode::Implied, vec![138])]),
+            ),
+            (
+                Opcode::TXS,
+                HashMap::from([(AddressMode::Implied, vec![154])]),
+            ),
+            (
+                Opcode::TYA,
+                HashMap::from([(AddressMode::Implied, vec![152])]),
+            ),
+            (
+                Opcode::XAA,
+                HashMap::from([(AddressMode::Immediate, vec![139])]),
+            ),
+        ]);
 
         for op in Opcode::iter() {
             match m.get(&op) {
-                Some(_) => {},
+                Some(_) => {}
                 None => panic!("Not all opcodes covered!. Missing {op}"),
             };
         }
-
         m
     };
 
