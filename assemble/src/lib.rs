@@ -440,6 +440,11 @@ fn pass1(lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
     Ok(ret)
 }
 
+// compute_refs takes the previous AST output and cross references all labels,
+// builds PC values for each operation and updates the AST with these results.
+// The only thing it leaves is relative address computation since that can't be
+// known until all labels are fully cross referenced. That will be handled during
+// byte code generation.
 fn compute_refs(ast_output: &mut ASTOutput) -> Result<()> {
     let mut pc: u16 = 0;
     for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
@@ -623,6 +628,9 @@ fn compute_refs(ast_output: &mut ASTOutput) -> Result<()> {
     Ok(())
 }
 
+// generate_output does the final byte code and listing file generation from
+// the previously generated AST. This must be mutable as final relative addresses
+// are computed before byte codes are generated for a given operation.
 fn generate_output(ast_output: &mut ASTOutput) -> Result<Assembly> {
     // Always emit 64k so just allocate a block.
     let mut res = Assembly {
