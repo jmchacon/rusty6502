@@ -8,6 +8,7 @@ members = [
     "./handasm",
     "./assemble",
     "./assembler",
+    "./chip",
 ]
 default-members = [
     "./c64basic",
@@ -18,6 +19,7 @@ default-members = [
     "./handasm",
     "./assemble",
     "./assembler",
+    "./chip",
 ]
 
 [package]
@@ -28,3 +30,4 @@ edition = "2021"
 [dependencies]
 memory = { path = "./memory", version = "~0.1" }
 cpu = { path = "./cpu", version = "~0.1" }
+chip = { path = "./chip", version = "~0.1" }
