@@ -4,6 +4,7 @@
 use assemble::parse;
 use clap::Parser;
 use color_eyre::eyre::Result;
+use rusty6502::prelude::*;
 use std::{
     fs::{write, File},
     io::{self, BufRead},
@@ -15,7 +16,8 @@ use std::{
 #[derive(Parser)]
 #[clap(author, version)]
 struct Args {
-    #[clap()]
+    #[clap(value_parser)]
+    cpu_type: Type,
     filename: String,
     output: String,
 }
@@ -26,7 +28,7 @@ fn main() -> Result<()> {
 
     let lines = read_lines(args.filename)?;
 
-    match parse(lines) {
+    match parse(args.cpu_type, lines) {
         Err(e) => Err(e),
         Ok(res) => {
             write(Path::new(args.output.as_str()), res.bin)?;

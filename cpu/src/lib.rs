@@ -80,7 +80,8 @@ pub enum AddressMode {
 // Opcode descriptions/timing/etc:
 // http://obelisk.me.uk/6502/reference.html
 
-/// `Opcode` defines all the unique 6502 opcodes.
+/// `Opcode` defines all the unique 6502 opcodes including undocumented ones.
+/// A given implementation may include only some of these (such as the CMOS version).
 #[derive(Clone, Copy, Debug, Display, Default, PartialEq, Eq, Hash, EnumIter, EnumString)]
 #[strum(ascii_case_insensitive)]
 pub enum Opcode {
@@ -316,6 +317,24 @@ pub enum Opcode {
     /// for implementation and pick 0xEE as the constant. According to VICE this may break so might need to change it to 0xFF
     /// https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
     XAA,
+}
+
+/// Type defines the various implementations of the 6502 available.
+#[derive(Copy, Clone, Debug, Display, EnumString)]
+pub enum Type {
+    /// Basic NMOS 6502 including all undocumented opcodes.
+    NMOS,
+
+    /// Ricoh version used in the NES which is identical to NMOS except BCD mode is unimplemented.
+    #[strum(to_string = "NMOS_RICOH")]
+    Ricoh,
+
+    /// NMOS 6501 variant (used in c64) which includes I/O ports mapped at addresses 0x00 and 0x01.
+    #[strum(to_string = "NMOS_6510")]
+    NMOS6510,
+
+    /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
+    CMOS,
 }
 
 #[derive(Debug, Copy, Clone)]

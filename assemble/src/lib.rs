@@ -117,7 +117,7 @@ struct ASTOutput {
 // It will compute an AST from the file reader along with a label map
 // that has references to both fully defined labels (EQU) and references
 // to location labels (either defs or refs).
-fn pass1(lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
+fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
     let mut ret = ASTOutput {
         ast: Vec::<Vec<Token>>::new(),
         labels: HashMap::new(),
@@ -294,7 +294,7 @@ fn pass1(lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         l.push(Token::Op(operation));
                         State::Comment(String::from(&token[1..]))
                     } else {
-                        if resolve_opcode(&operation.op, &AddressMode::Relative).is_ok() {
+                        if resolve_opcode(ty, &operation.op, &AddressMode::Relative).is_ok() {
                             // Ops which are relative only have this mode so we can just assign
                             // and parse the val which must be 8 bit.
                             // Can't validate value now as while it's 8 bit this can be 16 bit
@@ -445,7 +445,7 @@ fn pass1(lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
 // The only thing it leaves is relative address computation since that can't be
 // known until all labels are fully cross referenced. That will be handled during
 // byte code generation.
-fn compute_refs(ast_output: &mut ASTOutput) -> Result<()> {
+fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
     let mut pc: u16 = 0;
     for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
         for t in line.iter_mut() {
@@ -464,7 +464,7 @@ fn compute_refs(ast_output: &mut ASTOutput) -> Result<()> {
                     if o.mode != AddressMode::Implied {
                         // Implied gets handled in the match as it could resolve
                         // into another mode.
-                        if resolve_opcode(op, &o.mode).is_err() {
+                        if resolve_opcode(ty, op, &o.mode).is_err() {
                             return Err(eyre!(
                                 "Error parsing line {}: opcode {op} doesn't support mode {}",
                                 line_num + 1,
@@ -529,7 +529,7 @@ fn compute_refs(ast_output: &mut ASTOutput) -> Result<()> {
                             };
                             // Check mode here since it was either implied, ZP, or Absolute and didn't get
                             // checked yet for this opcode.
-                            if resolve_opcode(op, &o.mode).is_err() {
+                            if resolve_opcode(ty, op, &o.mode).is_err() {
                                 return Err(eyre!(
                                     "Error parsing line {}: opcode {op} doesn't support mode {}",
                                     line_num + 1,
@@ -631,7 +631,7 @@ fn compute_refs(ast_output: &mut ASTOutput) -> Result<()> {
 // generate_output does the final byte code and listing file generation from
 // the previously generated AST. This must be mutable as final relative addresses
 // are computed before byte codes are generated for a given operation.
-fn generate_output(ast_output: &mut ASTOutput) -> Result<Assembly> {
+fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
     // Always emit 64k so just allocate a block.
     let mut res = Assembly {
         bin: [0; 1 << 16],
@@ -669,7 +669,7 @@ fn generate_output(ast_output: &mut ASTOutput) -> Result<Assembly> {
                     write!(output, "{c}").unwrap();
                 }
                 Token::Op(o) => {
-                    let modes = match resolve_opcode(&o.op, &o.mode) {
+                    let modes = match resolve_opcode(ty, &o.op, &o.mode) {
                         Ok(modes) => modes,
                         Err(err) => {
                             return Err(eyre!("Internal error on line {}: {err}", line_num + 1));
@@ -836,7 +836,7 @@ fn generate_output(ast_output: &mut ASTOutput) -> Result<Assembly> {
 ///
 /// # Errors
 /// Any parsing error of the input stream can be returned in Result.
-pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
+pub fn parse(ty: Type, lines: Lines<BufReader<File>>) -> Result<Assembly> {
     // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
     // while filling in a label mapping. The 2nd one does actual assembly over
     // the tokens with labels getting filled in from the map or computed as needed.
@@ -844,11 +844,11 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
     // Pass one, read over the file line by line generating a set of tokens per line
     // for our AST. The labels map that comes back is complete so referencing keys
     // we lookup in later passes can use get_label to resolve them.
-    let mut ast_output = pass1(lines)?;
+    let mut ast_output = pass1(ty, lines)?;
     //    let (mut ast, mut labels) = pass1(lines)?;
 
     // Do another run so we can fill in label references. Also compute addressing mode, validate and set pc.
-    compute_refs(&mut ast_output)?;
+    compute_refs(ty, &mut ast_output)?;
 
     // Verify all the labels defined got values (EQU and location definitions/references line up)
     let mut errors = String::new();
@@ -872,7 +872,7 @@ pub fn parse(lines: Lines<BufReader<File>>) -> Result<Assembly> {
     }
 
     // Finally generate the output
-    generate_output(&mut ast_output)
+    generate_output(ty, &mut ast_output)
 }
 
 // Given a labels map (label->LabelDef) return the labeldef directly w/o checking.

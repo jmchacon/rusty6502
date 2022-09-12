@@ -16,7 +16,9 @@ use std::{ffi::OsStr, fs::read, num::Wrapping, path::Path};
 #[derive(Parser)]
 #[clap(author, version)]
 struct Args {
-    #[clap()]
+    #[clap(value_parser)]
+    cpu_type: Type,
+
     filename: String,
 
     #[clap(
@@ -121,7 +123,7 @@ fn main() -> Result<()> {
     let limit = Wrapping((usize::from(start.0) + bytes.len() - 1) as u16);
     println!("limit {limit:04X}");
     loop {
-        (dis, newpc) = step(pc, &ram);
+        (dis, newpc) = step(args.cpu_type, pc, &ram);
         println!("{dis}");
         // Check if we went off the end, or the newpc wrapped
         // as step() can overflow.

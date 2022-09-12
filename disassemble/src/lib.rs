@@ -11,7 +11,7 @@ use std::num::Wrapping; // import without risk of name clashing
 /// As a real 6502 will wrap around if it's asked to step off the end
 /// this will do the same. i.e. disassembling 0xFFFF with a multi-byte opcode will result
 /// in reading 0x0000 and 0x0001 and returning a pc from that area as well.
-pub fn step(pc: Wrapping<u16>, r: &impl Memory) -> (String, Wrapping<u16>) {
+pub fn step(ty: Type, pc: Wrapping<u16>, r: &impl Memory) -> (String, Wrapping<u16>) {
     let pc1 = r.read((pc + Wrapping(1)).0);
     let pc2 = r.read((pc + Wrapping(2)).0);
 
@@ -21,7 +21,7 @@ pub fn step(pc: Wrapping<u16>, r: &impl Memory) -> (String, Wrapping<u16>) {
     let op = r.read(pc.0);
 
     let (opcode, mode) = {
-        let operation = opcode_op(op);
+        let operation = opcode_op(ty, op);
         (operation.op.to_string(), operation.mode)
     };
 

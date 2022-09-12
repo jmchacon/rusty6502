@@ -7,3 +7,4 @@ edition = "2021"
 assemble = { path = "../assemble", version = "~0.1" }
 color-eyre = { version = "0.6.2", default-features = false }
 clap = { version = "3.2.16", features = ["derive"] }
+rusty6502  = { path = "../", version = "~0.1" }
