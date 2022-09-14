@@ -1,4 +1,8 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
+use memory::{Memory, MAX_SIZE};
+
+use color_eyre::eyre::{eyre, Result};
+use rand::Rng;
 use strum_macros::{Display, EnumIter, EnumString};
 
 mod lookup;
@@ -358,3 +362,400 @@ pub const RESET_VECTOR: u16 = 0xFFFC;
 /// `IRQ_VECTOR` is the location in memory the 6502 uses when executing an IRQ (BRK).
 /// It is a pointer to the location to start execution.
 pub const IRQ_VECTOR: u16 = 0xFFFE;
+
+#[derive(Debug, Display, Copy, Clone, PartialEq, EnumString)]
+enum CPUState {
+    // The default when initialized.
+    // Will throw errors in any functions if this state because `power_on`
+    // hasn't been called.
+    Off,
+    // Set in `power_on`
+    Running,
+    // If we ran a halted instruction we end up here.
+    Halted,
+}
+
+// Used to indicate whether an opcode/addressing mode is done or not.
+enum OpState {
+    None,
+    Processing,
+}
+
+// Clock ticks
+#[derive(Debug, Display, Copy, Clone, PartialEq, EnumString)]
+enum Tick {
+    // The reset state. Used to start a new instruction assuming all
+    // processing immediately calls `next` before evaluatin.
+    Reset,
+    // This is the normal start case for a new instruction.
+    Tick1,
+    Tick2,
+    Tick3,
+    Tick4,
+    Tick5,
+    Tick6,
+    Tick7,
+    // Technically documented 6502 instructions take no more than 7 cycles.
+    // But a RMW indirect X/Y will take 8.
+    Tick8,
+}
+
+impl Tick {
+    fn next(self) -> Self {
+        match self {
+            Tick::Reset => Tick::Tick1,
+            Tick::Tick1 => Tick::Tick2,
+            Tick::Tick2 => Tick::Tick3,
+            Tick::Tick3 => Tick::Tick4,
+            Tick::Tick4 => Tick::Tick5,
+            Tick::Tick5 => Tick::Tick6,
+            Tick::Tick6 => Tick::Tick7,
+            Tick::Tick7 | Tick::Tick8 => Tick::Tick8,
+        }
+    }
+}
+/// The definition for a given 6502 implementation.
+pub struct Cpu<'a> {
+    // The specific variant implemented.
+    cpu_type: Type,
+    /// Accumulator register
+    pub a: u8,
+    /// X register
+    pub x: u8,
+    /// Y register
+    pub y: u8,
+    /// Stack pointer
+    pub s: u8,
+    /// Status register
+    pub p: u8,
+    /// Program counter
+    pub pc: u16,
+    // If true `debug` will return data.
+    debug: bool,
+    // Initialized or not.
+    state: CPUState,
+    // Tracking for reset when we need to clear the extra clocks
+    // up front before simulating BRK. If `tick` is called and this
+    // isn't in Tick::Reset an error will result.
+    reset_tick: Tick,
+    // Total number of clock cycles since start.
+    clocks: usize,
+    // True if `done` was called before the current `tick` call.
+    tick_done: bool,
+    // Memory implementation
+    ram: &'a dyn Memory,
+    // The current working opcode
+    op: u8,
+    // The 1st byte argument after the opcode (all instruction have this).
+    // Often used as a temp value while building the whole instruction.
+    op_val: u8,
+    // Tick number for internal operation of opcode.
+    op_tick: Tick,
+    // Address computed during opcode to be used for read/write (indirect, etc modes).
+    op_addr: u16,
+    // Stays OpState::Processing until the current opcode has completed all ticks.
+    op_done: OpState,
+    // Stays OpState::Processing until the current opcode has completed any addressing mode ticks.
+    addr_done: OpState,
+    // The opcode value used to halt the CPU
+    halt_opcode: u8,
+    // The PC value of the halt instruction
+    halt_pc: u16,
+}
+
+const P_NEGATIVE: u8 = 0x80;
+const P_OVERFLOW: u8 = 0x40;
+const P_S1: u8 = 0x20; // Always on
+const P_B: u8 = 0x10; // Only set when pushing onto the stack during BRK.
+const P_DECIMAL: u8 = 0x08;
+const P_INTERRUPT: u8 = 0x04;
+const P_ZERO: u8 = 0x02;
+const P_CARRY: u8 = 0x01;
+
+/// Define the characteristics of the 6502 wanted.
+pub struct ChipDef<'a> {
+    /// The CPU type.
+    pub cpu_type: Type,
+    /// Memory implementation.
+    pub ram: &'a dyn Memory,
+    /// If true debugging is enabled.
+    /// TODO: Define the interface for this.
+    pub debug: bool,
+}
+
+impl<'a> Cpu<'a> {
+    /// Build a new Cpu.
+    /// NOTE: This is not usable at this point. Call `power_on` to begin
+    /// operation. Anything else will return errors.
+    #[must_use]
+    pub fn new(def: &'a ChipDef) -> Self {
+        Cpu {
+            cpu_type: def.cpu_type,
+            a: 0x00,
+            x: 0x00,
+            y: 0x00,
+            s: 0x00,
+            p: 0x00,
+            pc: 0x00,
+            debug: def.debug,
+            state: CPUState::Off,
+            clocks: 0,
+            tick_done: false,
+            ram: def.ram,
+            op: 0x00,
+            op_val: 0x00,
+            op_tick: Tick::Reset,
+            reset_tick: Tick::Reset,
+            op_addr: 0x0000,
+            op_done: OpState::None,
+            addr_done: OpState::None,
+            halt_opcode: 0x00,
+            halt_pc: 0x0000,
+        }
+    }
+
+    /// `power_on` will reset the CPU to power on state which isn't well defined.
+    /// Registers are random and stack is at random (though visual 6502 claims it's 0xFD
+    /// due to a push P/PC in reset which gets run at power on).
+    /// P is cleared with interrupts disabled and decimal mode random (for NMOS versions).
+    /// The starting PC value is loaded from the reset vector.
+    ///
+    /// # Errors
+    /// If reset has any issues an error will be returned.
+    ///
+    /// TODO(jchacon): See if any of this gets more defined on CMOS versions.
+    pub fn power_on(&mut self) -> Result<()> {
+        let mut rng = rand::thread_rng();
+
+        // This is always set and clears the rest.
+        self.p = P_S1;
+
+        // Randomize decimal for CPU's which implement and aren't CMOS.
+        self.p |= match self.cpu_type {
+            Type::NMOS | Type::NMOS6510 => {
+                if rng.gen::<f64>() > 0.5 {
+                    P_DECIMAL
+                } else {
+                    0x00
+                }
+            }
+            _ => 0x00,
+        };
+
+        // Randomize register contents
+        self.a = rng.gen();
+        self.x = rng.gen();
+        self.y = rng.gen();
+        self.s = rng.gen();
+
+        // Use reset to get everything else done.
+        loop {
+            match self.reset() {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(e) => return Err(eyre!("{e}")),
+            }
+        }
+        self.state = CPUState::Running;
+        Ok(())
+    }
+
+    /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
+    /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
+    /// changes. Flags are not disturbed except for interrupts being disabled
+    /// and the PC is loaded from the reset vector.
+    /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
+    /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
+    /// Visual 6502 simulation shows this all in detail.
+    /// This takes 7 cycles once triggered (same as interrupts).
+    /// Will return true when reset is complete and errors if any occur.
+    ///
+    /// # Errors
+    /// Internal problems (getting into the wrong state) can result in errors.
+    ///
+    /// TODO: Can we reuse the BRK code for this?
+    pub fn reset(&mut self) -> Result<bool> {
+        if self.state != CPUState::Running {
+            return Err(eyre!("power_on not called before calling reset!"));
+        }
+
+        // If we haven't started a reset sequence start it now.
+        if self.reset_tick == Tick::Reset {
+            self.tick_done = false;
+            self.op_tick = Tick::Reset;
+            self.reset_tick = Tick::Tick1;
+        }
+        self.op_tick = self.op_tick.next();
+        self.clocks += 1;
+
+        match self.reset_tick {
+            Tick::Tick1 | Tick::Tick2 => {
+                // Burn off 2 clocks internally to reset before we start processing.
+                self.reset_tick = self.reset_tick.next();
+                Ok(false)
+            }
+            Tick::Tick3 => {
+                match self.op_tick {
+                    Tick::Tick1 => {
+                        // Standard first tick reads current PC value which normally
+                        // is the opcode but we discard.
+                        self.ram.read(self.pc);
+                        self.pc += 1;
+                        // Reset our other internal state
+
+                        // If we were halted before, clear that out.
+                        self.state = CPUState::Running;
+                        self.halt_opcode = 0x00;
+                        self.halt_pc = 0x0000;
+
+                        // The stack ends up at 0xFD which implies it gets set to 0x00 now
+                        // as we pull 3 bytes off the stack in the end.
+                        // TODO: Double check this in visual 6502.
+                        self.s = 0x00;
+                        Ok(false)
+                    }
+                    Tick::Tick2 => {
+                        // Read another throw away value which is normally the opval.
+                        self.ram.read(self.pc);
+                        self.pc += 1;
+                        Ok(false)
+                    }
+                    Tick::Tick3 | Tick::Tick4 => {
+                        // Tick3: Simulate pushing P onto stack but reset holds R/W high so we don't write.
+                        // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
+                        // These reads go nowhere (technically they end up in internal regs but since that's
+                        // not visible externally, who cares?).
+                        let addr: u16 = 0x0100 + u16::from(self.s);
+                        self.ram.read(addr);
+                        self.s -= 1;
+                        Ok(false)
+                    }
+                    Tick::Tick5 => {
+                        // Final write to stack (PC high) but actual read due to being in reset.
+                        let addr: u16 = 0x0100 + u16::from(self.s);
+                        self.ram.read(addr);
+                        self.s -= 1;
+
+                        // Disable interrupts
+                        self.p |= P_INTERRUPT;
+
+                        // On NMOS D is random after reset.
+                        let mut rng = rand::thread_rng();
+                        self.p &= !P_DECIMAL;
+
+                        self.p |= match self.cpu_type {
+                            Type::NMOS | Type::NMOS6510 => {
+                                if rng.gen::<f64>() > 0.5 {
+                                    P_DECIMAL
+                                } else {
+                                    0x00
+                                }
+                            }
+                            _ => 0x00,
+                        };
+                        Ok(false)
+                    }
+                    Tick::Tick6 => {
+                        // Load PCL from reset vector
+                        self.op_val = self.ram.read(RESET_VECTOR);
+                        Ok(false)
+                    }
+                    Tick::Tick7 => {
+                        // Load PCH from reset vector and go back into normal operations.
+                        self.pc = (u16::from(self.ram.read(RESET_VECTOR + 1)) << 8)
+                            + u16::from(self.op_val);
+                        self.reset_tick = Tick::Reset;
+                        self.op_tick = Tick::Reset;
+                        self.tick_done = true;
+                        Ok(true)
+                    }
+                    _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
+                }
+            }
+            _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
+        }
+    }
+}
+
+/// `FlatRAM` gives a flat 64k RAM block to use.
+/// It will be initialized to all zeros and `power_on`
+/// can use a different value if `fill_value` is set.
+/// Additionally the irq/reset and nmi vectors can be set as well.
+/// Generally used only for testing.
+#[derive(Debug, Clone, Copy)]
+#[must_use]
+pub struct FlatRAM {
+    fill_value: u8,
+    vectors: Vectors,
+    memory: [u8; MAX_SIZE],
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+/// `Vectors` defines the 3 6502 vectors for interrupts and reset behavior.
+pub struct Vectors {
+    /// `nmi` is the NMI vector.
+    pub nmi: u16,
+
+    /// `reset` is the reset vector.
+    pub reset: u16,
+
+    /// `irq` is the IRQ vector.
+    pub irq: u16,
+}
+
+impl Memory for FlatRAM {
+    fn read(&self, addr: u16) -> u8 {
+        self.memory[addr as usize]
+    }
+
+    fn write(&mut self, addr: u16, val: u8) {
+        self.memory[addr as usize] = val;
+    }
+
+    /// `power_on` will perform power on behavior. For `FlatRAM` this entails
+    /// setting all memory locations to the fill value and then setting the 3 vectors
+    /// to their assigned values.
+    fn power_on(&mut self) {
+        for i in 0..self.memory.len() {
+            self.memory[i] = self.fill_value;
+        }
+        self.memory[NMI_VECTOR as usize] = (self.vectors.nmi & 0xFF) as u8;
+        self.memory[(NMI_VECTOR + 1) as usize] = ((self.vectors.nmi & 0xff00) >> 8) as u8;
+        self.memory[RESET_VECTOR as usize] = (self.vectors.reset & 0xFF) as u8;
+        self.memory[(RESET_VECTOR + 1) as usize] = ((self.vectors.reset & 0xff00) >> 8) as u8;
+        self.memory[IRQ_VECTOR as usize] = (self.vectors.irq & 0xFF) as u8;
+        self.memory[(IRQ_VECTOR + 1) as usize] = ((self.vectors.irq & 0xff00) >> 8) as u8;
+    }
+}
+
+impl Default for FlatRAM {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FlatRAM {
+    /// new will return a `FlatRAM` with 0x00 set for everything (vectors, fill value, etc).
+    /// Use other builders to set additional items.
+    pub fn new() -> Self {
+        Self {
+            fill_value: 0,
+            vectors: Vectors {
+                ..Default::default()
+            },
+            memory: [0; MAX_SIZE],
+        }
+    }
+
+    /// `fill_value` is a builder which sets the fill value to use when performing `power_on`.
+    pub const fn fill_value(mut self, value: u8) -> Self {
+        self.fill_value = value;
+        self
+    }
+
+    /// `fill_value` is a builder which sets the vectors to use when performing `power_on`.
+    pub const fn vectors(mut self, vectors: Vectors) -> Self {
+        self.vectors = vectors;
+        self
+    }
+}
