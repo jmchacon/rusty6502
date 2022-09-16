@@ -369,6 +369,8 @@ enum CPUState {
     // Will throw errors in any functions if this state because `power_on`
     // hasn't been called.
     Off,
+    // If we're in a reset sequence and not done yet.
+    Reset,
     // Set in `power_on`
     Running,
     // If we ran a halted instruction we end up here.
@@ -525,6 +527,10 @@ impl<'a> Cpu<'a> {
     ///
     /// TODO(jchacon): See if any of this gets more defined on CMOS versions.
     pub fn power_on(&mut self) -> Result<()> {
+        if self.state != CPUState::Off {
+            return Err(eyre!("cannot power on except from an off state"));
+        }
+
         let mut rng = rand::thread_rng();
 
         // This is always set and clears the rest.
@@ -575,12 +581,13 @@ impl<'a> Cpu<'a> {
     ///
     /// TODO: Can we reuse the BRK code for this?
     pub fn reset(&mut self) -> Result<bool> {
-        if self.state != CPUState::Running {
+        if self.state == CPUState::Off {
             return Err(eyre!("power_on not called before calling reset!"));
         }
 
         // If we haven't started a reset sequence start it now.
-        if self.reset_tick == Tick::Reset {
+        if self.state != CPUState::Reset {
+            self.state = CPUState::Reset;
             self.tick_done = false;
             self.op_tick = Tick::Reset;
             self.reset_tick = Tick::Tick1;
@@ -591,6 +598,7 @@ impl<'a> Cpu<'a> {
         match self.reset_tick {
             Tick::Tick1 | Tick::Tick2 => {
                 // Burn off 2 clocks internally to reset before we start processing.
+                // TODO: This does trigger bus reads so figure those out and do them.
                 self.reset_tick = self.reset_tick.next();
                 Ok(false)
             }
@@ -601,6 +609,7 @@ impl<'a> Cpu<'a> {
                         // is the opcode but we discard.
                         self.ram.read(self.pc);
                         self.pc += 1;
+
                         // Reset our other internal state
 
                         // If we were halted before, clear that out.
@@ -615,7 +624,8 @@ impl<'a> Cpu<'a> {
                         Ok(false)
                     }
                     Tick::Tick2 => {
-                        // Read another throw away value which is normally the opval.
+                        // Read another throw away value which is normally the opval but
+                        // discarded as well.
                         self.ram.read(self.pc);
                         self.pc += 1;
                         Ok(false)
@@ -675,6 +685,31 @@ impl<'a> Cpu<'a> {
             _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
         }
     }
+
+    /// `tick` is used to move the clock forward one tick and either start processing
+    /// a new opcode or continue on one already started.
+    ///
+    /// # Errors
+    /// Bad internal state or causing a halt of the CPU will result in errors.
+    ///
+    /// Bad internal state includes not powering on, not completing a reset sequence
+    /// and already being halted.
+    pub fn tick(&mut self) -> Result<()> {
+        // Handles halted and improperly initialized CPU states.
+        if self.state != CPUState::Running {
+            return Err(eyre!(
+                "cannot tick except in Running state - {}",
+                self.state
+            ));
+        }
+        if self.reset_tick != Tick::Reset {
+            return Err(eyre!(
+                "cannot tick if reset_tick is currently in progress - {}",
+                self.reset_tick
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// `FlatRAM` gives a flat 64k RAM block to use.
@@ -688,6 +723,7 @@ pub struct FlatRAM {
     fill_value: u8,
     vectors: Vectors,
     memory: [u8; MAX_SIZE],
+    debug: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -705,11 +741,17 @@ pub struct Vectors {
 
 impl Memory for FlatRAM {
     fn read(&self, addr: u16) -> u8 {
-        self.memory[addr as usize]
+        if self.debug {
+            println!("read: {addr:04X}: {:02X}", self.memory[usize::from(addr)]);
+        }
+        self.memory[usize::from(addr)]
     }
 
     fn write(&mut self, addr: u16, val: u8) {
-        self.memory[addr as usize] = val;
+        if self.debug {
+            println!("write: {addr:04X}: {val:02X}");
+        }
+        self.memory[usize::from(addr)] = val;
     }
 
     /// `power_on` will perform power on behavior. For `FlatRAM` this entails
@@ -744,7 +786,14 @@ impl FlatRAM {
                 ..Default::default()
             },
             memory: [0; MAX_SIZE],
+            debug: false,
         }
+    }
+
+    /// `debug` is a builder which enables debug mode for `FlatRAM`
+    pub const fn debug(mut self) -> Self {
+        self.debug = true;
+        self
     }
 
     /// `fill_value` is a builder which sets the fill value to use when performing `power_on`.
