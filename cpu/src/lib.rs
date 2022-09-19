@@ -369,17 +369,27 @@ enum CPUState {
     // Will throw errors in any functions if this state because `power_on`
     // hasn't been called.
     Off,
+
+    // The state `power_on` leaves the chip which generally moves
+    // immediate into Reset.
+    On,
+
     // If we're in a reset sequence and not done yet.
     Reset,
-    // Set in `power_on`
+
+    // Set in `reset` or `tick_done`
     Running,
+
+    // The mode we are in after a `tick` has run
+    Tick,
+
     // If we ran a halted instruction we end up here.
     Halted,
 }
 
 // Used to indicate whether an opcode/addressing mode is done or not.
 enum OpState {
-    None,
+    Done,
     Processing,
 }
 
@@ -389,6 +399,7 @@ enum Tick {
     // The reset state. Used to start a new instruction assuming all
     // processing immediately calls `next` before evaluatin.
     Reset,
+
     // This is the normal start case for a new instruction.
     Tick1,
     Tick2,
@@ -397,6 +408,7 @@ enum Tick {
     Tick5,
     Tick6,
     Tick7,
+
     // Technically documented 6502 instructions take no more than 7 cycles.
     // But a RMW indirect X/Y will take 8.
     Tick8,
@@ -420,47 +432,64 @@ impl Tick {
 pub struct Cpu<'a> {
     // The specific variant implemented.
     cpu_type: Type,
+
     /// Accumulator register
     pub a: u8,
+
     /// X register
     pub x: u8,
+
     /// Y register
     pub y: u8,
+
     /// Stack pointer
     pub s: u8,
+
     /// Status register
     pub p: u8,
+
     /// Program counter
     pub pc: u16,
+
     // If true `debug` will return data.
     debug: bool,
+
     // Initialized or not.
     state: CPUState,
+
     // Tracking for reset when we need to clear the extra clocks
     // up front before simulating BRK. If `tick` is called and this
     // isn't in Tick::Reset an error will result.
     reset_tick: Tick,
+
     // Total number of clock cycles since start.
     clocks: usize,
-    // True if `done` was called before the current `tick` call.
-    tick_done: bool,
+
     // Memory implementation
     ram: &'a dyn Memory,
+
     // The current working opcode
     op: u8,
+
     // The 1st byte argument after the opcode (all instruction have this).
     // Often used as a temp value while building the whole instruction.
     op_val: u8,
+
     // Tick number for internal operation of opcode.
     op_tick: Tick,
+
     // Address computed during opcode to be used for read/write (indirect, etc modes).
     op_addr: u16,
+
     // Stays OpState::Processing until the current opcode has completed all ticks.
     op_done: OpState,
+
     // Stays OpState::Processing until the current opcode has completed any addressing mode ticks.
     addr_done: OpState,
+
     // The opcode value used to halt the CPU
     halt_opcode: u8,
+
     // The PC value of the halt instruction
     halt_pc: u16,
 }
@@ -478,8 +507,10 @@ const P_CARRY: u8 = 0x01;
 pub struct ChipDef<'a> {
     /// The CPU type.
     pub cpu_type: Type,
+
     /// Memory implementation.
     pub ram: &'a dyn Memory,
+
     /// If true debugging is enabled.
     /// TODO: Define the interface for this.
     pub debug: bool,
@@ -502,15 +533,14 @@ impl<'a> Cpu<'a> {
             debug: def.debug,
             state: CPUState::Off,
             clocks: 0,
-            tick_done: false,
             ram: def.ram,
             op: 0x00,
             op_val: 0x00,
             op_tick: Tick::Reset,
             reset_tick: Tick::Reset,
             op_addr: 0x0000,
-            op_done: OpState::None,
-            addr_done: OpState::None,
+            op_done: OpState::Done,
+            addr_done: OpState::Done,
             halt_opcode: 0x00,
             halt_pc: 0x0000,
         }
@@ -562,7 +592,7 @@ impl<'a> Cpu<'a> {
                 Err(e) => return Err(eyre!("{e}")),
             }
         }
-        self.state = CPUState::Running;
+        self.state = CPUState::On;
         Ok(())
     }
 
@@ -588,7 +618,6 @@ impl<'a> Cpu<'a> {
         // If we haven't started a reset sequence start it now.
         if self.state != CPUState::Reset {
             self.state = CPUState::Reset;
-            self.tick_done = false;
             self.op_tick = Tick::Reset;
             self.reset_tick = Tick::Tick1;
         }
@@ -676,7 +705,7 @@ impl<'a> Cpu<'a> {
                             + u16::from(self.op_val);
                         self.reset_tick = Tick::Reset;
                         self.op_tick = Tick::Reset;
-                        self.tick_done = true;
+                        self.state = CPUState::Running;
                         Ok(true)
                     }
                     _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
@@ -694,20 +723,58 @@ impl<'a> Cpu<'a> {
     ///
     /// Bad internal state includes not powering on, not completing a reset sequence
     /// and already being halted.
-    pub fn tick(&mut self) -> Result<()> {
-        // Handles halted and improperly initialized CPU states.
+    pub fn tick(&mut self) -> Result<bool> {
+        // Handles improper state. Only tick_done() or reset() can move into this state.
         if self.state != CPUState::Running {
             return Err(eyre!(
-                "cannot tick except in Running state - {}",
+                "Cannot tick except in Running state - {}",
                 self.state
             ));
         }
+        // Move to the state tick_done() has to move us out of.
+        self.state = CPUState::Tick;
+
         if self.reset_tick != Tick::Reset {
             return Err(eyre!(
-                "cannot tick if reset_tick is currently in progress - {}",
+                "Cannot tick if reset_tick is currently in progress - {}",
                 self.reset_tick
             ));
         }
+
+        // Always bump the clock count and op_tick.
+        self.clocks += 1;
+        self.op_tick = self.op_tick.next();
+
+        match self.op_tick {
+            Tick::Tick1 => {
+                // If we're in 1 this means start a new instruction based on the PC value so grab
+                // the opcode now.
+                self.op = self.ram.read(self.pc);
+
+                // Move out of the done state.
+                self.op_done = OpState::Processing;
+                self.addr_done = OpState::Processing;
+                return Ok(false);
+            }
+            Tick::Tick2 => {
+                // All instructions fetch the value after the opcode (though some like BRK/PHP/etc ignore it).
+                // We keep it since some instructions such as absolute addr then require getting one
+                // more byte. So cache at this stage since we no idea if it's needed.
+                // NOTE: the PC doesn't increment here as that's dependent on addressing mode which will handle it.
+                self.op_val = self.ram.read(self.pc);
+            }
+            // The remainder don't do anything and no need to test Reset state as next() above has to have moved
+            // out of it.
+            _ => {}
+        }
+        return Ok(true);
+    }
+
+    /// `tick_done` moves the CPU back to a state where the next tick can run.
+    /// For the 6502 there are no internal latches so generally there is no shadow
+    /// state to account but all Chip implementations need this function.
+    pub fn tick_done(&mut self) -> Result<()> {
+        self.state = CPUState::Running;
         Ok(())
     }
 }
