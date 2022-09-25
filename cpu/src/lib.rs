@@ -1,4 +1,6 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
+use std::num::Wrapping;
+
 use memory::{Memory, MAX_SIZE};
 
 use color_eyre::eyre::{eyre, Result};
@@ -7,6 +9,8 @@ use strum_macros::{Display, EnumIter, EnumString};
 
 mod lookup;
 pub use crate::lookup::*;
+
+mod tests;
 
 /// `AddressMode` defines the 6502 addressing modes.
 #[derive(Clone, Copy, Display, Debug, Default, PartialEq, Eq, Hash, EnumString)]
@@ -428,28 +432,29 @@ impl Tick {
         }
     }
 }
+
 /// The definition for a given 6502 implementation.
 pub struct Cpu<'a> {
     // The specific variant implemented.
     cpu_type: Type,
 
     /// Accumulator register
-    pub a: u8,
+    pub a: Wrapping<u8>,
 
     /// X register
-    pub x: u8,
+    pub x: Wrapping<u8>,
 
     /// Y register
-    pub y: u8,
+    pub y: Wrapping<u8>,
 
     /// Stack pointer
-    pub s: u8,
+    pub s: Wrapping<u8>,
 
     /// Status register
     pub p: u8,
 
     /// Program counter
-    pub pc: u16,
+    pub pc: Wrapping<u16>,
 
     // If true `debug` will return data.
     debug: bool,
@@ -524,12 +529,12 @@ impl<'a> Cpu<'a> {
     pub fn new(def: &'a ChipDef) -> Self {
         Cpu {
             cpu_type: def.cpu_type,
-            a: 0x00,
-            x: 0x00,
-            y: 0x00,
-            s: 0x00,
+            a: Wrapping(0x00),
+            x: Wrapping(0x00),
+            y: Wrapping(0x00),
+            s: Wrapping(0x00),
             p: 0x00,
-            pc: 0x00,
+            pc: Wrapping(0x0000),
             debug: def.debug,
             state: CPUState::Off,
             clocks: 0,
@@ -584,15 +589,16 @@ impl<'a> Cpu<'a> {
         self.y = rng.gen();
         self.s = rng.gen();
 
+        self.state = CPUState::On;
+
         // Use reset to get everything else done.
         loop {
             match self.reset() {
                 Ok(true) => break,
-                Ok(false) => {}
-                Err(e) => return Err(eyre!("{e}")),
+                Ok(false) => continue,
+                Err(e) => return Err(e),
             }
         }
-        self.state = CPUState::On;
         Ok(())
     }
 
@@ -629,6 +635,11 @@ impl<'a> Cpu<'a> {
                 // Burn off 2 clocks internally to reset before we start processing.
                 // TODO: This does trigger bus reads so figure those out and do them.
                 self.reset_tick = self.reset_tick.next();
+
+                // Leave op_tick in reset mode so once we're done here it'll match below
+                // as Tick1.
+                self.op_tick = Tick::Reset;
+
                 Ok(false)
             }
             Tick::Tick3 => {
@@ -636,26 +647,25 @@ impl<'a> Cpu<'a> {
                     Tick::Tick1 => {
                         // Standard first tick reads current PC value which normally
                         // is the opcode but we discard.
-                        self.ram.read(self.pc);
+                        self.ram.read(self.pc.0);
                         self.pc += 1;
 
                         // Reset our other internal state
 
                         // If we were halted before, clear that out.
-                        self.state = CPUState::Running;
                         self.halt_opcode = 0x00;
                         self.halt_pc = 0x0000;
 
                         // The stack ends up at 0xFD which implies it gets set to 0x00 now
                         // as we pull 3 bytes off the stack in the end.
                         // TODO: Double check this in visual 6502.
-                        self.s = 0x00;
+                        self.s = Wrapping(0x00);
                         Ok(false)
                     }
                     Tick::Tick2 => {
                         // Read another throw away value which is normally the opval but
                         // discarded as well.
-                        self.ram.read(self.pc);
+                        self.ram.read(self.pc.0);
                         self.pc += 1;
                         Ok(false)
                     }
@@ -664,14 +674,14 @@ impl<'a> Cpu<'a> {
                         // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
                         // These reads go nowhere (technically they end up in internal regs but since that's
                         // not visible externally, who cares?).
-                        let addr: u16 = 0x0100 + u16::from(self.s);
+                        let addr: u16 = 0x0100 + u16::from(self.s.0);
                         self.ram.read(addr);
                         self.s -= 1;
                         Ok(false)
                     }
                     Tick::Tick5 => {
                         // Final write to stack (PC high) but actual read due to being in reset.
-                        let addr: u16 = 0x0100 + u16::from(self.s);
+                        let addr: u16 = 0x0100 + u16::from(self.s.0);
                         self.ram.read(addr);
                         self.s -= 1;
 
@@ -701,8 +711,8 @@ impl<'a> Cpu<'a> {
                     }
                     Tick::Tick7 => {
                         // Load PCH from reset vector and go back into normal operations.
-                        self.pc = (u16::from(self.ram.read(RESET_VECTOR + 1)) << 8)
-                            + u16::from(self.op_val);
+                        self.pc = Wrapping(u16::from(self.ram.read(RESET_VECTOR + 1)) << 8)
+                            + Wrapping(u16::from(self.op_val));
                         self.reset_tick = Tick::Reset;
                         self.op_tick = Tick::Reset;
                         self.state = CPUState::Running;
@@ -749,7 +759,7 @@ impl<'a> Cpu<'a> {
             Tick::Tick1 => {
                 // If we're in 1 this means start a new instruction based on the PC value so grab
                 // the opcode now.
-                self.op = self.ram.read(self.pc);
+                self.op = self.ram.read(self.pc.0);
 
                 // Move out of the done state.
                 self.op_done = OpState::Processing;
@@ -761,7 +771,7 @@ impl<'a> Cpu<'a> {
                 // We keep it since some instructions such as absolute addr then require getting one
                 // more byte. So cache at this stage since we no idea if it's needed.
                 // NOTE: the PC doesn't increment here as that's dependent on addressing mode which will handle it.
-                self.op_val = self.ram.read(self.pc);
+                self.op_val = self.ram.read(self.pc.0);
             }
             // The remainder don't do anything and no need to test Reset state as next() above has to have moved
             // out of it.
@@ -774,6 +784,13 @@ impl<'a> Cpu<'a> {
     /// For the 6502 there are no internal latches so generally there is no shadow
     /// state to account but all Chip implementations need this function.
     pub fn tick_done(&mut self) -> Result<()> {
+        if self.state != CPUState::Tick {
+            return Err(eyre!(
+                "Cannot tick_done except in Tick state - {}",
+                self.state
+            ));
+        }
+        // Move to the next state.
         self.state = CPUState::Running;
         Ok(())
     }
