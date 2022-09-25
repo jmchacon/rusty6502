@@ -1,13 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use super::super::{list, Keyword, BASIC_LOAD_ADDR};
+    use super::super::{list, BASIC_LOAD_ADDR};
     use rusty6502::prelude::*;
     use std::error::Error;
     use std::fmt::Write as _;
     use std::fs::read;
     use std::num::Wrapping;
     use std::path::Path;
-    use strum::IntoEnumIterator;
 
     macro_rules! list_test {
         ($suite:ident, $($name:ident: $file:literal,)*) => {

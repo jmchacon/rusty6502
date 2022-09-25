@@ -785,9 +785,7 @@ pub fn list(pc: Wrapping<u16>, r: &impl Memory) -> Result<(String, Wrapping<u16>
         let tmp: String;
 
         let emit = match tok {
-            0x00 => {
-                break;
-            }
+            0x00 => break,
             0x01..=ASCII_END => {
                 b[0] = tok;
                 // Safety: We know this is < 128 so it must be valid utf8.
@@ -798,7 +796,7 @@ pub fn list(pc: Wrapping<u16>, r: &impl Memory) -> Result<(String, Wrapping<u16>
                 tmp = KEYWORDS.get(&tok).unwrap_unchecked().to_string();
                 tmp.as_str()
             },
-            KEYWORD_INVALID..=0xFF => {
+            KEYWORD_INVALID_LOW..=KEYWORD_INVALID_HIGH => {
                 return Err(ParseError { output_string });
             }
         };
@@ -810,7 +808,8 @@ pub fn list(pc: Wrapping<u16>, r: &impl Memory) -> Result<(String, Wrapping<u16>
 const ASCII_END: u8 = 0x7F;
 const KEYWORD_START: u8 = 0x80;
 const KEYWORD_HIGH: u8 = 0xCB;
-const KEYWORD_INVALID: u8 = KEYWORD_HIGH + 1;
+const KEYWORD_INVALID_LOW: u8 = KEYWORD_HIGH + 1;
+const KEYWORD_INVALID_HIGH: u8 = 0xFF;
 
 lazy_static! {
     static ref KEYWORDS: HashMap<u8, Keyword> = HashMap::from([
