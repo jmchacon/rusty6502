@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "./cpu",
     "./c64basic",
     "./disassemble",
     "./disassembler",
@@ -11,6 +12,7 @@ members = [
     "./chip",
 ]
 default-members = [
+    "./cpu",
     "./c64basic",
     "./disassemble",
     "./disassembler",
