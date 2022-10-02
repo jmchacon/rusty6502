@@ -398,10 +398,11 @@ enum OpState {
 }
 
 // Clock ticks
-#[derive(Debug, Display, Copy, Clone, PartialEq, EnumString)]
+#[derive(Debug, Default, Display, Copy, Clone, PartialEq, EnumString)]
 enum Tick {
     // The reset state. Used to start a new instruction assuming all
     // processing immediately calls `next` before evaluatin.
+    #[default]
     Reset,
 
     // This is the normal start case for a new instruction.
@@ -718,6 +719,9 @@ impl<'a> Cpu<'a> {
                         self.state = CPUState::Running;
                         Ok(true)
                     }
+                    // Technically both this and the reset_tick one below are impossible
+                    // sans bugs here as tick() won't run while we're in reset and it's the only other
+                    // way to modify the sequence.
                     _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
                 }
             }
@@ -736,20 +740,11 @@ impl<'a> Cpu<'a> {
     pub fn tick(&mut self) -> Result<bool> {
         // Handles improper state. Only tick_done() or reset() can move into this state.
         if self.state != CPUState::Running {
-            return Err(eyre!(
-                "Cannot tick except in Running state - {}",
-                self.state
-            ));
+            return Err(eyre!("CPU not in Running state - {}", self.state));
         }
+
         // Move to the state tick_done() has to move us out of.
         self.state = CPUState::Tick;
-
-        if self.reset_tick != Tick::Reset {
-            return Err(eyre!(
-                "Cannot tick if reset_tick is currently in progress - {}",
-                self.reset_tick
-            ));
-        }
 
         // Always bump the clock count and op_tick.
         self.clocks += 1;
@@ -760,6 +755,10 @@ impl<'a> Cpu<'a> {
                 // If we're in 1 this means start a new instruction based on the PC value so grab
                 // the opcode now.
                 self.op = self.ram.read(self.pc.0);
+
+                // PC advances always when we start a new opcode
+                // TODO(jchacon): Handle interrupts
+                self.pc += 1;
 
                 // Move out of the done state.
                 self.op_done = OpState::Processing;
@@ -772,10 +771,13 @@ impl<'a> Cpu<'a> {
                 // more byte. So cache at this stage since we no idea if it's needed.
                 // NOTE: the PC doesn't increment here as that's dependent on addressing mode which will handle it.
                 self.op_val = self.ram.read(self.pc.0);
+                return Ok(false);
             }
             // The remainder don't do anything and no need to test Reset state as next() above has to have moved
             // out of it.
-            _ => {}
+            _ => {
+                self.op_tick = Tick::Reset;
+            }
         }
         return Ok(true);
     }
@@ -785,10 +787,7 @@ impl<'a> Cpu<'a> {
     /// state to account but all Chip implementations need this function.
     pub fn tick_done(&mut self) -> Result<()> {
         if self.state != CPUState::Tick {
-            return Err(eyre!(
-                "Cannot tick_done except in Tick state - {}",
-                self.state
-            ));
+            return Err(eyre!("tick_done called outside Tick - {}", self.state));
         }
         // Move to the next state.
         self.state = CPUState::Running;
