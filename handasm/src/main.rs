@@ -23,10 +23,7 @@ use color_eyre::eyre::{eyre, Result};
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
-    #[clap()]
     filename: String,
-
-    #[clap()]
     output: String,
 }
 

@@ -25,7 +25,6 @@ use std::{ffi::OsStr, fs::read, fs::write, path::Path};
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
-    #[clap()]
     filename: String,
 
     #[arg(
