@@ -12,22 +12,23 @@ use std::{ffi::OsStr, fs::read, fs::write, path::Path};
 ///
 /// This assumes exection will start at 0xD000
 /// which will then JSR to the start PC given.
+///
 /// BRK/IRQ/NMI vectors will all point at 0xC000
 /// which simply infinite loops.
 ///
 /// Certain parts of RAM in zero page will be initialized
 /// with c64 values (such as the vectors used for finding
-/// start of basic, etc)
+/// start of basic, etc).
 ///
 /// The output file is named after the input with .bin
 /// appended onto the end replacing .prg.
 #[derive(Parser)]
-#[clap(author, version)]
+#[command(author, version, about)]
 struct Args {
     #[clap()]
     filename: String,
 
-    #[clap(
+    #[arg(
         long,
         default_value_t = 0,
         help = "The PC value to start running via a JSR from 0xD000"
@@ -188,4 +189,10 @@ fn write_c64_values(block: &mut [u8]) {
     block[0x0331] = 0xF4;
     block[0x0332] = 0xED;
     block[0x0333] = 0xF5;
+}
+
+#[test]
+fn verify_cli() {
+    use clap::CommandFactory;
+    Args::command().debug_assert()
 }

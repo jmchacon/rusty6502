@@ -1,4 +1,4 @@
-//! Disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
+//! disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
 //! and disassemble it.
 
 use c64basic::{list, BASIC_LOAD_ADDR};
@@ -8,27 +8,26 @@ use disassemble::step;
 use rusty6502::prelude::*;
 use std::{ffi::OsStr, fs::read, num::Wrapping, path::Path};
 
-/// Disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
+/// disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
 /// and disassemble it.
 ///
 /// If it's a c64 basic program the basic code will be interpreted and anything
-/// remaining after will be disassembled as assembly.#[derive(Parser)]
+/// remaining after will be disassembled as assembly.
 #[derive(Parser)]
-#[clap(author, version)]
+#[command(author, version, about)]
 struct Args {
-    #[clap(value_parser)]
     cpu_type: Type,
 
     filename: String,
 
-    #[clap(
+    #[arg(
         long,
         default_value_t = 0,
         help = "Offset into RAM to start loading data. All other RAM will be zero'd out. Ignored for PRG files."
     )]
     offset: u16,
 
-    #[clap(long, default_value_t = 0, help = "The PC value to start disassembly.")]
+    #[arg(long, default_value_t = 0, help = "The PC value to start disassembly.")]
     start_pc: u16,
 }
 
@@ -133,4 +132,10 @@ fn main() -> Result<()> {
         pc = newpc;
     }
     Ok(())
+}
+
+#[test]
+fn verify_cli() {
+    use clap::CommandFactory;
+    Args::command().debug_assert()
 }

@@ -1,4 +1,4 @@
-//! Assembler will take the given input file and generate a .bin file
+//! assembler will take the given input file and generate a .bin file
 //! after assembling the instructions presented in it.
 
 use assemble::parse;
@@ -11,12 +11,11 @@ use std::{
     path::Path,
 };
 
-/// Assembler will take the given input file and generate a .bin file
+/// assembler will take the given input file and generate a .bin file
 /// after assembling the instructions presented in it.
 #[derive(Parser)]
-#[clap(author, version)]
+#[command(author, version, about)]
 struct Args {
-    #[clap(value_parser)]
     cpu_type: Type,
     filename: String,
     output: String,
@@ -45,4 +44,10 @@ where
 {
     let file = File::open(filename)?;
     Ok(io::BufReader::new(file).lines())
+}
+
+#[test]
+fn verify_cli() {
+    use clap::CommandFactory;
+    Args::command().debug_assert()
 }

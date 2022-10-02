@@ -21,7 +21,7 @@ use color_eyre::eyre::{eyre, Result};
 /// handasm will take a file which looks like disassembler output
 /// and use that to construct a 64k binary image file.
 #[derive(Parser)]
-#[clap(author, version)]
+#[command(author, version, about)]
 struct Args {
     #[clap()]
     filename: String,
@@ -126,4 +126,10 @@ where
 {
     let file = File::open(filename)?;
     Ok(io::BufReader::new(file).lines())
+}
+
+#[test]
+fn verify_cli() {
+    use clap::CommandFactory;
+    Args::command().debug_assert()
 }
