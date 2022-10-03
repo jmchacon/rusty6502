@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod tests {
     use crate::{ChipDef, Cpu, FlatRAM, Tick, Type, Vectors, P_DECIMAL};
-    use color_eyre::eyre::{eyre, Result};
+    use color_eyre::eyre::Result;
     use memory::Memory;
     use std::collections::HashSet;
-    use std::error::Error;
 
+    #[test]
     fn tick_next() -> Result<()> {
         let mut ticker = Tick::default();
 
@@ -146,18 +146,11 @@ mod tests {
                             }
                         }
 
-                        // Should work now to advance a few ticks until we're done
-                        loop {
-                            match cpu.tick() {
-                                Ok(true) => break,
-                                Ok(false) => {
-                                    cpu.tick_done()?;
-                                    continue
-                                }
-                                Err(e) => return Err(e),
-                            }
+                        // Should work now to advance a few ticks.
+                        for _ in 0..4 {
+                            cpu.tick()?;
+                            cpu.tick_done()?;
                         }
-                        cpu.tick_done()?;
 
                         // Now validate you can't call tick_done() twice in a row or tick twice in a row.
                         {
@@ -181,6 +174,6 @@ mod tests {
         nmos: Type::NMOS,
         ricoh: Type::Ricoh,
         nmos6510: Type::NMOS6510,
-        cmos: Type::CMOS,
+        //   cmos: Type::CMOS,
     );
 }

@@ -2,6 +2,7 @@
 use std::num::Wrapping;
 
 use memory::{Memory, MAX_SIZE};
+use thiserror::Error;
 
 use color_eyre::eyre::{eyre, Result};
 use rand::Rng;
@@ -345,7 +346,7 @@ pub enum Type {
     CMOS,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone)]
 /// Operation defines an opcode plus its addressing mode together. This will be combined in hashes
 /// with the actual u8 value as the key.
 pub struct Operation {
@@ -475,7 +476,8 @@ pub struct Cpu<'a> {
     ram: &'a dyn Memory,
 
     // The current working opcode
-    op: u8,
+    op: Operation,
+    op_raw: u8,
 
     // The 1st byte argument after the opcode (all instruction have this).
     // Often used as a temp value while building the whole instruction.
@@ -522,6 +524,12 @@ pub struct ChipDef<'a> {
     pub debug: bool,
 }
 
+#[derive(Error, Debug)]
+pub enum CPUError {
+    #[error("Halted condition opcode: {op:02X}")]
+    Halted { op: u8 },
+}
+
 impl<'a> Cpu<'a> {
     /// Build a new Cpu.
     /// NOTE: This is not usable at this point. Call `power_on` to begin
@@ -540,7 +548,8 @@ impl<'a> Cpu<'a> {
             state: CPUState::Off,
             clocks: 0,
             ram: def.ram,
-            op: 0x00,
+            op: Operation::default(),
+            op_raw: 0x00,
             op_val: 0x00,
             op_tick: Tick::Reset,
             reset_tick: Tick::Reset,
@@ -737,7 +746,7 @@ impl<'a> Cpu<'a> {
     ///
     /// Bad internal state includes not powering on, not completing a reset sequence
     /// and already being halted.
-    pub fn tick(&mut self) -> Result<bool> {
+    pub fn tick(&mut self) -> Result<()> {
         // Handles improper state. Only tick_done() or reset() can move into this state.
         if self.state != CPUState::Running {
             return Err(eyre!("CPU not in Running state - {}", self.state));
@@ -752,9 +761,10 @@ impl<'a> Cpu<'a> {
 
         match self.op_tick {
             Tick::Tick1 => {
-                // If we're in 1 this means start a new instruction based on the PC value so grab
-                // the opcode now.
-                self.op = self.ram.read(self.pc.0);
+                // If we're in Tick1 this means start a new instruction based on the PC value so grab
+                // the opcode now and look it up.
+                self.op_raw = self.ram.read(self.pc.0);
+                self.op = opcode_op(self.cpu_type, self.op_raw);
 
                 // PC advances always when we start a new opcode
                 // TODO(jchacon): Handle interrupts
@@ -763,7 +773,7 @@ impl<'a> Cpu<'a> {
                 // Move out of the done state.
                 self.op_done = OpState::Processing;
                 self.addr_done = OpState::Processing;
-                return Ok(false);
+                return Ok(());
             }
             Tick::Tick2 => {
                 // All instructions fetch the value after the opcode (though some like BRK/PHP/etc ignore it).
@@ -771,15 +781,75 @@ impl<'a> Cpu<'a> {
                 // more byte. So cache at this stage since we no idea if it's needed.
                 // NOTE: the PC doesn't increment here as that's dependent on addressing mode which will handle it.
                 self.op_val = self.ram.read(self.pc.0);
-                return Ok(false);
             }
-            // The remainder don't do anything and no need to test Reset state as next() above has to have moved
-            // out of it.
-            _ => {
-                self.op_tick = Tick::Reset;
-            }
+            // The remainder don't do anything general per cycle so they can be ignored. Opcode processing determines
+            // when they are done and all of them do sanity checking for Tick range.
+            _ => {}
         }
-        return Ok(true);
+
+        // Process the opcode
+        let ret = self.process_opcode();
+
+        // We'll treat an error as halted since internal state is unknown at that point.
+        // For halted instructions though we'll return a custom error type so it can
+        // be detected vs internal errors.
+        if self.state == CPUState::Halted || ret.is_err() {
+            self.state = CPUState::Halted;
+            self.halt_opcode = self.op_raw;
+            self.op_done = OpState::Done;
+            if ret.is_err() {
+                return Err(ret.err().unwrap());
+            }
+            return Err(eyre!(CPUError::Halted {
+                op: self.halt_opcode,
+            }));
+        }
+        return Ok(());
+    }
+
+    fn process_opcode(&mut self) -> Result<bool> {
+        let mut ret = Ok(false);
+        match (self.op.op, self.op.mode) {
+            (Opcode::BRK, AddressMode::Immediate) => {
+                // p.opDone, err = p.iBRK()
+            }
+            (Opcode::ORA, AddressMode::IndirectX) => {
+                // p.opDone, err = p.loadInstruction(p.addrIndirectX, p.iORA)
+            }
+            (Opcode::HLT, AddressMode::Implied) => {
+                self.state = CPUState::Halted;
+            }
+            (Opcode::TAX, AddressMode::Implied) => {
+                ret = Self::load_register(&mut self.p, &mut self.x, self.a.0);
+            }
+            _ => todo!("implement for {:?} {:?}", self.op.op, self.op.mode),
+        }
+        ret
+    }
+
+    // zero_check sets the Z flag based on the register contents.
+    fn zero_check(flags: &mut u8, reg: u8) {
+        *flags &= !P_ZERO;
+        if reg == 0 {
+            *flags |= P_ZERO;
+        }
+    }
+
+    // negative_check sets the N flag based on the register contents.
+    fn negative_check(flags: &mut u8, reg: u8) {
+        *flags &= !P_NEGATIVE;
+        if (reg & P_NEGATIVE) == 0x80 {
+            *flags |= P_NEGATIVE;
+        }
+    }
+
+    // load_register takes the val and inserts it into the register passed in. It then does
+    // Z and N checks against the new value.
+    fn load_register(flags: &mut u8, reg: &mut Wrapping<u8>, val: u8) -> Result<bool> {
+        *reg = Wrapping(val);
+        Self::zero_check(flags, reg.0);
+        Self::negative_check(flags, reg.0);
+        Ok(true)
     }
 
     /// `tick_done` moves the CPU back to a state where the next tick can run.
