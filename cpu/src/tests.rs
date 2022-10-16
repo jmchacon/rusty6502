@@ -49,13 +49,13 @@ mod tests {
                             });
                             r.power_on();
 
-                            let def = ChipDef {
+                            let mut def = ChipDef {
                                 cpu_type: $type,
-                                ram: &r,
+                                ram: &mut r,
                                 debug: false,
                             };
 
-                            let mut cpu = Cpu::new(&def);
+                            let mut cpu = Cpu::new(&mut def);
 
                             // This should fail
                             {
@@ -115,13 +115,13 @@ mod tests {
                         }).fill_value(0xAA).debug();
                         r.power_on();
 
-                        let def = ChipDef {
+                        let mut def = ChipDef {
                             cpu_type: $type,
-                            ram: &r,
+                            ram: &mut r,
                             debug: false,
                         };
 
-                        let mut cpu = Cpu::new(&def);
+                        let mut cpu = Cpu::new(&mut def);
 
                         // This should fail as we haven't powered on/reset.
                         {
