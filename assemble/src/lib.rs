@@ -144,7 +144,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         if let Ok(op) = Opcode::from_str(token) {
                             State::Op(op)
                         } else {
-                            match parse_label(*token) {
+                            match parse_label(token) {
                                 Ok(label) => State::Label(label),
                                 Err(err) => {
                                     return Err(eyre!(
@@ -790,7 +790,7 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                         let val = if let Some(val) = &o.op_val {
                             format!("{val}")
                         } else {
-                            String::from("")
+                            String::new()
                         };
 
                         write!(output, "{op:?}").unwrap();
