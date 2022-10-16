@@ -763,7 +763,7 @@ pub fn list(pc: Wrapping<u16>, r: &impl Memory) -> Result<(String, Wrapping<u16>
 
     // Return an empty string and PC = 0x0000 for end of program.
     if new_pc == 0x0000 {
-        return Ok((String::from(""), Wrapping(0x0000)));
+        return Ok((String::new(), Wrapping(0x0000)));
     }
 
     // Next 2 are line number also stored in little endian so we can just use readAddr again.
