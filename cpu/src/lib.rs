@@ -400,7 +400,7 @@ enum IRQ {
     Nmi,
 }
 // Used to indicate whether an opcode/addressing mode is done or not.
-#[derive(PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 enum OpState {
     Done,
     Processing,
@@ -511,6 +511,10 @@ pub struct Cpu<'a> {
     op_addr: u16,
 
     // Stays OpState::Processing until the current opcode has completed any addressing mode ticks.
+    // NOTE: This is instruction dependent as to whether it gets updated. i.e. NOP may just run through
+    //       addressing mode cycles and complete without bothering to set this since nothing else in that
+    //       instruction will care. Constrast to a RMW instruction which has to run a cycle one past when
+    //       this is marked Done.
     addr_done: OpState,
 
     // Whether we've previously skipped processing an interrupt due to 2 firing back to back.
@@ -830,8 +834,8 @@ impl<'a> Cpu<'a> {
                 op: self.halt_opcode,
             }));
         }
-        if let Ok(done) = ret {
-            if done {
+        if let Ok(state) = ret {
+            if state == OpState::Done {
                 // Reset so the next tick starts a new instruction
                 // It'll handle doing start of instruction reset on state.
                 self.op_tick = Tick::Reset;
@@ -862,7 +866,7 @@ impl<'a> Cpu<'a> {
         Ok(())
     }
 
-    fn process_opcode(&mut self) -> Result<bool> {
+    fn process_opcode(&mut self) -> Result<OpState> {
         match (self.op.op, self.op.mode) {
             // 0x00 - BRK #i
             (Opcode::BRK, AddressMode::Immediate) => self.brk(),
@@ -870,10 +874,10 @@ impl<'a> Cpu<'a> {
             (Opcode::ORA, AddressMode::IndirectX) => {
                 self.load_instruction(Self::addr_indirect_x, Self::ora)
             }
-            // 0x02 - HLT
+            // 0x02 0x12 - HLT
             (Opcode::HLT, AddressMode::Implied) => {
                 self.state = CPUState::Halted;
-                Ok(false)
+                Ok(OpState::Done)
             }
             // 0x03 - SLO (d,x)
             (Opcode::SLO, AddressMode::IndirectX) => {
@@ -885,6 +889,87 @@ impl<'a> Cpu<'a> {
             (Opcode::ORA, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::ora),
             // 0x06 - ASL d
             (Opcode::ASL, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::asl),
+            // 0x07 - SLO d
+            (Opcode::SLO, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::slo),
+            // 0x08 - PHP
+            (Opcode::PHP, AddressMode::Implied) => self.php(),
+            // 0x09 - ORA #i
+            (Opcode::ORA, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::ora)
+            }
+            // 0x0A - ASL
+            (Opcode::ASL, AddressMode::Implied) => self.asl_acc(),
+            // 0x0B - ANC #i
+            (Opcode::ANC, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::anc)
+            }
+            // 0x0C - NOP a
+            (Opcode::NOP, AddressMode::Absolute) => self.addr_absolute(&InstructionMode::Load),
+            // 0x0D - ORA a
+            (Opcode::ORA, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::ora)
+            }
+            // 0x0E - ASL a
+            (Opcode::ASL, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::asl)
+            }
+            // 0x0F - SLO a
+            (Opcode::SLO, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::slo)
+            }
+            // 0x10 - BPL *+r
+            (Opcode::BPL, AddressMode::Relative) => self.bpl(),
+            // 0x11 - ORA (d),y
+            (Opcode::ORA, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::ora)
+            }
+            // 0x12 - see 0x02
+            // 0x13 - SLO (d),y
+            (Opcode::SLO, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::slo)
+            }
+            // 0x14 - NOP d,x
+            (Opcode::NOP, AddressMode::ZeroPageX) => self.addr_zp_x(&InstructionMode::Load),
+            // 0x15 - ORA d,x
+            (Opcode::ORA, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::ora)
+            }
+            // 0x16 - ASL d,x
+            (Opcode::ASL, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::asl)
+            }
+            // 0x17 - SLO d,x
+            (Opcode::SLO, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::slo)
+            }
+            // 0x18 - CLC
+            (Opcode::CLC, AddressMode::Implied) => self.clc(),
+            // 0x19 - ORA a,y
+            (Opcode::ORA, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::ora)
+            }
+            // 0x1A - NOP
+            (Opcode::NOP, AddressMode::Implied) => Ok(OpState::Done),
+            // 0x1B - SLO a,y
+            (Opcode::SLO, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::slo)
+            }
+            // 0x1C - NOP a,x
+            (Opcode::NOP, AddressMode::AbsoluteX) => self.addr_absolute_x(&InstructionMode::Load),
+            // 0x1D - ORA a,x
+            (Opcode::ORA, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::ora)
+            }
+            // 0x1E - ASL a,x
+            (Opcode::ASL, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::asl)
+            }
+            // 0x1F - SLO a,x
+            (Opcode::SLO, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::slo)
+            }
+            // 0x20 - JSR a
+            (Opcode::JSR, AddressMode::Absolute) => self.jsr(),
             // 0xAA - TAX
             (Opcode::TAX, AddressMode::Implied) => {
                 Self::load_register(&mut self.p, &mut self.x, self.a.0)
@@ -895,15 +980,17 @@ impl<'a> Cpu<'a> {
 
     // load_register takes the val and inserts it into the given register.
     // It then does Z and N checks against the new value and sets flags.
+    // Always returns OpState::Done as this happens on a single tick.
     // NOTE: This isn't a Self method as that would require passing both
     //       a mutable self and a reference to the register which double borrows.
     //       Instead this breaks out the pieces needed which means this and the status
     //       checks below are standalone methods.
-    fn load_register(flags: &mut u8, reg: &mut Wrapping<u8>, val: u8) -> Result<bool> {
+    #[allow(clippy::unnecessary_wraps)]
+    fn load_register(flags: &mut u8, reg: &mut Wrapping<u8>, val: u8) -> Result<OpState> {
         *reg = Wrapping(val);
         Self::zero_check(flags, val);
         Self::negative_check(flags, val);
-        Ok(true)
+        Ok(OpState::Done)
     }
 
     // zero_check sets the Z flag based on the value.
@@ -933,10 +1020,10 @@ impl<'a> Cpu<'a> {
     // overflow_check sets the V flag is the result of the ALU operation
     // caused a two's complement sign change.
     // Taken from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
-    fn overflow_check(flags: &mut u8, reg: u8, arg: u8, res: u8) {
+    fn overflow_check(flags: &mut u8, reg: u8, arg: u8, result: u8) {
         *flags &= !P_OVERFLOW;
         // If the original sign differs from the end sign bit.
-        if (reg ^ res) & (arg ^ res) & 0x80 != 0x00 {
+        if (reg ^ result) & (arg ^ result) & 0x80 != 0x00 {
             *flags |= P_OVERFLOW;
         }
     }
@@ -944,17 +1031,15 @@ impl<'a> Cpu<'a> {
     // load_instruction abstracts all load instruction opcodes. The address mode function is
     // used to get the proper values loaded into op_addr and op_val.
     // Then on the same tick this is done op_func is called to load the appropriate register.
-    // Returns true when complete and/or any error.
+    // Returns OpState::Done when complete and/or any error.
     fn load_instruction(
         &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<bool>,
-        op_func: fn(&mut Self) -> Result<bool>,
-    ) -> Result<bool> {
-        if OpState::Processing == self.addr_done {
-            address_mode(self, &InstructionMode::Load)?;
-        }
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        op_func: fn(&mut Self) -> Result<OpState>,
+    ) -> Result<OpState> {
+        self.addr_done = address_mode(self, &InstructionMode::Load)?;
         match self.addr_done {
-            OpState::Processing => Ok(false),
+            OpState::Processing => Ok(OpState::Processing),
             OpState::Done => op_func(self),
         }
     }
@@ -963,61 +1048,187 @@ impl<'a> Cpu<'a> {
     // used to get the proper values loaded into op_addr and op_val.
     // This assumes the address mode function also handle the extra write RMW instructions perform.
     // Then on the next tick the op_func is called to perform the final write operation.
-    // Returns true when complete and/or any error.
+    // Returns OpState::Done when complete and/or any error.
     fn rmw_instruction(
         &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<bool>,
-        op_func: fn(&mut Self) -> Result<bool>,
-    ) -> Result<bool> {
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        op_func: fn(&mut Self) -> Result<OpState>,
+    ) -> Result<OpState> {
         match self.addr_done {
             OpState::Processing => {
-                address_mode(self, &InstructionMode::Rmw)?;
-                Ok(false)
+                self.addr_done = address_mode(self, &InstructionMode::Rmw)?;
+                Ok(OpState::Processing)
             }
             OpState::Done => op_func(self),
         }
     }
 
-    // addr_zp implements Zero page mode - d
+    // store_instruction abstracts all store instruction opcodes.  The address mode function is
+    // used to get the proper values loaded into op_addr and op_val.
+    // Then on the next tick the op_func is called to perform the final write operation.
+    // Returns OpState::Done when complete and/or any error.
+    fn store_instruction(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        op_func: fn(&mut Self) -> Result<OpState>,
+    ) -> Result<OpState> {
+        match self.addr_done {
+            OpState::Processing => {
+                self.addr_done = address_mode(self, &InstructionMode::Store)?;
+                Ok(OpState::Processing)
+            }
+            OpState::Done => op_func(self),
+        }
+    }
+
+    // addr_absolute implements Absolute mode - a
     // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
     // the 6502 operates.
-    // Returns error on invalid tick.
-    // The bool return value is true if this tick ends address processing.
-    fn addr_zp(&mut self, mode: &InstructionMode) -> Result<bool> {
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_absolute(&mut self, mode: &InstructionMode) -> Result<OpState> {
         match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_zp invalid op_tick: {:?}", self.op_tick))
+            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick))
             }
             Tick::Tick2 => {
-                // Already read the value but need to bump the PC
-                self.op_addr = u16::from(self.op_val);
+                // op_val has the first start of the address so start computing it.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
                 self.pc += 1;
-                match mode {
-                    // For a store we're done since we have the address needed.
-                    &InstructionMode::Store => {
-                        self.addr_done = OpState::Done;
-                        Ok(true)
-                    }
-                    _ => Ok(false),
-                }
+                Ok(OpState::Processing)
             }
             Tick::Tick3 => {
-                self.op_val = self.ram.read(self.op_addr);
+                self.op_val = self.ram.read(self.pc.0);
+                self.pc += 1;
+                self.op_addr |= u16::from(self.op_val) << 8;
                 match mode {
-                    // For a load we're now done since the value is loaded.
-                    &InstructionMode::Load => {
-                        self.addr_done = OpState::Done;
-                        Ok(true)
-                    }
-                    _ => Ok(false),
+                    // For a store we're done since the opcode can decide what to store.
+                    InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
                 }
             }
             Tick::Tick4 => {
+                // For load and RMW we read the value
+                self.op_val = self.ram.read(self.op_addr);
+                match mode {
+                    &InstructionMode::Load => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick5 => {
                 self.ram.write(self.op_addr, self.op_val);
-                self.addr_done = OpState::Done;
-                Ok(true)
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_absolute_x implements Absolute X mode - a,x
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_absolute_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        self.addr_absolute_xy(mode, self.x.0)
+    }
+
+    // addr_absolute_y implements Absolute Y mode - a,y
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_absolute_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        self.addr_absolute_xy(mode, self.y.0)
+    }
+
+    // TODO(jchacon): Double check all address computations in addr_X functions. Likely all need Wrapping around them.
+
+    // addr_absolute_xy implements the details for addr_absolute_x and addr_absolute_y since they only differ based on the register used.
+    // See those functions for arg/return specifics.
+    fn addr_absolute_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // op_val has the first start of the address so start computing it.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                self.op_val = self.ram.read(self.pc.0);
+                self.pc += 1;
+                self.op_addr |= u16::from(self.op_val) << 8;
+                // Add reg but do it in a way which won't page wrap (if needed).
+                let a = (self.op_addr & 0xFF00) + u16::from((self.op_addr & 0x00FF) as u8 + reg);
+                self.op_val = 0;
+                if a != self.op_addr + u16::from(reg) {
+                    // Signal for next phase fixup is needed
+                    self.op_val = 1;
+                }
+                self.op_addr = a;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                let t = self.op_val;
+                self.op_val = self.ram.read(self.op_addr);
+                // Check old opVal to see if it's non-zero. If so it means the reg addition
+                // crosses a page boundary and we'll have to fixup.
+                // For a load operation that means another tick to read the correct
+                // address.
+                // For RMW it doesn't matter (we always do the extra tick).
+                // For Store we're done. Just fixup p.opAddr so the return value is correct.
+                let mut done = Ok(OpState::Done);
+                if t != 0 {
+                    self.op_addr += 0x0100;
+                    if let InstructionMode::Load = mode {
+                        done = Ok(OpState::Processing);
+                    }
+                }
+                // For RMW it doesn't matter, we tick again.
+                if let InstructionMode::Rmw = mode {
+                    done = Ok(OpState::Processing);
+                }
+                done
+            }
+            Tick::Tick5 => {
+                // Optional (on load) in case adding reg went past a page boundary.
+                self.op_val = self.ram.read(self.op_addr);
+                if let InstructionMode::Rmw = mode {
+                    Ok(OpState::Processing)
+                } else {
+                    Ok(OpState::Done)
+                }
+            }
+            Tick::Tick6 => {
+                self.ram.write(self.op_addr, self.op_val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_immediate implements Immediate mode - #i
+    // returning the value in op_val.
+    // NOTE: This has no mode other than load so the argument is ignored.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_immediate(&mut self, _mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick3
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("addr_immediate invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => {
+                // Already read the value but need to bump the PC
+                // since this mode consumes op_val.
+                self.pc += 1;
+                Ok(OpState::Done)
             }
         }
     }
@@ -1027,9 +1238,8 @@ impl<'a> Cpu<'a> {
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
     // the 6502 operates.
-    // Returns error on invalid tick.
-    // The bool return value is true if this tick ends address processing.
-    fn addr_indirect_x(&mut self, mode: &InstructionMode) -> Result<bool> {
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_indirect_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
         match self.op_tick {
             Tick::Reset | Tick::Tick1 | Tick::Tick8 => {
                 Err(eyre!("addr_indirect_x invalid op_tick: {:?}", self.op_tick))
@@ -1040,14 +1250,14 @@ impl<'a> Cpu<'a> {
                 // tick3 reads the right place.
                 self.op_addr = u16::from(self.op_val) & 0x00FF;
                 self.pc += 1;
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick3 => {
                 // A throwaway read from the ZP addr. We'll add the X register as well for the real read next.
                 self.ram.read(self.op_addr);
                 // Does this as a Wrapping so it wraps as needed since it stays in ZP.
                 self.op_addr = u16::from((Wrapping(self.op_val) + self.x).0);
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick4 => {
                 // Read effective addr low byte
@@ -1058,7 +1268,7 @@ impl<'a> Cpu<'a> {
                 #[allow(clippy::cast_possible_truncation)]
                 let a = Wrapping(self.op_addr as u8);
                 self.op_addr = u16::from((a + Wrapping(1)).0);
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick5 => {
                 // Read high byte, shift over and add op_val which has the low byte.
@@ -1066,30 +1276,288 @@ impl<'a> Cpu<'a> {
                     (u16::from(self.ram.read(self.op_addr)) << 8) + u16::from(self.op_val);
                 match mode {
                     // For a store we're done as op_addr now contains the destination address.
-                    InstructionMode::Store => {
-                        self.addr_done = OpState::Done;
-                        Ok(true)
-                    }
-                    _ => Ok(false),
+                    InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
                 }
             }
             Tick::Tick6 => {
                 self.op_val = self.ram.read(self.op_addr);
                 match mode {
                     // For a load we're done as we've loaded the value.
-                    InstructionMode::Load => {
-                        self.addr_done = OpState::Done;
-                        Ok(true)
-                    }
-                    _ => Ok(false),
+                    InstructionMode::Load => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
                 }
             }
             Tick::Tick7 => {
                 self.ram.write(self.op_addr, self.op_val);
-                self.addr_done = OpState::Done;
-                Ok(true)
+                Ok(OpState::Done)
             }
         }
+    }
+
+    // addr_indirect_y implements Zero page indirect plus Y mode - (d),y
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_indirect_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick8 => {
+                Err(eyre!("addr_indirect_y invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // We've already read the value but need to bump the PC
+                // and assign it into op_addr so the throw away read in
+                // tick3 reads the right place.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read from the ZP addr to start building our pointer.
+                self.op_val = self.ram.read(self.op_addr);
+                // Setup op_addr for next read and handle ZP wrapping.
+                #[allow(clippy::cast_possible_truncation)]
+                let a = u16::from((self.op_addr as u8) + 1);
+                self.op_addr = a;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Compute effective address and then add Y to it (possibly wrongly).
+                self.op_addr =
+                    (u16::from(self.ram.read(self.op_addr)) << 8) + u16::from(self.op_val);
+                // Add Y but do it in a way which won't page wrap (if needed).
+                #[allow(clippy::cast_possible_truncation)]
+                let a = (self.op_addr & 0xFF00) + u16::from((self.op_addr as u8) + self.y.0);
+                self.op_val = 0;
+                if a != (self.op_addr + u16::from(self.y.0)) {
+                    // Signal for next phase we got it wrong.
+                    self.op_val = 1;
+                }
+                self.op_addr = a;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Save op_val so we know if this needed fixing.
+                let t = self.op_val;
+                // Even with an incorrect op_addr we still read from it.
+                self.op_val = self.ram.read(self.op_addr);
+
+                // Check old opVal to see if it's non-zero. If so it means the Y addition
+                // crosses a page boundary and we'll have to fixup.
+                // For a load operation that means another tick to read the correct
+                // address.
+                // For RMW it doesn't matter (we always do the extra tick).
+                // For Store we're done. Just fixup p.opAddr so the return value is correct.
+                let mut done = Ok(OpState::Done);
+                if t != 0 {
+                    self.op_addr += 0x0100;
+                    if let InstructionMode::Load = mode {
+                        done = Ok(OpState::Processing);
+                    }
+                }
+                // For RMW it doesn't matter, we tick again.
+                if let InstructionMode::Rmw = mode {
+                    done = Ok(OpState::Processing);
+                }
+                done
+            }
+            Tick::Tick6 => {
+                // Optional (on load) in case adding Y went past a page boundary.
+                self.op_val = self.ram.read(self.op_addr);
+                match mode {
+                    InstructionMode::Rmw => Ok(OpState::Processing),
+                    _ => Ok(OpState::Done),
+                }
+            }
+            Tick::Tick7 => {
+                self.ram.write(self.op_addr, self.op_val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_zp implements Zero page mode - d
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_zp(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_zp invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // Already read the value but need to bump the PC
+                self.op_addr = u16::from(self.op_val);
+                self.pc += 1;
+                match mode {
+                    // For a store we're done since we have the address needed.
+                    &InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick3 => {
+                self.op_val = self.ram.read(self.op_addr);
+                match mode {
+                    // For a load we're now done since the value is loaded.
+                    &InstructionMode::Load => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick4 => {
+                self.ram.write(self.op_addr, self.op_val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_zp_x implements Zero page X mode - d,x
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_zp_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        self.addr_zp_xy(mode, self.x.0)
+    }
+
+    // addr_zp_y implements Zero page Y mode - d,y
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_zp_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        self.addr_zp_xy(mode, self.y.0)
+    }
+
+    // addr_zp_xy implements the details for addr_zp_x and addr_zp_y since they only differ based on the register used.
+    // See those functions for arg/return specifics.
+    fn addr_zp_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_zp_x invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // Already read the value but need to bump the PC.
+                self.op_addr = u16::from(self.op_val);
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read from the ZP addr and then add the register for the real read later.
+                _ = self.ram.read(self.op_addr);
+                // Do this as a u8 so it wraps as needed.
+                self.op_addr = u16::from(self.op_val + reg);
+                // For a store we're done since we have the address needed.
+                if let InstructionMode::Store = mode {
+                    Ok(OpState::Done)
+                } else {
+                    Ok(OpState::Processing)
+                }
+            }
+            Tick::Tick4 => {
+                // Now read from the final address.
+                self.op_val = self.ram.read(self.op_addr);
+                if let InstructionMode::Load = mode {
+                    Ok(OpState::Done)
+                } else {
+                    Ok(OpState::Processing)
+                }
+            }
+            Tick::Tick5 => {
+                self.ram.write(self.op_addr, self.op_val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    fn perform_branch(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("perform_branch invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // We only skip if the last instruction didn't. This way a branch always doesn't prevent interrupt processing
+                // since on real silicon this is what happens (just a delay in the pipelining).
+                if !self.prev_skip_interrupt {
+                    self.prev_skip_interrupt = true;
+                }
+
+                // Per http://www.6502.org/tutorials/6502opcodes.html
+                // the wrong page is defined as the a different page than
+                // the next byte after the jump. i.e. current PC at the moment.
+
+                // Now compute the new PC but possibly wrong page.
+                // Stash the old one in p.opAddr so we can use in tick 4 if needed.
+                self.op_addr = self.pc.0;
+                self.pc = Wrapping(
+                    (self.pc.0 & 0xFF00) + u16::from(((self.pc.0 & 0x00FF) as u8) + self.op_val),
+                );
+                // It always triggers a bus read of the newly computed PC.
+                _ = self.ram.read(self.pc.0);
+                // Now check the pc against one which didn't truncate for page by sign extending
+                // op_val and adding it to op_addr.
+                // NOTE: We don't lose the sign here since Wrapping will do the right thing.
+                #[allow(
+                    clippy::cast_sign_loss,
+                    clippy::cast_lossless,
+                    clippy::cast_possible_wrap
+                )]
+                if self.pc == Wrapping(self.op_addr) + Wrapping(self.op_val as i8 as i16 as u16) {
+                    Ok(OpState::Done)
+                } else {
+                    Ok(OpState::Processing)
+                }
+            }
+            Tick::Tick4 => {
+                // Set the correct PC value if we got here.
+                // NOTE: We don't lose the sign here since Wrapping will do the right thing.
+                #[allow(
+                    clippy::cast_sign_loss,
+                    clippy::cast_lossless,
+                    clippy::cast_possible_wrap
+                )]
+                let val = Wrapping(self.op_addr) + Wrapping(self.op_val as i8 as i16 as u16);
+                self.pc = val;
+                // Always read the next opcode now.
+                _ = self.ram.read(self.pc.0);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // branch_nopreads the next byte as the branch offset and increments the PC.
+    // Used for the 2rd tick when branches aren't taken.
+    fn branch_nop(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick3
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("branch_nop invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => {
+                self.pc += 1;
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // pop_stack pops the top value from the stack and adjusts
+    // the stack pointer.
+    fn pop_stack(&mut self) -> u8 {
+        self.s += 1;
+        self.ram.read(u16::from(self.s.0) + 0x0100)
     }
 
     // push_stack takes the given 8 bit value and pushes it into the stack and adjusts
@@ -1103,9 +1571,9 @@ impl<'a> Cpu<'a> {
     // i.e. pushing values onto the stack and loading PC with the right address.
     // Pass in the vector to be used for loading the PC (which means for BRK
     // it can change if an NMI happens before we get to the load ticks).
-    // Returns true when complete (and PC is correct). Can return an error on an
+    // Returns OpState::Done when complete (and PC is correct). Can return an error on an
     // invalid tick count.
-    fn run_interrupt(&mut self, vec: u16, irq: bool) -> Result<bool> {
+    fn run_interrupt(&mut self, vec: u16, irq: bool) -> Result<OpState> {
         match self.op_tick {
             Tick::Reset | Tick::Tick1 | Tick::Tick8 => {
                 Err(eyre!("run_interrupt: invalid op_tick: {:?}", self.op_tick))
@@ -1115,19 +1583,19 @@ impl<'a> Cpu<'a> {
                 if !irq {
                     self.pc += 1;
                 }
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick3 => {
                 // There is no truncation as we mask and shift into 8 bits.
                 #[allow(clippy::cast_possible_truncation)]
                 self.push_stack(((self.pc.0 & 0xFF00) >> 8) as u8);
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick4 => {
                 // There is no truncation as we mask into 8 bits.
                 #[allow(clippy::cast_possible_truncation)]
                 self.push_stack((self.pc.0 & 0x00FF) as u8);
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick5 => {
                 let mut push = self.p;
@@ -1144,11 +1612,11 @@ impl<'a> Cpu<'a> {
                     push &= !P_DECIMAL;
                 }
                 self.push_stack(push);
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick6 => {
                 self.op_val = self.ram.read(vec);
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick7 => {
                 // Compute the new PC from the 2nd vector component and the previous val read.
@@ -1160,24 +1628,56 @@ impl<'a> Cpu<'a> {
                 if irq && !self.prev_skip_interrupt {
                     self.prev_skip_interrupt = true;
                 }
-                Ok(true)
+                Ok(OpState::Done)
             }
         }
     }
 
-    // asl implements the ASL instruction directly on the accumulator.
+    // anc implements the undocumented opcode for ANC. This does AND #i (op_val) and then
+    // sets carry based on bit 7 (sign extend).
+    // Always returns Done since this takes one tick and never returns an error.
+    fn anc(&mut self) -> Result<OpState> {
+        let val = self.a.0 & self.op_val;
+        Self::load_register(&mut self.p, &mut self.a, val)?;
+        Self::carry_check(&mut self.p, u16::from(self.a.0) << 1);
+        Ok(OpState::Done)
+    }
+
+    // asl implements the ASL instruction on the given memory location in op_addr.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn asl(&mut self) -> Result<OpState> {
+        let new = self.op_val << 1;
+        self.ram.write(self.op_addr, new);
+        Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
+        Self::zero_check(&mut self.p, new);
+        Self::negative_check(&mut self.p, new);
+        Ok(OpState::Done)
+    }
+
+    // asl_acc implements the ASL instruction directly on the accumulator.
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns true since accumulator mode is done on tick 2 and never returns an error.
-    fn asl(&mut self) -> Result<bool> {
-        self.addr_done = OpState::Done;
+    fn asl_acc(&mut self) -> Result<OpState> {
         Self::carry_check(&mut self.p, u16::from(self.a.0) << 1);
         let val = self.a.0 << 1;
         Self::load_register(&mut self.p, &mut self.a, val)
     }
 
+    // bpl implements the BPL instructions and branches if N is clear.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bpl(&mut self) -> Result<OpState> {
+        if self.p & P_NEGATIVE == 0x00 {
+            self.perform_branch()
+        } else {
+            self.branch_nop()
+        }
+    }
+
     // brk implements the BRK instruction. This does setup and then calls the
     // interrupt processing handler refenced at IRQ_VECTOR (normally).
-    fn brk(&mut self) -> Result<bool> {
+    fn brk(&mut self) -> Result<OpState> {
         // This is the same as an interrupt handler so the vector we call
         // can change on a per tick basis. i.e. we might push P with P_B set
         // but go to the NMI vector depending on timing.
@@ -1190,24 +1690,96 @@ impl<'a> Cpu<'a> {
         };
         // If we're done on this tick eat any pending interrupt since BRK is special.
         if let Ok(r) = ret {
-            if r {
+            if r == OpState::Done {
                 self.irq = IRQ::None;
             }
         }
         ret
     }
 
+    // clc implements the CLC instruction clearing the C status bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn clc(&mut self) -> Result<OpState> {
+        self.p &= !P_CARRY;
+        Ok(OpState::Done)
+    }
+
     // ora implements the ORA instruction which ORs op_val with A.
     // Always returns true since this takes one tick and never returns an error.
-    fn ora(&mut self) -> Result<bool> {
+    fn ora(&mut self) -> Result<OpState> {
         let val = self.a.0 | self.op_val;
         Self::load_register(&mut self.p, &mut self.a, val)
+    }
+
+    // jsr implements the JSR instruction for jumping to a subroutine.
+    // Returns Done when done and/or errors.
+    fn jsr(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("jsr: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // Nothing happens here except to make the PC correct.
+                // NOTE: This means the PC pushed below is actually off by one.
+                //       RTS handles this by adding one to the popped PC.
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Not 100% sure what happens on this cycle.
+                // Per http://nesdev.com/6502_cpu.txt we read the current stack
+                // value because there needs to be a tick to make S correct.
+                self.s -= 1;
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                self.push_stack(((self.pc.0 & 0xFF00) >> 8) as u8);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                self.push_stack((self.pc.0 & 0x00FF) as u8);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                self.pc =
+                    Wrapping((u16::from(self.ram.read(self.pc.0)) << 8) + u16::from(self.op_val));
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // php implements the PHP instructions for pushing P onto the stacks.
+    // Returns Done when done and/or errors.
+    fn php(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("php: invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                let mut push = self.p;
+
+                // This is always set
+                push |= P_S1;
+
+                // PHP always sets B where-as IRQ/NMI don't.
+                push |= P_B;
+                self.push_stack(push);
+                Ok(OpState::Done)
+            }
+        }
     }
 
     // slo implements the undocumented opcode for SLO. This does an ASL on the
     // contents of op_addr and then OR's it against A. Sets flags and carry.
     // Always returns true since this takes one tick and never returns an error.
-    fn slo(&mut self) -> Result<bool> {
+    fn slo(&mut self) -> Result<OpState> {
         self.ram.write(self.op_addr, self.op_val << 1);
         Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
         let val = (self.op_val << 1) | self.a.0;
