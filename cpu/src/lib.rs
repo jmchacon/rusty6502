@@ -874,7 +874,7 @@ impl<'a> Cpu<'a> {
             (Opcode::ORA, AddressMode::IndirectX) => {
                 self.load_instruction(Self::addr_indirect_x, Self::ora)
             }
-            // 0x02 0x12 - HLT
+            // 0x02 0x12 0x22 0x32 - HLT
             (Opcode::HLT, AddressMode::Implied) => {
                 self.state = CPUState::Halted;
                 Ok(OpState::Done)
@@ -899,7 +899,7 @@ impl<'a> Cpu<'a> {
             }
             // 0x0A - ASL
             (Opcode::ASL, AddressMode::Implied) => self.asl_acc(),
-            // 0x0B - ANC #i
+            // 0x0B 0x2B - ANC #i
             (Opcode::ANC, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::anc)
             }
@@ -928,7 +928,7 @@ impl<'a> Cpu<'a> {
             (Opcode::SLO, AddressMode::IndirectY) => {
                 self.load_instruction(Self::addr_indirect_y, Self::slo)
             }
-            // 0x14 - NOP d,x
+            // 0x14 0x34 - NOP d,x
             (Opcode::NOP, AddressMode::ZeroPageX) => self.addr_zp_x(&InstructionMode::Load),
             // 0x15 - ORA d,x
             (Opcode::ORA, AddressMode::ZeroPageX) => {
@@ -948,13 +948,13 @@ impl<'a> Cpu<'a> {
             (Opcode::ORA, AddressMode::AbsoluteY) => {
                 self.load_instruction(Self::addr_absolute_y, Self::ora)
             }
-            // 0x1A - NOP
+            // 0x1A 0x3A - NOP
             (Opcode::NOP, AddressMode::Implied) => Ok(OpState::Done),
             // 0x1B - SLO a,y
             (Opcode::SLO, AddressMode::AbsoluteY) => {
                 self.rmw_instruction(Self::addr_absolute_y, Self::slo)
             }
-            // 0x1C - NOP a,x
+            // 0x1C 0x3C - NOP a,x
             (Opcode::NOP, AddressMode::AbsoluteX) => self.addr_absolute_x(&InstructionMode::Load),
             // 0x1D - ORA a,x
             (Opcode::ORA, AddressMode::AbsoluteX) => {
@@ -970,6 +970,97 @@ impl<'a> Cpu<'a> {
             }
             // 0x20 - JSR a
             (Opcode::JSR, AddressMode::Absolute) => self.jsr(),
+            // 0x21 - AND (d,x)
+            (Opcode::AND, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::and)
+            }
+            // 0x22 - see 0x02
+            // 0x23 - RLA (d,x)
+            (Opcode::RLA, AddressMode::IndirectX) => {
+                self.rmw_instruction(Self::addr_indirect_x, Self::rla)
+            }
+            // 0x24 - BIT d
+            (Opcode::BIT, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::bit),
+            // 0x25 - AND d
+            (Opcode::AND, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::and),
+            // 0x26 - ROL d
+            (Opcode::ROL, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rol),
+            // 0x27 - RLA d
+            (Opcode::RLA, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rla),
+            // 0x28 - PLP
+            (Opcode::PLP, AddressMode::Implied) => self.plp(),
+            // 0x29 - AND #i
+            (Opcode::AND, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::and)
+            }
+            // 0x2A - ROL
+            (Opcode::ROL, AddressMode::Implied) => self.rol_acc(),
+            // 0x2B - see 0x0B
+            // 0x2C - BIT a
+            (Opcode::BIT, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::bit)
+            }
+            // 0x2D - AND a
+            (Opcode::AND, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::and)
+            }
+            // 0x2E - ROL a
+            (Opcode::ROL, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::rol)
+            }
+            // 0x2F - RLA a
+            (Opcode::RLA, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::rla)
+            }
+            // 0x30 - BMI *+r
+            (Opcode::BMI, AddressMode::Relative) => self.bmi(),
+            // 0x31 - AND (d),y
+            (Opcode::AND, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::and)
+            }
+            // 0x32 - see 0x02
+            // 0x33 - RLA (d),y
+            (Opcode::RLA, AddressMode::IndirectY) => {
+                self.rmw_instruction(Self::addr_indirect_y, Self::rla)
+            }
+            // 0x34 - see 0x14
+            // 0x35 - AND d,x
+            (Opcode::AND, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::and)
+            }
+            // 0x36 - ROL d,x
+            (Opcode::ROL, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::rol)
+            }
+            // 0x37 - RLA d,x
+            (Opcode::RLA, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::rla)
+            }
+            // 0x38 - SEC
+            (Opcode::SEC, AddressMode::Implied) => self.sec(),
+            // 0x39 - AND a,y
+            (Opcode::AND, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::and)
+            }
+            // 0x3A - see 0x1A
+            // 0x3B - RLA a,y
+            (Opcode::RLA, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::rla)
+            }
+            // 0x3C - see 0x1C
+            // 0x3D - AND a,x
+            (Opcode::AND, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::and)
+            }
+            // 0x3E - ROL a,x
+            (Opcode::ROL, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::rol)
+            }
+            // 0x3F - RLA a,x
+            (Opcode::RLA, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::rla)
+            }
+            // 0x40 - RTI
             // 0xAA - TAX
             (Opcode::TAX, AddressMode::Implied) => {
                 Self::load_register(&mut self.p, &mut self.x, self.a.0)
@@ -1643,6 +1734,14 @@ impl<'a> Cpu<'a> {
         Ok(OpState::Done)
     }
 
+    // and implements the AND instruction on the given memory location in op_addr.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn and(&mut self) -> Result<OpState> {
+        let val = self.a.0 & self.op_val;
+        Self::load_register(&mut self.p, &mut self.a, val)
+    }
+
     // asl implements the ASL instruction on the given memory location in op_addr.
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since this takes one tick and never returns an error.
@@ -1658,14 +1757,37 @@ impl<'a> Cpu<'a> {
 
     // asl_acc implements the ASL instruction directly on the accumulator.
     // It then sets all associated flags and adjust cycles as needed.
-    // Always returns true since accumulator mode is done on tick 2 and never returns an error.
+    // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
     fn asl_acc(&mut self) -> Result<OpState> {
         Self::carry_check(&mut self.p, u16::from(self.a.0) << 1);
         let val = self.a.0 << 1;
         Self::load_register(&mut self.p, &mut self.a, val)
     }
 
-    // bpl implements the BPL instructions and branches if N is clear.
+    // bit implements the BIT instruction for AND'ing against A
+    // and setting N/V based on the value.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn bit(&mut self) -> Result<OpState> {
+        Self::negative_check(&mut self.p, self.a.0 & self.op_val);
+        // Copy V from bit 6
+        self.p &= !P_OVERFLOW;
+        if self.op_val & P_OVERFLOW != 0x00 {
+            self.p |= P_OVERFLOW;
+        }
+        Ok(OpState::Done)
+    }
+
+    // bmi implements the BMI instruction and branches if N is set.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bmi(&mut self) -> Result<OpState> {
+        if self.p & P_NEGATIVE != 0x00 {
+            self.perform_branch()
+        } else {
+            self.branch_nop()
+        }
+    }
+
+    // bpl implements the BPL instruction and branches if N is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bpl(&mut self) -> Result<OpState> {
         if self.p & P_NEGATIVE == 0x00 {
@@ -1677,6 +1799,7 @@ impl<'a> Cpu<'a> {
 
     // brk implements the BRK instruction. This does setup and then calls the
     // interrupt processing handler refenced at IRQ_VECTOR (normally).
+    // Returns Done when done and/or errors.
     fn brk(&mut self) -> Result<OpState> {
         // This is the same as an interrupt handler so the vector we call
         // can change on a per tick basis. i.e. we might push P with P_B set
@@ -1776,9 +1899,78 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    // plp implements the PLP instructions for pulling P from the stacks.
+    // Returns Done when done and/or errors.
+    fn plp(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("php: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // A read of the current stack happens while the CPU is incrementing S.
+                // Since our popStack does both of these together on this cycle it's just
+                // a throw away read.
+                self.s -= 1;
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // The real read
+                self.p = self.pop_stack();
+                // The actual flags register always has S1 set to one.
+                self.p |= P_S1;
+                // And the B bit is never set in the register.
+                self.p &= !P_B;
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // rla implements the undocumented opcode for RLA. This does a ROL on
+    // the contents of op_ddr and then AND's it against A. Sets flags and carry.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn rla(&mut self) -> Result<OpState> {
+        let val = (self.op_val << 1) | (self.p & P_CARRY);
+        self.ram.write(self.op_addr, val);
+        Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
+        let new = self.a.0 & val;
+        Self::load_register(&mut self.p, &mut self.a, new)
+    }
+
+    // rol implements the ROL instruction on op_addr.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn rol(&mut self) -> Result<OpState> {
+        let carry = self.p & P_CARRY;
+        let new = (self.op_val << 1) | carry;
+        self.ram.write(self.op_addr, new);
+        Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
+        Self::zero_check(&mut self.p, new);
+        Self::negative_check(&mut self.p, new);
+        Ok(OpState::Done)
+    }
+
+    // rol_acc implements the ROL instruction directly on the accumulator.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
+    fn rol_acc(&mut self) -> Result<OpState> {
+        let carry = self.p & P_CARRY;
+        Self::carry_check(&mut self.p, u16::from(self.a.0) << 1);
+        let val = (self.a.0 << 1) | carry;
+        Self::load_register(&mut self.p, &mut self.a, val)
+    }
+
+    // sec implements the SEC instruction for setting the carry bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn sec(&mut self) -> Result<OpState> {
+        self.p |= P_CARRY;
+        Ok(OpState::Done)
+    }
+
     // slo implements the undocumented opcode for SLO. This does an ASL on the
     // contents of op_addr and then OR's it against A. Sets flags and carry.
-    // Always returns true since this takes one tick and never returns an error.
+    // Always returns Done since this takes one tick and never returns an error.
     fn slo(&mut self) -> Result<OpState> {
         self.ram.write(self.op_addr, self.op_val << 1);
         Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
