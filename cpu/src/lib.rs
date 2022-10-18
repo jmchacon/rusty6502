@@ -866,6 +866,8 @@ impl<'a> Cpu<'a> {
         Ok(())
     }
 
+    // Actual opcode processing for each variant is handled here.
+    #[allow(clippy::too_many_lines)]
     fn process_opcode(&mut self) -> Result<OpState> {
         match (self.op.op, self.op.mode) {
             // 0x00 - BRK #i
@@ -1767,6 +1769,7 @@ impl<'a> Cpu<'a> {
     // bit implements the BIT instruction for AND'ing against A
     // and setting N/V based on the value.
     // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
     fn bit(&mut self) -> Result<OpState> {
         Self::negative_check(&mut self.p, self.a.0 & self.op_val);
         // Copy V from bit 6
@@ -1780,10 +1783,10 @@ impl<'a> Cpu<'a> {
     // bmi implements the BMI instruction and branches if N is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bmi(&mut self) -> Result<OpState> {
-        if self.p & P_NEGATIVE != 0x00 {
-            self.perform_branch()
-        } else {
+        if self.p & P_NEGATIVE == 0x00 {
             self.branch_nop()
+        } else {
+            self.perform_branch()
         }
     }
 
@@ -1941,6 +1944,7 @@ impl<'a> Cpu<'a> {
     // rol implements the ROL instruction on op_addr.
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
     fn rol(&mut self) -> Result<OpState> {
         let carry = self.p & P_CARRY;
         let new = (self.op_val << 1) | carry;
@@ -1963,6 +1967,7 @@ impl<'a> Cpu<'a> {
 
     // sec implements the SEC instruction for setting the carry bit.
     // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
     fn sec(&mut self) -> Result<OpState> {
         self.p |= P_CARRY;
         Ok(OpState::Done)
