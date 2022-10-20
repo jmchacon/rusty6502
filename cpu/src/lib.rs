@@ -876,7 +876,7 @@ impl<'a> Cpu<'a> {
             (Opcode::ORA, AddressMode::IndirectX) => {
                 self.load_instruction(Self::addr_indirect_x, Self::ora)
             }
-            // 0x02 0x12 0x22 0x32 - HLT
+            // 0x02 0x12 0x22 0x32 0x42 0x52 - HLT
             (Opcode::HLT, AddressMode::Implied) => {
                 self.state = CPUState::Halted;
                 Ok(OpState::Done)
@@ -885,7 +885,7 @@ impl<'a> Cpu<'a> {
             (Opcode::SLO, AddressMode::IndirectX) => {
                 self.rmw_instruction(Self::addr_indirect_x, Self::slo)
             }
-            // 0x04 - NOP d
+            // 0x04 0x44 - NOP d
             (Opcode::NOP, AddressMode::ZeroPage) => self.addr_zp(&InstructionMode::Load),
             // 0x05 - ORA d
             (Opcode::ORA, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::ora),
@@ -925,12 +925,12 @@ impl<'a> Cpu<'a> {
             (Opcode::ORA, AddressMode::IndirectY) => {
                 self.load_instruction(Self::addr_indirect_y, Self::ora)
             }
-            // 0x12 - see 0x02
+            // 0x12 - HLT see 0x02
             // 0x13 - SLO (d),y
             (Opcode::SLO, AddressMode::IndirectY) => {
                 self.load_instruction(Self::addr_indirect_y, Self::slo)
             }
-            // 0x14 0x34 - NOP d,x
+            // 0x14 0x34 0x54 - NOP d,x
             (Opcode::NOP, AddressMode::ZeroPageX) => self.addr_zp_x(&InstructionMode::Load),
             // 0x15 - ORA d,x
             (Opcode::ORA, AddressMode::ZeroPageX) => {
@@ -950,7 +950,7 @@ impl<'a> Cpu<'a> {
             (Opcode::ORA, AddressMode::AbsoluteY) => {
                 self.load_instruction(Self::addr_absolute_y, Self::ora)
             }
-            // 0x1A 0x3A - NOP
+            // 0x1A 0x3A 0x5A - NOP
             (Opcode::NOP, AddressMode::Implied) => Ok(OpState::Done),
             // 0x1B - SLO a,y
             (Opcode::SLO, AddressMode::AbsoluteY) => {
@@ -976,7 +976,7 @@ impl<'a> Cpu<'a> {
             (Opcode::AND, AddressMode::IndirectX) => {
                 self.load_instruction(Self::addr_indirect_x, Self::and)
             }
-            // 0x22 - see 0x02
+            // 0x22 - HLT see 0x02
             // 0x23 - RLA (d,x)
             (Opcode::RLA, AddressMode::IndirectX) => {
                 self.rmw_instruction(Self::addr_indirect_x, Self::rla)
@@ -997,7 +997,7 @@ impl<'a> Cpu<'a> {
             }
             // 0x2A - ROL
             (Opcode::ROL, AddressMode::Implied) => self.rol_acc(),
-            // 0x2B - see 0x0B
+            // 0x2B - ANC 0x0B
             // 0x2C - BIT a
             (Opcode::BIT, AddressMode::Absolute) => {
                 self.load_instruction(Self::addr_absolute, Self::bit)
@@ -1020,7 +1020,7 @@ impl<'a> Cpu<'a> {
             (Opcode::AND, AddressMode::IndirectY) => {
                 self.load_instruction(Self::addr_indirect_y, Self::and)
             }
-            // 0x32 - see 0x02
+            // 0x32 - HLT see 0x02
             // 0x33 - RLA (d),y
             (Opcode::RLA, AddressMode::IndirectY) => {
                 self.rmw_instruction(Self::addr_indirect_y, Self::rla)
@@ -1044,12 +1044,12 @@ impl<'a> Cpu<'a> {
             (Opcode::AND, AddressMode::AbsoluteY) => {
                 self.load_instruction(Self::addr_absolute_y, Self::and)
             }
-            // 0x3A - see 0x1A
+            // 0x3A - NOP see 0x1A
             // 0x3B - RLA a,y
             (Opcode::RLA, AddressMode::AbsoluteY) => {
                 self.rmw_instruction(Self::addr_absolute_y, Self::rla)
             }
-            // 0x3C - see 0x1C
+            // 0x3C - NOP see 0x1C
             // 0x3D - AND a,x
             (Opcode::AND, AddressMode::AbsoluteX) => {
                 self.load_instruction(Self::addr_absolute_x, Self::and)
@@ -1063,6 +1063,80 @@ impl<'a> Cpu<'a> {
                 self.rmw_instruction(Self::addr_absolute_x, Self::rla)
             }
             // 0x40 - RTI
+            (Opcode::RTI, AddressMode::Implied) => self.rti(),
+            // 0x41 - EOR (d,x)
+            (Opcode::EOR, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::eor)
+            }
+            // 0x42 - HLT see 0x02
+            // 0x43 - SRE (d,x)
+            (Opcode::SRE, AddressMode::IndirectX) => {
+                self.rmw_instruction(Self::addr_indirect_x, Self::sre)
+            }
+            // 0x44 - NOP see 0x04
+            // 0x45 - EOR d
+            (Opcode::EOR, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::eor),
+            // 0x46 - LSR d
+            (Opcode::LSR, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::lsr),
+            // 0x47 - SRE d
+            (Opcode::SRE, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::sre),
+            // 0x48 - PHA
+            (Opcode::PHA, AddressMode::Implied) => self.pha(),
+            // 0x49 - EOR #i
+            (Opcode::EOR, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::eor)
+            }
+            // 0x4A - LSR
+            (Opcode::LSR, AddressMode::Implied) => self.lsr_acc(),
+            // 0x4B - ALR #i
+            (Opcode::ALR, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::alr)
+            }
+            // 0x4C - JMP a
+            (Opcode::JMP, AddressMode::Absolute) => self.jmp(),
+            // 0x4D - EOR a
+            (Opcode::EOR, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::eor)
+            }
+            // 0x4E - LSR a
+            (Opcode::LSR, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::lsr)
+            }
+            // 0x4F - SRE a
+            (Opcode::SRE, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::sre)
+            }
+            // 0x50 - BVC *+r
+            (Opcode::BVC, AddressMode::Relative) => self.bvc(),
+            // 0x51 - EOR (d),y
+            (Opcode::EOR, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::eor)
+            }
+            // 0x52 - HLT 0x02
+            // 0x53 - SRE (d),y
+            (Opcode::SRE, AddressMode::IndirectY) => {
+                self.rmw_instruction(Self::addr_indirect_y, Self::sre)
+            }
+            // 0x54 - NOP 0x14
+            // 0x55 - EOR d,x
+            (Opcode::EOR, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::eor)
+            }
+            // 0x56 - LSR d,x
+            (Opcode::LSR, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::lsr)
+            }
+            // 0x57 - SRE d,x
+            (Opcode::SRE, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::sre)
+            }
+            // 0x58 - CLI
+            (Opcode::CLI, AddressMode::Implied) => self.cli(),
+            // 0x59 - EOR a,y
+            (Opcode::EOR, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::eor)
+            }
+            // 0x5A - see 0x1A
             // 0xAA - TAX
             (Opcode::TAX, AddressMode::Implied) => {
                 Self::load_register(&mut self.p, &mut self.x, self.a.0)
@@ -1726,6 +1800,14 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    // alr implements implements the undocumented opcode for ALR.
+    // This does AND #i (op_val) and then LSR on A setting all associated flags.
+    fn alr(&mut self) -> Result<OpState> {
+        let val = self.a.0 & self.op_val;
+        Self::load_register(&mut self.p, &mut self.a, val)?;
+        self.lsr_acc()
+    }
+
     // anc implements the undocumented opcode for ANC. This does AND #i (op_val) and then
     // sets carry based on bit 7 (sign extend).
     // Always returns Done since this takes one tick and never returns an error.
@@ -1800,6 +1882,26 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    // bvc implements the BVC instruction and branches if V is clear.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bvc(&mut self) -> Result<OpState> {
+        if self.p & P_OVERFLOW == 0x00 {
+            self.perform_branch()
+        } else {
+            self.branch_nop()
+        }
+    }
+
+    // bvs implements the BVS instruction and branches if V is set.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bvs(&mut self) -> Result<OpState> {
+        if self.p & P_OVERFLOW == 0x00 {
+            self.branch_nop()
+        } else {
+            self.perform_branch()
+        }
+    }
+
     // brk implements the BRK instruction. This does setup and then calls the
     // interrupt processing handler refenced at IRQ_VECTOR (normally).
     // Returns Done when done and/or errors.
@@ -1831,11 +1933,46 @@ impl<'a> Cpu<'a> {
         Ok(OpState::Done)
     }
 
-    // ora implements the ORA instruction which ORs op_val with A.
+    // cli implements the CLI instruction clearing the I status bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn cli(&mut self) -> Result<OpState> {
+        self.p &= !P_INTERRUPT;
+        Ok(OpState::Done)
+    }
+
+    // eor implements the EOR instruction which XORs op_val with A.
     // Always returns true since this takes one tick and never returns an error.
-    fn ora(&mut self) -> Result<OpState> {
-        let val = self.a.0 | self.op_val;
+    fn eor(&mut self) -> Result<OpState> {
+        let val = self.a.0 ^ self.op_val;
         Self::load_register(&mut self.p, &mut self.a, val)
+    }
+
+    // jmp implements the JMP instruction for jumping to a new address.
+    // Doesn't use addressing mode functions since it's technically not
+    // a load/rmw/store instruction so doesn't fit exactly.
+    // Returns Done when done and/or errors.
+    fn jmp(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("jmp: invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => {
+                // We've already read op_val which is the new PCL so increment PC only.
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read PCH and assemble the PC
+                self.op_addr = (u16::from(self.ram.read(self.pc.0) << 8) | u16::from(self.op_val));
+                self.pc = Wrapping(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
     }
 
     // jsr implements the JSR instruction for jumping to a subroutine.
@@ -1876,7 +2013,57 @@ impl<'a> Cpu<'a> {
         }
     }
 
-    // php implements the PHP instructions for pushing P onto the stacks.
+    // lsr implements the LSR instruction as a logical shift right on op_addr.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn lsr(&mut self) -> Result<OpState> {
+        let val = self.op_val >> 1;
+        self.ram.write(self.op_addr, val);
+        // Get bit 0 from the original but as a 16 bit value so
+        // we can shift it into the carry position.
+        Self::carry_check(&mut self.p, u16::from(self.op_val) << 8);
+        Self::zero_check(&mut self.p, val);
+        Self::negative_check(&mut self.p, val);
+        Ok(OpState::Done)
+    }
+
+    // lsr_acc implements the LSR instruction as a logical shift right on A.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn lsr_acc(&mut self) -> Result<OpState> {
+        // Get bit 0 from A but in a 16 bit value and then shift it up into
+        // the carry position
+        Self::carry_check(&mut self.p, u16::from(self.a.0 & 0x01) << 8);
+        let val = self.a.0 >> 1;
+        Self::load_register(&mut self.p, &mut self.a, val)
+    }
+
+    // ora implements the ORA instruction which ORs op_val with A.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn ora(&mut self) -> Result<OpState> {
+        let val = self.a.0 | self.op_val;
+        Self::load_register(&mut self.p, &mut self.a, val)
+    }
+
+    // pha implements the PHA instruction for pushing A onto the stack.
+    // Returns Done when done and/or errors.
+    fn pha(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("pha: invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                self.push_stack(self.a.0);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // php implements the PHP instruction for pushing P onto the stack.
     // Returns Done when done and/or errors.
     fn php(&mut self) -> Result<OpState> {
         match self.op_tick {
@@ -1941,7 +2128,7 @@ impl<'a> Cpu<'a> {
         Self::load_register(&mut self.p, &mut self.a, new)
     }
 
-    // rol implements the ROL instruction on op_addr.
+    // rol implements the ROL instruction which does a rotate left on op_addr.
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since this takes one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
@@ -1965,6 +2152,45 @@ impl<'a> Cpu<'a> {
         Self::load_register(&mut self.p, &mut self.a, val)
     }
 
+    // rti implements the RTI instruction  and pops the flags and PC off the stack
+    // for returning from an interrupt.
+    // Returns Done when done and/or errors.
+    fn rti(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("rti: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // A read of the current stack happens while the CPU is incrementing S.
+                // Since our popStack does both of these together on this cycle it's just
+                // a throw away read.
+                self.s -= 1;
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // The real read for P
+                self.p = self.pop_stack();
+                // The actual flags registers always has S1 set to one
+                self.p |= P_S1;
+                // And B is never set.
+                self.p &= !P_B;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // PCL
+                self.op_val = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                // Pop PCH and set PC
+                self.pc = Wrapping((u16::from(self.pop_stack()) << 8) | u16::from(self.op_val));
+                Ok(OpState::Done)
+            }
+        }
+    }
+
     // sec implements the SEC instruction for setting the carry bit.
     // Always returns Done since this takes one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
@@ -1980,6 +2206,17 @@ impl<'a> Cpu<'a> {
         self.ram.write(self.op_addr, self.op_val << 1);
         Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
         let val = (self.op_val << 1) | self.a.0;
+        Self::load_register(&mut self.p, &mut self.a, val)
+    }
+
+    // sre implements the undocumented opcode for SRE. This does a LSR on
+    // op_addr and then XOR's it against A. Sets flags and carry.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn sre(&mut self) -> Result<OpState> {
+        self.ram.write(self.op_addr, self.op_val >> 1);
+        // Old bit 0 becomes carry
+        Self::carry_check(&mut self.p, u16::from(self.op_val) << 8);
+        let val = (self.op_val >> 1) & self.a.0;
         Self::load_register(&mut self.p, &mut self.a, val)
     }
 }
