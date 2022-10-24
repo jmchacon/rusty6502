@@ -956,7 +956,7 @@ impl<'a> Cpu<'a> {
             (Opcode::SLO, AddressMode::AbsoluteY) => {
                 self.rmw_instruction(Self::addr_absolute_y, Self::slo)
             }
-            // 0x1C 0x3C - NOP a,x
+            // 0x1C 0x3C 0x5C - NOP a,x
             (Opcode::NOP, AddressMode::AbsoluteX) => self.addr_absolute_x(&InstructionMode::Load),
             // 0x1D - ORA a,x
             (Opcode::ORA, AddressMode::AbsoluteX) => {
@@ -1136,7 +1136,30 @@ impl<'a> Cpu<'a> {
             (Opcode::EOR, AddressMode::AbsoluteY) => {
                 self.load_instruction(Self::addr_absolute_y, Self::eor)
             }
-            // 0x5A - see 0x1A
+            // 0x5A - NOP see 0x1A
+            // 0x5B - SRE a,y
+            (Opcode::SRE, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::sre)
+            }
+            // 0x5C - NOP see 0x1C
+            // 0x5D - EOR a,x
+            (Opcode::EOR, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::eor)
+            }
+            // 0x5E - LSR a,x
+            (Opcode::LSR, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::lsr)
+            }
+            // 0x5F - SRE a,x
+            (Opcode::SRE, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::sre)
+            }
+            // 0x60 - RTS
+            (Opcode::RTS, AddressMode::Implied) => self.rts(),
+            // 0x61 - ADC (d,x)
+            (Opcode::ADC, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::adc)
+            }
             // 0xAA - TAX
             (Opcode::TAX, AddressMode::Implied) => {
                 Self::load_register(&mut self.p, &mut self.x, self.a.0)
@@ -1800,8 +1823,30 @@ impl<'a> Cpu<'a> {
         }
     }
 
-    // alr implements implements the undocumented opcode for ALR.
+    // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
+    // This sets all associated flags in P. For SBC simply ones-complement op_val
+    // before calling.
+    // NOTE: SBC this only works in non BCD mode. sbc() handles this directly.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn adc(&mut self) -> Result<OpState> {
+        // Pull the carry bit out which thankfully is the low bit so can be
+        // used directly.
+        let carry = self.p & P_CARRY;
+
+        // Do BCD but not on the Ricoh version which didn't implement it.
+        // This is the CPU for the NES.
+        if (self.p & P_DECIMAL) != 0x00 && self.cpu_type != Type::Ricoh {
+            // BCD details - http://6502.org/tutorials/decimal_mode.html
+            // Also http://nesdev.com/6502_cpu.txt but it has errors
+
+            return Ok(OpState::Done);
+        }
+        //Ok(OpState::Done)
+    }
+
+    // alr implements the undocumented opcode for ALR.
     // This does AND #i (op_val) and then LSR on A setting all associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
     fn alr(&mut self) -> Result<OpState> {
         let val = self.a.0 & self.op_val;
         Self::load_register(&mut self.p, &mut self.a, val)?;
@@ -2152,7 +2197,7 @@ impl<'a> Cpu<'a> {
         Self::load_register(&mut self.p, &mut self.a, val)
     }
 
-    // rti implements the RTI instruction  and pops the flags and PC off the stack
+    // rti implements the RTI instruction and pops the flags and PC off the stack
     // for returning from an interrupt.
     // Returns Done when done and/or errors.
     fn rti(&mut self) -> Result<OpState> {
@@ -2186,6 +2231,42 @@ impl<'a> Cpu<'a> {
             Tick::Tick6 => {
                 // Pop PCH and set PC
                 self.pc = Wrapping((u16::from(self.pop_stack()) << 8) | u16::from(self.op_val));
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // RTS implements the RTS instruction and pops the PC off the stack
+    // for returning from an subroutine.
+    // Returns Done when done and/or errors.
+    fn rts(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("rts: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // A read of the current stack happens while the CPU is incrementing S.
+                // Since our popStack does both of these together on this cycle it's just
+                // a throw away read.
+                self.s -= 1;
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // PCL
+                self.op_val = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // PCH
+                self.pc = Wrapping((u16::from(self.pop_stack()) << 8) | u16::from(self.op_val));
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                // Read the current PC value then increment PC so we're pointing at the right addr.
+                _ = self.ram.read(self.pc.0);
+                self.pc += 1;
                 Ok(OpState::Done)
             }
         }
