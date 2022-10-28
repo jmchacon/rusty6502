@@ -11,7 +11,7 @@ pub trait Chip {
     /// # Errors
     /// If calling `tick` results in a lockup/illegal condition an error
     /// will be returned.
-    fn tick() -> Result<()>;
+    fn tick(&mut self) -> Result<()>;
 
     /// `done` is called on each `Chip` when all `tick` calls have
     /// completed. As in real hardware there are no guarentees on ordering
@@ -23,5 +23,5 @@ pub trait Chip {
     /// # Errors
     /// If calling `done` results in a lockup/illegal condition an error
     /// will be returned.
-    fn done() -> Result<()>;
+    fn tick_done(&mut self) -> Result<()>;
 }

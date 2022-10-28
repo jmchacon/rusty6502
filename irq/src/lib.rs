@@ -9,5 +9,5 @@
 /// Sender defines the trait for an IRQ source.
 pub trait Sender {
     /// `raised` indicates whether the interrupt is currently held high.
-    fn raised() -> bool;
+    fn raised(&self) -> bool;
 }

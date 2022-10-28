@@ -1,6 +1,8 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
 use std::num::Wrapping;
 
+use chip::Chip;
+use irq;
 use memory::{Memory, MAX_SIZE};
 use thiserror::Error;
 
@@ -392,7 +394,7 @@ enum CPUState {
     Halted,
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 enum IRQ {
     #[default]
     None,
@@ -480,10 +482,22 @@ pub struct Cpu<'a> {
     state: CPUState,
 
     // State of IRQ line
-    irq: IRQ,
+    irq_raised: IRQ,
+
+    // Whether IRQ is asserted
+    irq: Option<&'a dyn irq::Sender>,
+
+    // Whether NMI is asserted
+    nmi: Option<&'a dyn irq::Sender>,
+
+    // Whether RDY is asserted
+    rdy: Option<&'a dyn irq::Sender>,
 
     // Whether we're currently running an interrupt
     running_interrupt: bool,
+
+    // If true we're skipping starting an interrupt for one clock cycle.
+    skip_interrupt: bool,
 
     // Tracking for reset when we need to clear the extra clocks
     // up front before simulating BRK. If `tick` is called and this
@@ -544,6 +558,16 @@ pub struct ChipDef<'a> {
     /// Memory implementation.
     pub ram: &'a mut dyn Memory,
 
+    /// irq is an optional IRQ source to trigger the IRQ line.
+    pub irq: Option<&'a dyn irq::Sender>,
+
+    /// nmi is an optional IRQ source to trigger the NMI line.
+    pub nmi: Option<&'a dyn irq::Sender>,
+
+    /// rdy is an optional IRQ source to trigger the RDY line (which halts the CPU).
+    /// This is not technically an IRQ but acts the same.
+    pub rdy: Option<&'a dyn irq::Sender>,
+
     /// If true debugging is enabled.
     /// TODO: Define the interface for this.
     pub debug: bool,
@@ -562,6 +586,169 @@ pub enum CPUError {
     },
 }
 
+impl<'a> Chip for Cpu<'a> {
+    /// `tick` is used to move the clock forward one tick and either start processing
+    /// a new opcode or continue on one already started.
+    ///
+    /// # Errors
+    /// Bad internal state or causing a halt of the CPU will result in errors.
+    ///
+    /// Bad internal state includes not powering on, not completing a reset sequence
+    /// and already being halted.
+    fn tick(&mut self) -> Result<()> {
+        // Fast path if halted. PC doesn't advance nor do we take clocks.
+        if self.state == CPUState::Halted {
+            return Err(eyre!(CPUError::Halted {
+                op: self.halt_opcode,
+            }));
+        }
+
+        // Handles improper state. Only tick_done() or reset() can move into this state.
+        if self.state != CPUState::Running {
+            return Err(eyre!("CPU not in Running state - {}", self.state));
+        }
+
+        // Move to the state tick_done() has to move us out of.
+        self.state = CPUState::Tick;
+
+        // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
+        // TODO(jchacon): Ok, this technically only works like this in combination with SYNC being held high as well.
+        //                Otherwise it acts like a single step and continues after the next clock.
+        //                But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
+        //                time so "good enough".
+        if let Some(rdy) = self.rdy {
+            if rdy.raised() {
+                return Ok(());
+            }
+        }
+
+        // Always bump the clock count and op_tick.
+        self.clocks += 1;
+        self.op_tick = self.op_tick.next();
+
+        // If we get a new interrupt while running one then NMI always wins until it's done.
+        let mut irq_raised = false;
+        let mut nmi_raised = false;
+        if let Some(irq) = self.irq {
+            irq_raised = irq.raised();
+        }
+        if let Some(nmi) = self.nmi {
+            nmi_raised = nmi.raised();
+        }
+
+        // NMI always wins so even if we're already processing an interrupt it can upgrade
+        // to NMI from IRQ mid processing.
+        if irq_raised || nmi_raised {
+            match self.irq_raised {
+                IRQ::None => {
+                    self.irq_raised = IRQ::Irq;
+                    if nmi_raised {
+                        self.irq_raised = IRQ::Nmi;
+                    }
+                }
+                IRQ::Irq => {
+                    if nmi_raised {
+                        self.irq_raised = IRQ::Nmi;
+                    }
+                }
+                IRQ::Nmi => {}
+            }
+        }
+        match self.op_tick {
+            Tick::Tick1 => {
+                // If we're in Tick1 this means start a new instruction based on the PC value so grab
+                // the opcode now and look it up.
+                self.op_raw = self.ram.read(self.pc.0);
+                self.op = opcode_op(self.cpu_type, self.op_raw);
+
+                // PC advances always when we start a new opcode except for IRQ/NMI (unless we're skipping to run one more instruction)
+                if self.irq_raised == IRQ::None || self.skip_interrupt {
+                    self.pc += 1;
+                    self.running_interrupt = false;
+                }
+                if self.irq_raised != IRQ::None && !self.skip_interrupt {
+                    self.running_interrupt = true;
+                }
+
+                // Move out of the done state.
+                self.addr_done = OpState::Processing;
+                return Ok(());
+            }
+            Tick::Tick2 => {
+                // All instructions fetch the value after the opcode (though some like BRK/PHP/etc ignore it).
+                // We keep it since some instructions such as absolute addr then require getting one
+                // more byte. So cache at this stage since we no idea if it's needed.
+                // NOTE: the PC doesn't increment here as that's dependent on addressing mode which will handle it.
+                self.op_val = self.ram.read(self.pc.0);
+
+                // We've started a new instruction so no longer skipping interrupt processing.
+                self.prev_skip_interrupt = false;
+                if self.skip_interrupt {
+                    self.skip_interrupt = false;
+                    self.prev_skip_interrupt = true;
+                }
+            }
+            // The remainder don't do anything general per cycle so they can be ignored. Opcode processing determines
+            // when they are done and all of them do sanity checking for Tick range.
+            _ => {}
+        }
+
+        // Process the opcode or interrupt
+        let ret: Result<OpState>;
+        if self.running_interrupt {
+            let mut addr = IRQ_VECTOR;
+            if self.irq_raised == IRQ::Nmi {
+                addr = NMI_VECTOR;
+            }
+            ret = self.run_interrupt(addr, true);
+        } else {
+            ret = self.process_opcode();
+        }
+
+        // We'll treat an error as halted since internal state is unknown at that point.
+        // For halted instructions though we'll return a custom error type so it can
+        // be detected vs internal errors.
+        if self.state == CPUState::Halted || ret.is_err() {
+            self.state = CPUState::Halted;
+            self.halt_opcode = self.op_raw;
+            ret?;
+            return Err(eyre!(CPUError::Halted {
+                op: self.halt_opcode,
+            }));
+        }
+        if let Ok(state) = ret {
+            if state == OpState::Done {
+                // Reset so the next tick starts a new instruction
+                // It'll handle doing start of instruction reset on state.
+                self.op_tick = Tick::Reset;
+
+                // If we're already running an IRQ clear state so we don't loop
+                // trying to start it again.
+                if self.running_interrupt {
+                    self.irq_raised = IRQ::None;
+                }
+                self.running_interrupt = false;
+            }
+        }
+        Ok(())
+    }
+
+    /// `tick_done` moves the CPU back to a state where the next tick can run.
+    /// For the 6502 there are no internal latches so generally there is no shadow
+    /// state to account but all Chip implementations need this function.
+    ///
+    /// # Errors
+    /// Bad internal state will result in errors.
+    fn tick_done(&mut self) -> Result<()> {
+        if self.state != CPUState::Tick {
+            return Err(eyre!("tick_done called outside Tick - {}", self.state));
+        }
+        // Move to the next state.
+        self.state = CPUState::Running;
+        Ok(())
+    }
+}
+
 impl<'a> Cpu<'a> {
     /// Build a new Cpu.
     /// NOTE: This is not usable at this point. Call `power_on` to begin
@@ -578,8 +765,12 @@ impl<'a> Cpu<'a> {
             pc: Wrapping(0x0000),
             debug: def.debug,
             state: CPUState::Off,
-            irq: IRQ::default(),
+            irq_raised: IRQ::default(),
+            irq: def.irq,
+            nmi: def.nmi,
+            rdy: def.rdy,
             running_interrupt: false,
+            skip_interrupt: false,
             clocks: 0,
             ram: def.ram,
             op: Operation::default(),
@@ -593,6 +784,23 @@ impl<'a> Cpu<'a> {
             halt_opcode: 0x00,
             halt_pc: 0x0000,
         }
+    }
+
+    /// debug will emit a filled in value on the start of new instructions (assuming not frozen due to RDY)
+    pub fn debug(&self) -> Option<String> {
+        // Only emit when we're going to run a new instruction and aren't frozen.
+        if let Some(rdy) = self.rdy {
+            if rdy.raised() {
+                return None;
+            }
+        }
+        if !self.debug || self.op_tick != Tick::Reset {
+            return None;
+        }
+        return Some(format!(
+            "{:.6} : A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X}\n",
+            self.clocks, self.a, self.x, self.y, self.s, self.p,
+        ));
     }
 
     /// `power_on` will reset the CPU to power on state which isn't well defined.
@@ -770,100 +978,6 @@ impl<'a> Cpu<'a> {
             }
             _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
         }
-    }
-
-    /// `tick` is used to move the clock forward one tick and either start processing
-    /// a new opcode or continue on one already started.
-    ///
-    /// # Errors
-    /// Bad internal state or causing a halt of the CPU will result in errors.
-    ///
-    /// Bad internal state includes not powering on, not completing a reset sequence
-    /// and already being halted.
-    pub fn tick(&mut self) -> Result<()> {
-        // Handles improper state. Only tick_done() or reset() can move into this state.
-        if self.state != CPUState::Running {
-            return Err(eyre!("CPU not in Running state - {}", self.state));
-        }
-
-        // Move to the state tick_done() has to move us out of.
-        self.state = CPUState::Tick;
-
-        // Always bump the clock count and op_tick.
-        self.clocks += 1;
-        self.op_tick = self.op_tick.next();
-
-        match self.op_tick {
-            Tick::Tick1 => {
-                // If we're in Tick1 this means start a new instruction based on the PC value so grab
-                // the opcode now and look it up.
-                self.op_raw = self.ram.read(self.pc.0);
-                self.op = opcode_op(self.cpu_type, self.op_raw);
-
-                // PC advances always when we start a new opcode
-                // TODO(jchacon): Handle interrupts
-                self.pc += 1;
-
-                // Move out of the done state.
-                self.addr_done = OpState::Processing;
-                return Ok(());
-            }
-            Tick::Tick2 => {
-                // All instructions fetch the value after the opcode (though some like BRK/PHP/etc ignore it).
-                // We keep it since some instructions such as absolute addr then require getting one
-                // more byte. So cache at this stage since we no idea if it's needed.
-                // NOTE: the PC doesn't increment here as that's dependent on addressing mode which will handle it.
-                self.op_val = self.ram.read(self.pc.0);
-            }
-            // The remainder don't do anything general per cycle so they can be ignored. Opcode processing determines
-            // when they are done and all of them do sanity checking for Tick range.
-            _ => {}
-        }
-
-        // Process the opcode
-        let ret = self.process_opcode();
-
-        // We'll treat an error as halted since internal state is unknown at that point.
-        // For halted instructions though we'll return a custom error type so it can
-        // be detected vs internal errors.
-        if self.state == CPUState::Halted || ret.is_err() {
-            self.state = CPUState::Halted;
-            self.halt_opcode = self.op_raw;
-            ret?;
-            return Err(eyre!(CPUError::Halted {
-                op: self.halt_opcode,
-            }));
-        }
-        if let Ok(state) = ret {
-            if state == OpState::Done {
-                // Reset so the next tick starts a new instruction
-                // It'll handle doing start of instruction reset on state.
-                self.op_tick = Tick::Reset;
-
-                // If we're already running an IRQ clear state so we don't loop
-                // trying to start it again.
-                if self.running_interrupt {
-                    self.irq = IRQ::None;
-                }
-                self.running_interrupt = false;
-            }
-        }
-        Ok(())
-    }
-
-    /// `tick_done` moves the CPU back to a state where the next tick can run.
-    /// For the 6502 there are no internal latches so generally there is no shadow
-    /// state to account but all Chip implementations need this function.
-    ///
-    /// # Errors
-    /// Bad internal state will result in errors.
-    pub fn tick_done(&mut self) -> Result<()> {
-        if self.state != CPUState::Tick {
-            return Err(eyre!("tick_done called outside Tick - {}", self.state));
-        }
-        // Move to the next state.
-        self.state = CPUState::Running;
-        Ok(())
     }
 
     // Actual opcode processing for each variant is handled here.
@@ -2699,7 +2813,7 @@ impl<'a> Cpu<'a> {
         // but go to the NMI vector depending on timing.
 
         // New PC comes from IRQ_VECTOR unless we've raised an NMI.
-        let ret = match self.irq {
+        let ret = match self.irq_raised {
             IRQ::Irq => self.run_interrupt(IRQ_VECTOR, true),
             IRQ::Nmi => self.run_interrupt(NMI_VECTOR, true),
             IRQ::None => self.run_interrupt(IRQ_VECTOR, false),
@@ -2707,7 +2821,7 @@ impl<'a> Cpu<'a> {
         // If we're done on this tick eat any pending interrupt since BRK is special.
         if let Ok(r) = ret {
             if r == OpState::Done {
-                self.irq = IRQ::None;
+                self.irq_raised = IRQ::None;
             }
         }
         ret

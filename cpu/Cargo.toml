@@ -8,6 +8,8 @@ strum_macros = "0.24.1"
 strum = "0.24.1"
 lazy_static = "1.4.0"
 color-eyre = { version = "0.6.2", default-features = false }
+chip  = { path = "../chip", version = "~0.1" }
+irq  = { path = "../irq", version = "~0.1" }
 memory  = { path = "../memory", version = "~0.1" }
 rand = "0.8.5"
 thiserror = "1.0.37"

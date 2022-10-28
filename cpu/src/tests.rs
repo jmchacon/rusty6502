@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::{ChipDef, Cpu, FlatRAM, Tick, Type, Vectors, P_DECIMAL};
+    use chip::Chip;
     use color_eyre::eyre::Result;
     use memory::Memory;
     use std::collections::HashSet;
@@ -53,6 +54,9 @@ mod tests {
                                 cpu_type: $type,
                                 ram: &mut r,
                                 debug: false,
+                                irq: None,
+                                nmi: None,
+                                rdy: None,
                             };
 
                             let mut cpu = Cpu::new(&mut def);
@@ -119,6 +123,9 @@ mod tests {
                             cpu_type: $type,
                             ram: &mut r,
                             debug: false,
+                            irq: None,
+                            nmi: None,
+                            rdy: None,
                         };
 
                         let mut cpu = Cpu::new(&mut def);
