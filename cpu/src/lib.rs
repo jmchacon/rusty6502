@@ -789,6 +789,7 @@ impl<'a> Cpu<'a> {
     }
 
     /// debug will emit a filled in value on the start of new instructions (assuming not frozen due to RDY)
+    #[must_use]
     pub fn debug(&self) -> Option<String> {
         // Only emit when we're going to run a new instruction and aren't frozen.
         if let Some(rdy) = self.rdy {
@@ -800,10 +801,10 @@ impl<'a> Cpu<'a> {
             return None;
         }
         let (dis, _) = disassemble::step(self.cpu_type, self.pc, self.ram);
-        return Some(format!(
+        Some(format!(
             "{:.6} {}: A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X}\n",
             self.clocks, dis, self.a, self.x, self.y, self.s, self.p,
-        ));
+        ))
     }
 
     /// `power_on` will reset the CPU to power on state which isn't well defined.
@@ -1841,6 +1842,7 @@ impl<'a> Cpu<'a> {
     // compare implements the logic for all CMP/CPX/CPY instructions and
     // sets flags accordingly from the results.
     // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
     fn compare(&mut self, reg: u8, val: u8) -> Result<OpState> {
         Self::zero_check(&mut self.p, reg - val);
         Self::negative_check(&mut self.p, reg - val);
@@ -2628,10 +2630,10 @@ impl<'a> Cpu<'a> {
         // Flags are different based on BCD or not (since the ALU acts different).
         if self.p & P_DECIMAL != 0x00 {
             // Flags are different based on BCD or not (since the ALU acts different).
-            if (val ^ self.a.0) & 0x40 != 0x00 {
-                self.p |= P_OVERFLOW;
-            } else {
+            if (val ^ self.a.0) & 0x40 == 0x00 {
                 self.p &= !P_OVERFLOW;
+            } else {
+                self.p |= P_OVERFLOW;
             }
 
             // Now do possible odd BCD fixups and set C
@@ -2652,10 +2654,10 @@ impl<'a> Cpu<'a> {
         // C is bit 6
         Self::carry_check(&mut self.p, (u16::from(self.a.0) << 2) & 0x0100);
         // V is bit 5 ^ bit 6
-        if ((self.a.0 & 0x40) >> 6) ^ ((self.a.0 & 0x20) >> 5) != 0x00 {
-            self.p |= P_OVERFLOW
+        if ((self.a.0 & 0x40) >> 6) ^ ((self.a.0 & 0x20) >> 5) == 0x00 {
+            self.p &= !P_OVERFLOW;
         } else {
-            self.p &= !P_OVERFLOW
+            self.p |= P_OVERFLOW;
         }
         Ok(OpState::Done)
     }
@@ -3323,19 +3325,25 @@ impl<'a> Cpu<'a> {
 
             // BCD details - http://6502.org/tutorials/decimal_mode.html
             // Also http://nesdev.com/6502_cpu.txt but it has errors
-            let mut al = (self.a.0 & 0x0F) as i8 - (self.op_val & 0x0F) as i8 + carry as i8 - 1;
+            // Note: Wraps are ok here and intended as we're doing bit extensions on purpose.
+            #[allow(clippy::cast_possible_wrap)]
+            let mut al = Wrapping((self.a.0 & 0x0F) as i8) - Wrapping((self.op_val & 0x0F) as i8)
+                + Wrapping(carry as i8)
+                - Wrapping(1);
 
             // Low nibble fixup
-            if al < 0 {
-                al = ((al - 0x06) & 0x0F) - 0x10;
+            if al.0 < 0 {
+                al = Wrapping((al.0 - 0x06) & 0x0F) - Wrapping(0x10);
             }
             let mut sum =
-                i16::from(self.a.0 & 0xF0) - i16::from(self.op_val & 0xF0) + i16::from(al);
+                i16::from(self.a.0 & 0xF0) - i16::from(self.op_val & 0xF0) + i16::from(al.0);
 
             // High nibble fixup
             if sum < 0x0000 {
-                sum -= 0x60
+                sum -= 0x60;
             }
+            // NOTE: We don't lose the sign here BCD doesn't care.
+            #[allow(clippy::cast_sign_loss)]
             let res = (sum & 0xFF) as u8;
 
             // Do normal binary math to set C,N,Z
@@ -3356,7 +3364,7 @@ impl<'a> Cpu<'a> {
 
         // Otherwise binary mode is just ones complement p.opVal and ADC.
         self.op_val = !self.op_val;
-        return self.adc();
+        self.adc()
     }
 
     // sec implements the SEC instruction for setting the carry bit.
