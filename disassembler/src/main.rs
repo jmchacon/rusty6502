@@ -4,7 +4,6 @@
 use c64basic::{list, BASIC_LOAD_ADDR};
 use clap::Parser;
 use color_eyre::eyre::Result;
-use disassemble::step;
 use rusty6502::prelude::*;
 use std::{ffi::OsStr, fs::read, num::Wrapping, path::Path};
 
@@ -122,7 +121,7 @@ fn main() -> Result<()> {
     let limit = Wrapping((usize::from(start.0) + bytes.len() - 1) as u16);
     println!("limit {limit:04X}");
     loop {
-        (dis, newpc) = step(args.cpu_type, pc, &ram);
+        (dis, newpc) = disassemble::step(args.cpu_type, pc, &ram);
         println!("{dis}");
         // Check if we went off the end, or the newpc wrapped
         // as step() can overflow.

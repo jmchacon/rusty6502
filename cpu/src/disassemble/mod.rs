@@ -1,7 +1,8 @@
 //! disassemble provides functions for disassembling a given
 //! location.
 
-use rusty6502::prelude::*;
+use super::*;
+
 use std::fmt::Write as _;
 use std::num::Wrapping; // import without risk of name clashing
 
@@ -11,7 +12,7 @@ use std::num::Wrapping; // import without risk of name clashing
 /// As a real 6502 will wrap around if it's asked to step off the end
 /// this will do the same. i.e. disassembling 0xFFFF with a multi-byte opcode will result
 /// in reading 0x0000 and 0x0001 and returning a pc from that area as well.
-pub fn step(ty: Type, pc: Wrapping<u16>, r: &impl Memory) -> (String, Wrapping<u16>) {
+pub fn step(ty: Type, pc: Wrapping<u16>, r: &dyn Memory) -> (String, Wrapping<u16>) {
     let pc1 = r.read((pc + Wrapping(1)).0);
     let pc2 = r.read((pc + Wrapping(2)).0);
 

@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-disassemble = { path = "../disassemble", version = "~0.1" }
 rusty6502 = { path = "../", version = "~0.1" }
 c64basic = { path = "../c64basic", version = "~0.1" }
 color-eyre = { version = "0.6.2", default-features = false }

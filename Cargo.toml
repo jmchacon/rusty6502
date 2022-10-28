@@ -2,7 +2,6 @@
 members = [
     "./cpu",
     "./c64basic",
-    "./disassemble",
     "./disassembler",
     "./convertprg",
     "./irq",
@@ -14,7 +13,6 @@ members = [
 default-members = [
     "./cpu",
     "./c64basic",
-    "./disassemble",
     "./disassembler",
     "./convertprg",
     "./irq",

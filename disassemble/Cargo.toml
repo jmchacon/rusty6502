@@ -1,7 +1,0 @@
-[package]
-name = "disassemble"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rusty6502 = { path = "../", version = "~0.1" }

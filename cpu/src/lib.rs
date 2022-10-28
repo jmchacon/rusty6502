@@ -13,6 +13,8 @@ use strum_macros::{Display, EnumIter, EnumString};
 mod lookup;
 pub use crate::lookup::*;
 
+pub mod disassemble;
+
 mod tests;
 
 /// `AddressMode` defines the 6502 addressing modes.
@@ -797,9 +799,10 @@ impl<'a> Cpu<'a> {
         if !self.debug || self.op_tick != Tick::Reset {
             return None;
         }
+        let (dis, _) = disassemble::step(self.cpu_type, self.pc, self.ram);
         return Some(format!(
-            "{:.6} : A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X}\n",
-            self.clocks, self.a, self.x, self.y, self.s, self.p,
+            "{:.6} {}: A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X}\n",
+            self.clocks, dis, self.a, self.x, self.y, self.s, self.p,
         ));
     }
 
