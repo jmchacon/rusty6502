@@ -53,7 +53,7 @@ mod tests {
                             let mut def = ChipDef {
                                 cpu_type: $type,
                                 ram: &mut r,
-                                debug: false,
+                                debug: None,
                                 irq: None,
                                 nmi: None,
                                 rdy: None,
@@ -122,7 +122,7 @@ mod tests {
                         let mut def = ChipDef {
                             cpu_type: $type,
                             ram: &mut r,
-                            debug: false,
+                            debug: None,
                             irq: None,
                             nmi: None,
                             rdy: None,

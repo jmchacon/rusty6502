@@ -2,7 +2,6 @@
 use std::num::Wrapping;
 
 use chip::Chip;
-use irq;
 use memory::{Memory, MAX_SIZE};
 use thiserror::Error;
 
@@ -478,7 +477,7 @@ pub struct Cpu<'a> {
     pub pc: Wrapping<u16>,
 
     // If true `debug` will return data.
-    debug: bool,
+    debug: Option<fn(String)>,
 
     // Initialized or not.
     state: CPUState,
@@ -570,9 +569,8 @@ pub struct ChipDef<'a> {
     /// This is not technically an IRQ but acts the same.
     pub rdy: Option<&'a dyn irq::Sender>,
 
-    /// If true debugging is enabled.
-    /// TODO: Define the interface for this.
-    pub debug: bool,
+    /// If Some debugging is enabled.
+    pub debug: Option<fn(String)>,
 }
 
 /// `CPUError` defines specific conditions where `tick` may return
@@ -614,7 +612,7 @@ impl<'a> Chip for Cpu<'a> {
         self.state = CPUState::Tick;
 
         // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
-        // TODO(jchacon): Ok, this technically only works like this in combination with SYNC being held high as well.
+        //                Ok, this technically only works like this in combination with SYNC being held high as well.
         //                Otherwise it acts like a single step and continues after the next clock.
         //                But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
         //                time so "good enough".
@@ -627,6 +625,9 @@ impl<'a> Chip for Cpu<'a> {
         // Always bump the clock count and op_tick.
         self.clocks += 1;
         self.op_tick = self.op_tick.next();
+
+        // Emit debugging if required
+        self.debug();
 
         // If we get a new interrupt while running one then NMI always wins until it's done.
         let mut irq_raised = false;
@@ -789,22 +790,21 @@ impl<'a> Cpu<'a> {
     }
 
     /// debug will emit a filled in value on the start of new instructions (assuming not frozen due to RDY)
-    #[must_use]
-    pub fn debug(&self) -> Option<String> {
+    pub fn debug(&self) {
         // Only emit when we're going to run a new instruction and aren't frozen.
         if let Some(rdy) = self.rdy {
             if rdy.raised() {
-                return None;
+                return;
             }
         }
-        if !self.debug || self.op_tick != Tick::Reset {
-            return None;
+        if self.debug.is_none() || self.op_tick != Tick::Reset {
+            return;
         }
         let (dis, _) = disassemble::step(self.cpu_type, self.pc, self.ram);
-        Some(format!(
-            "{:.6} {}: A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X}\n",
-            self.clocks, dis, self.a, self.x, self.y, self.s, self.p,
-        ))
+        if let Some(d) = self.debug {
+            let out = format!("{:.6} {}: A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X} op_val: {:02X} op_addr: {:04X}\n", self.clocks, dis, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr);
+            d(out);
+        }
     }
 
     /// `power_on` will reset the CPU to power on state which isn't well defined.
@@ -967,8 +967,10 @@ impl<'a> Cpu<'a> {
                     }
                     Tick::Tick7 => {
                         // Load PCH from reset vector and go back into normal operations.
-                        self.pc = Wrapping(u16::from(self.ram.read(RESET_VECTOR + 1)) << 8)
-                            + Wrapping(u16::from(self.op_val));
+                        self.pc = Wrapping(
+                            u16::from(self.ram.read(RESET_VECTOR + 1)) << 8
+                                | u16::from(self.op_val),
+                        );
                         self.reset_tick = Tick::Reset;
                         self.op_tick = Tick::Reset;
                         self.state = CPUState::Running;
@@ -1387,7 +1389,7 @@ impl<'a> Cpu<'a> {
             }
             // 0x88 - DEY
             (Opcode::DEY, AddressMode::Implied) => {
-                let val = self.y.0 - 1;
+                let val = (self.y - Wrapping(1)).0;
                 Self::load_register(&mut self.p, &mut self.y, val)
             }
             // 0x89 - NOP see 0x80
@@ -1611,7 +1613,7 @@ impl<'a> Cpu<'a> {
             (Opcode::DCP, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::dcp),
             // 0xC8 - INY
             (Opcode::INY, AddressMode::Implied) => {
-                let val = self.y.0 + 1;
+                let val = (self.y + Wrapping(1)).0;
                 Self::load_register(&mut self.p, &mut self.y, val)
             }
             // 0xC9 - CMP #i
@@ -1620,7 +1622,7 @@ impl<'a> Cpu<'a> {
             }
             // 0xCA - DEX
             (Opcode::DEX, AddressMode::Implied) => {
-                let val = self.x.0 - 1;
+                let val = (self.x - Wrapping(1)).0;
                 Self::load_register(&mut self.p, &mut self.x, val)
             }
             // 0xCB - AXS #i
@@ -1716,7 +1718,7 @@ impl<'a> Cpu<'a> {
             (Opcode::ISC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::isc),
             // 0xE8 - INX
             (Opcode::INX, AddressMode::Implied) => {
-                let val = self.x.0 + 1;
+                let val = (self.x + Wrapping(1)).0;
                 Self::load_register(&mut self.p, &mut self.x, val)
             }
             // 0xE9 0xEB - SBC #i
@@ -1844,8 +1846,9 @@ impl<'a> Cpu<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
     fn compare(&mut self, reg: u8, val: u8) -> Result<OpState> {
-        Self::zero_check(&mut self.p, reg - val);
-        Self::negative_check(&mut self.p, reg - val);
+        let check = (Wrapping(reg) - Wrapping(val)).0;
+        Self::zero_check(&mut self.p, check);
+        Self::negative_check(&mut self.p, check);
         // A-M done as 2's complement addition by ones complement and add 1
         // This way we get valid sign extension and a carry bit test.
         Self::carry_check(&mut self.p, u16::from(reg) + u16::from(!val) + 1);
@@ -2026,8 +2029,6 @@ impl<'a> Cpu<'a> {
         self.addr_absolute_xy(mode, self.y.0)
     }
 
-    // TODO(jchacon): Double check all address computations in addr_X functions. Likely all need Wrapping around them.
-
     // addr_absolute_xy implements the details for addr_absolute_x and addr_absolute_y since they only differ based on the register used.
     // See those functions for arg/return specifics.
     fn addr_absolute_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
@@ -2046,9 +2047,10 @@ impl<'a> Cpu<'a> {
                 self.pc += 1;
                 self.op_addr |= u16::from(self.op_val) << 8;
                 // Add reg but do it in a way which won't page wrap (if needed).
-                let a = (self.op_addr & 0xFF00) + u16::from((self.op_addr & 0x00FF) as u8 + reg);
+                let a = (self.op_addr & 0xFF00)
+                    | u16::from((Wrapping((self.op_addr & 0x00FF) as u8) + Wrapping(reg)).0);
                 self.op_val = 0;
-                if a != self.op_addr + u16::from(reg) {
+                if a != (Wrapping(self.op_addr) + Wrapping(u16::from(reg))).0 {
                     // Signal for next phase fixup is needed
                     self.op_val = 1;
                 }
@@ -2066,7 +2068,7 @@ impl<'a> Cpu<'a> {
                 // For Store we're done. Just fixup p.opAddr so the return value is correct.
                 let mut done = Ok(OpState::Done);
                 if t != 0 {
-                    self.op_addr += 0x0100;
+                    self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
                     if let InstructionMode::Load = mode {
                         done = Ok(OpState::Processing);
                     }
@@ -2156,7 +2158,7 @@ impl<'a> Cpu<'a> {
             Tick::Tick5 => {
                 // Read high byte, shift over and add op_val which has the low byte.
                 self.op_addr =
-                    (u16::from(self.ram.read(self.op_addr)) << 8) + u16::from(self.op_val);
+                    (u16::from(self.ram.read(self.op_addr)) << 8) | u16::from(self.op_val);
                 match mode {
                     // For a store we're done as op_addr now contains the destination address.
                     InstructionMode::Store => Ok(OpState::Done),
@@ -2202,19 +2204,20 @@ impl<'a> Cpu<'a> {
                 self.op_val = self.ram.read(self.op_addr);
                 // Setup op_addr for next read and handle ZP wrapping.
                 #[allow(clippy::cast_possible_truncation)]
-                let a = u16::from((self.op_addr as u8) + 1);
+                let a = u16::from((Wrapping(self.op_addr as u8) + Wrapping(1)).0);
                 self.op_addr = a;
                 Ok(OpState::Processing)
             }
             Tick::Tick4 => {
                 // Compute effective address and then add Y to it (possibly wrongly).
                 self.op_addr =
-                    (u16::from(self.ram.read(self.op_addr)) << 8) + u16::from(self.op_val);
+                    (u16::from(self.ram.read(self.op_addr)) << 8) | u16::from(self.op_val);
                 // Add Y but do it in a way which won't page wrap (if needed).
                 #[allow(clippy::cast_possible_truncation)]
-                let a = (self.op_addr & 0xFF00) + u16::from((self.op_addr as u8) + self.y.0);
+                let a =
+                    (self.op_addr & 0xFF00) | u16::from((Wrapping(self.op_addr as u8) + self.y).0);
                 self.op_val = 0;
-                if a != (self.op_addr + u16::from(self.y.0)) {
+                if a != (Wrapping(self.op_addr) + Wrapping(u16::from(self.y.0))).0 {
                     // Signal for next phase we got it wrong.
                     self.op_val = 1;
                 }
@@ -2235,7 +2238,7 @@ impl<'a> Cpu<'a> {
                 // For Store we're done. Just fixup p.opAddr so the return value is correct.
                 let mut done = Ok(OpState::Done);
                 if t != 0 {
-                    self.op_addr += 0x0100;
+                    self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
                     if let InstructionMode::Load = mode {
                         done = Ok(OpState::Processing);
                     }
@@ -2334,7 +2337,7 @@ impl<'a> Cpu<'a> {
                 // Read from the ZP addr and then add the register for the real read later.
                 _ = self.ram.read(self.op_addr);
                 // Do this as a u8 so it wraps as needed.
-                self.op_addr = u16::from(self.op_val + reg);
+                self.op_addr = u16::from((Wrapping(self.op_val) + Wrapping(reg)).0);
                 // For a store we're done since we have the address needed.
                 if let InstructionMode::Store = mode {
                     Ok(OpState::Done)
@@ -2382,7 +2385,10 @@ impl<'a> Cpu<'a> {
                 // Stash the old one in p.opAddr so we can use in tick 4 if needed.
                 self.op_addr = self.pc.0;
                 self.pc = Wrapping(
-                    (self.pc.0 & 0xFF00) + u16::from(((self.pc.0 & 0x00FF) as u8) + self.op_val),
+                    (self.pc.0 & 0xFF00)
+                        | u16::from(
+                            (Wrapping((self.pc.0 & 0x00FF) as u8) + Wrapping(self.op_val)).0,
+                        ),
                 );
                 // It always triggers a bus read of the newly computed PC.
                 _ = self.ram.read(self.pc.0);
@@ -2504,7 +2510,7 @@ impl<'a> Cpu<'a> {
             Tick::Tick7 => {
                 // Compute the new PC from the 2nd vector component and the previous val read.
                 self.pc =
-                    Wrapping((u16::from(self.ram.read(vec + 1)) << 8) + u16::from(self.op_val));
+                    Wrapping((u16::from(self.ram.read(vec + 1)) << 8) | u16::from(self.op_val));
 
                 // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
                 // a handler before firing again.
@@ -2532,24 +2538,25 @@ impl<'a> Cpu<'a> {
         if (self.p & P_DECIMAL) != 0x00 && self.cpu_type != Type::Ricoh {
             // BCD details - http://6502.org/tutorials/decimal_mode.html
             // Also http://nesdev.com/6502_cpu.txt but it has errors
-            let mut al = (self.a.0 & 0x0F) + (self.op_val & 0x0F) + carry;
+            let mut al = Wrapping(self.a.0 & 0x0F) + Wrapping(self.op_val & 0x0F) + Wrapping(carry);
             // Low nibble fixup
-            if al >= 0x0A {
-                al = ((al + 0x06) & 0x0F) + 0x10;
+            if al >= Wrapping(0x0A) {
+                al = ((al + Wrapping(0x06)) & Wrapping(0x0F)) + Wrapping(0x10);
             }
-            let mut sum =
-                u16::from(self.a.0 & 0xF0) + u16::from(self.op_val & 0xF0) + u16::from(al);
+            let mut sum = Wrapping(u16::from(self.a.0 & 0xF0))
+                + Wrapping(u16::from(self.op_val & 0xF0))
+                + Wrapping(u16::from(al.0));
             // High nibble fixup
-            if sum >= 0xA0 {
+            if sum >= Wrapping(0xA0) {
                 sum += 0x60;
             }
-            let res = (sum & 0xFF) as u8;
-            let seq = (self.a.0 & 0xF0) + (self.op_val & 0xF0) + al;
+            let res = (sum.0 & 0xFF) as u8;
+            let seq = Wrapping(self.a.0 & 0xF0) + Wrapping(self.op_val & 0xF0) + al;
             let bin = self.a.0 + self.op_val + carry;
-            Self::overflow_check(&mut self.p, self.a.0, self.op_val, seq);
-            Self::carry_check(&mut self.p, sum);
+            Self::overflow_check(&mut self.p, self.a.0, self.op_val, seq.0);
+            Self::carry_check(&mut self.p, sum.0);
             // TODO(jchacon): CMOS gets N/Z set correctly and needs implementing.
-            Self::negative_check(&mut self.p, seq);
+            Self::negative_check(&mut self.p, seq.0);
             Self::zero_check(&mut self.p, bin);
             self.a = Wrapping(res);
             return Ok(OpState::Done);
@@ -2584,8 +2591,8 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val = self.a.0 & self.x.0 & (((self.op_addr >> 8) as u8) + 1);
-                self.ram.write(self.op_addr, val);
+                let val = self.a & self.x & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1));
+                self.ram.write(self.op_addr, val.0);
                 Ok(OpState::Done)
             }
         }
@@ -2867,14 +2874,14 @@ impl<'a> Cpu<'a> {
     // dec implements the DEC instruction by decrementing the value (op_val) at op_addr.
     // Always returns Done since this takes one tick and never returns an error.
     fn dec(&mut self) -> Result<OpState> {
-        self.store_with_flags(self.op_addr, self.op_val - 1)
+        self.store_with_flags(self.op_addr, (Wrapping(self.op_val) - Wrapping(1)).0)
     }
 
     // dcp implements the undocumented opcode for DCP.
-    // This decrements p.opAddr and then does a CMP with A setting associated flags.
+    // This decrements the value at op_addr and then does a CMP with A setting associated flags.
     // Always returns Done since this takes one tick and never returns an error.
     fn dcp(&mut self) -> Result<OpState> {
-        self.op_val -= 1;
+        self.op_val = (Wrapping(self.op_val) - Wrapping(1)).0;
         self.ram.write(self.op_addr, self.op_val);
         self.compare_a()
     }
@@ -2889,14 +2896,14 @@ impl<'a> Cpu<'a> {
     // inc implements the INC instruction by incrementing the value (op_val) at op_addr.
     // Always returns Done since this takes one tick and never returns an error.
     fn inc(&mut self) -> Result<OpState> {
-        self.store_with_flags(self.op_addr, self.op_val + 1)
+        self.store_with_flags(self.op_addr, (Wrapping(self.op_val) + Wrapping(1)).0)
     }
 
     // isc implements the undocumented opcode for ISC.
     // This increments the value at op_addr and then does an SBC and sets associated flags.
     // Always returns Done since this takes one tick and never returns an error.
     fn isc(&mut self) -> Result<OpState> {
-        self.op_val += 1;
+        self.op_val = (Wrapping(self.op_val) + Wrapping(1)).0;
         self.ram.write(self.op_addr, self.op_val);
         self.sbc()
     }
@@ -2946,12 +2953,13 @@ impl<'a> Cpu<'a> {
             }
             Tick::Tick5 => {
                 // Read the high byte. On NMOS and CMOS this tick reads the wrong address if there was a page wrap.
-                let addr = (self.op_addr & 0xFF00) + u16::from(((self.op_addr & 0x00FF) as u8) + 1);
+                let addr = (self.op_addr & 0xFF00)
+                    | u16::from((Wrapping((self.op_addr & 0x00FF) as u8) + Wrapping(1)).0);
                 let val = self.ram.read(addr);
                 if self.cpu_type == Type::CMOS {
                     // Just do a normal +1 now for CMOS so tick 6 reads the correct address no matter what.
                     // It may be a duplicate of this but that's fine.
-                    self.op_addr += 1;
+                    self.op_addr = (Wrapping(self.op_addr) + Wrapping(1)).0;
                     return Ok(OpState::Processing);
                 }
                 self.op_addr = (u16::from(val) << 8) | u16::from(self.op_val);
@@ -3002,7 +3010,7 @@ impl<'a> Cpu<'a> {
             }
             Tick::Tick6 => {
                 self.pc =
-                    Wrapping((u16::from(self.ram.read(self.pc.0)) << 8) + u16::from(self.op_val));
+                    Wrapping((u16::from(self.ram.read(self.pc.0)) << 8) | u16::from(self.op_val));
                 Ok(OpState::Done)
             }
         }
@@ -3332,24 +3340,25 @@ impl<'a> Cpu<'a> {
                 - Wrapping(1);
 
             // Low nibble fixup
-            if al.0 < 0 {
-                al = Wrapping((al.0 - 0x06) & 0x0F) - Wrapping(0x10);
+            if al < Wrapping(0) {
+                al = ((al - Wrapping(0x06)) & Wrapping(0x0F)) - Wrapping(0x10);
             }
-            let mut sum =
-                i16::from(self.a.0 & 0xF0) - i16::from(self.op_val & 0xF0) + i16::from(al.0);
+            let mut sum = Wrapping(i16::from(self.a.0 & 0xF0))
+                - Wrapping(i16::from(self.op_val & 0xF0))
+                + Wrapping(i16::from(al.0));
 
             // High nibble fixup
-            if sum < 0x0000 {
+            if sum < Wrapping(0x0000) {
                 sum -= 0x60;
             }
             // NOTE: We don't lose the sign here BCD doesn't care.
             #[allow(clippy::cast_sign_loss)]
-            let res = (sum & 0xFF) as u8;
+            let res = (sum.0 & 0xFF) as u8;
 
             // Do normal binary math to set C,N,Z
-            let b = self.a.0 + !self.op_val + carry;
-            Self::overflow_check(&mut self.p, self.a.0, !self.op_val, b);
-            Self::negative_check(&mut self.p, b);
+            let b = self.a + Wrapping(!self.op_val) + Wrapping(carry);
+            Self::overflow_check(&mut self.p, self.a.0, !self.op_val, b.0);
+            Self::negative_check(&mut self.p, b.0);
 
             // Yes, could do bit checks here like the hardware but
             // just treating as uint16 math is simpler to code.
@@ -3357,7 +3366,7 @@ impl<'a> Cpu<'a> {
                 &mut self.p,
                 u16::from(self.a.0) + u16::from(!self.op_val) + u16::from(carry),
             );
-            Self::zero_check(&mut self.p, b);
+            Self::zero_check(&mut self.p, b.0);
             self.a = Wrapping(res);
             return Ok(OpState::Done);
         }
@@ -3406,8 +3415,8 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val = self.x.0 & ((self.op_addr >> 8) as u8 + 1);
-                self.ram.write(self.op_addr, val);
+                let val = self.x & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1));
+                self.ram.write(self.op_addr, val.0);
                 Ok(OpState::Done)
             }
         }
@@ -3428,8 +3437,8 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val = self.y.0 & ((self.op_addr >> 8) as u8 + 1);
-                self.ram.write(self.op_addr, val);
+                let val = self.y & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1));
+                self.ram.write(self.op_addr, val.0);
                 Ok(OpState::Done)
             }
         }
