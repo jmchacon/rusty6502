@@ -117,6 +117,7 @@ struct ASTOutput {
 // It will compute an AST from the file reader along with a label map
 // that has references to both fully defined labels (EQU) and references
 // to location labels (either defs or refs).
+#[allow(clippy::too_many_lines)]
 fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
     let mut ret = ASTOutput {
         ast: Vec::<Vec<Token>>::new(),
@@ -445,6 +446,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
 // The only thing it leaves is relative address computation since that can't be
 // known until all labels are fully cross referenced. That will be handled during
 // byte code generation.
+#[allow(clippy::too_many_lines)]
 fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
     let mut pc: u16 = 0;
     for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
@@ -631,6 +633,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
 // generate_output does the final byte code and listing file generation from
 // the previously generated AST. This must be mutable as final relative addresses
 // are computed before byte codes are generated for a given operation.
+#[allow(clippy::too_many_lines)]
 fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
     // Always emit 64k so just allocate a block.
     let mut res = Assembly {
