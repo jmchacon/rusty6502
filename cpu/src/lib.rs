@@ -5,8 +5,9 @@ use chip::Chip;
 use memory::{Memory, MAX_SIZE};
 use thiserror::Error;
 
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{eyre, ErrReport, Result};
 use rand::Rng;
+use std::fmt;
 use strum_macros::{Display, EnumIter, EnumString};
 
 mod lookup;
@@ -395,17 +396,19 @@ enum CPUState {
     Halted,
 }
 
-#[derive(Default, PartialEq)]
+#[derive(Default, Debug, PartialEq, Clone)]
 enum IRQ {
     #[default]
     None,
     Irq,
     Nmi,
 }
-// Used to indicate whether an opcode/addressing mode is done or not.
-#[derive(Copy, Clone, PartialEq)]
-enum OpState {
+/// OpState is used to indicate whether an opcode/addressing mode is done or not.
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum OpState {
+    /// Everything is done.
     Done,
+    /// There is more work to be done.
     Processing,
 }
 
@@ -542,6 +545,19 @@ pub struct Cpu<'a> {
     halt_pc: u16,
 }
 
+impl fmt::Debug for Cpu<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CPU")
+            .field("type", &self.cpu_type)
+            .field("a", &self.a.0)
+            .field("x", &self.x.0)
+            .field("y", &self.y.0)
+            .field("s", &self.s.0)
+            .field("p", &self.p)
+            .field("pc", &self.pc.0)
+            .finish()
+    }
+}
 const P_NEGATIVE: u8 = 0x80;
 const P_OVERFLOW: u8 = 0x40;
 const P_S1: u8 = 0x20; // Always on
@@ -598,7 +614,7 @@ impl<'a> Chip for Cpu<'a> {
     fn tick(&mut self) -> Result<()> {
         // Fast path if halted. PC doesn't advance nor do we take clocks.
         if self.state == CPUState::Halted {
-            return Err(eyre!(CPUError::Halted {
+            return Err(ErrReport::new(CPUError::Halted {
                 op: self.halt_opcode,
             }));
         }
@@ -715,7 +731,7 @@ impl<'a> Chip for Cpu<'a> {
             self.state = CPUState::Halted;
             self.halt_opcode = self.op_raw;
             ret?;
-            return Err(eyre!(CPUError::Halted {
+            return Err(ErrReport::new(CPUError::Halted {
                 op: self.halt_opcode,
             }));
         }
@@ -797,12 +813,16 @@ impl<'a> Cpu<'a> {
                 return;
             }
         }
-        if self.debug.is_none() || self.op_tick != Tick::Reset {
+        if self.debug.is_none() || self.op_tick != Tick::Tick1 {
             return;
         }
         let (dis, _) = disassemble::step(self.cpu_type, self.pc, self.ram);
         if let Some(d) = self.debug {
-            let out = format!("{:.6} {}: A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X} op_val: {:02X} op_addr: {:04X}\n", self.clocks, dis, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr);
+            let mut pre = "";
+            if self.state == CPUState::Reset {
+                pre = "reset ";
+            }
+            let out = format!("{}{:.6} {}: A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X} op_val: {:02X} op_addr: {:04X}\n", pre, self.clocks, dis, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr);
             d(out);
         }
     }
@@ -850,8 +870,8 @@ impl<'a> Cpu<'a> {
         // Use reset to get everything else done.
         loop {
             match self.reset() {
-                Ok(true) => break,
-                Ok(false) => continue,
+                Ok(OpState::Done) => break,
+                Ok(OpState::Processing) => continue,
                 Err(e) => return Err(e),
             }
         }
@@ -872,7 +892,7 @@ impl<'a> Cpu<'a> {
     /// Internal problems (getting into the wrong state) can result in errors.
     ///
     /// TODO: Can we reuse the BRK code for this?
-    pub fn reset(&mut self) -> Result<bool> {
+    pub fn reset(&mut self) -> Result<OpState> {
         if self.state == CPUState::Off {
             return Err(eyre!("power_on not called before calling reset!"));
         }
@@ -884,6 +904,7 @@ impl<'a> Cpu<'a> {
             self.reset_tick = Tick::Tick1;
         }
         self.op_tick = self.op_tick.next();
+        self.debug();
         self.clocks += 1;
 
         match self.reset_tick {
@@ -896,7 +917,7 @@ impl<'a> Cpu<'a> {
                 // as Tick1.
                 self.op_tick = Tick::Reset;
 
-                Ok(false)
+                Ok(OpState::Processing)
             }
             Tick::Tick3 => {
                 match self.op_tick {
@@ -916,14 +937,14 @@ impl<'a> Cpu<'a> {
                         // as we pull 3 bytes off the stack in the end.
                         // TODO: Double check this in visual 6502.
                         self.s = Wrapping(0x00);
-                        Ok(false)
+                        Ok(OpState::Processing)
                     }
                     Tick::Tick2 => {
                         // Read another throw away value which is normally the opval but
                         // discarded as well.
                         self.ram.read(self.pc.0);
                         self.pc += 1;
-                        Ok(false)
+                        Ok(OpState::Processing)
                     }
                     Tick::Tick3 | Tick::Tick4 => {
                         // Tick3: Simulate pushing P onto stack but reset holds R/W high so we don't write.
@@ -933,7 +954,7 @@ impl<'a> Cpu<'a> {
                         let addr: u16 = 0x0100 + u16::from(self.s.0);
                         self.ram.read(addr);
                         self.s -= 1;
-                        Ok(false)
+                        Ok(OpState::Processing)
                     }
                     Tick::Tick5 => {
                         // Final write to stack (PC high) but actual read due to being in reset.
@@ -958,12 +979,12 @@ impl<'a> Cpu<'a> {
                             }
                             _ => 0x00,
                         };
-                        Ok(false)
+                        Ok(OpState::Processing)
                     }
                     Tick::Tick6 => {
                         // Load PCL from reset vector
                         self.op_val = self.ram.read(RESET_VECTOR);
-                        Ok(false)
+                        Ok(OpState::Processing)
                     }
                     Tick::Tick7 => {
                         // Load PCH from reset vector and go back into normal operations.
@@ -974,7 +995,7 @@ impl<'a> Cpu<'a> {
                         self.reset_tick = Tick::Reset;
                         self.op_tick = Tick::Reset;
                         self.state = CPUState::Running;
-                        Ok(true)
+                        Ok(OpState::Done)
                     }
                     // Technically both this and the reset_tick one below are impossible
                     // sans bugs here as tick() won't run while we're in reset and it's the only other
