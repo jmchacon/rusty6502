@@ -574,6 +574,16 @@ impl Not for Flags {
     }
 }
 
+// The bitmasks for all of the Flags bits.
+const P_NEGATIVE: u8 = 0x80;
+const P_OVERFLOW: u8 = 0x40;
+const P_S1: u8 = 0x20; // Always on
+const P_B: u8 = 0x10; // Only set when pushing onto the stack during BRK.
+const P_DECIMAL: u8 = 0x08;
+const P_INTERRUPT: u8 = 0x04;
+const P_ZERO: u8 = 0x02;
+const P_CARRY: u8 = 0x01;
+
 impl fmt::Display for Flags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut out = String::new();
@@ -644,7 +654,7 @@ pub struct Cpu<'a> {
     /// Program counter
     pub pc: Wrapping<u16>,
 
-    // If true `debug` will return data.
+    // If set `debug` will return data.
     debug: Option<fn(String)>,
 
     // Initialized or not.
@@ -667,6 +677,9 @@ pub struct Cpu<'a> {
 
     // If true we're skipping starting an interrupt for one clock cycle.
     skip_interrupt: bool,
+
+    // Whether we've previously skipped processing an interrupt due to 2 firing back to back.
+    prev_skip_interrupt: bool,
 
     // Tracking for reset when we need to clear the extra clocks
     // up front before simulating BRK. If `tick` is called and this
@@ -700,9 +713,6 @@ pub struct Cpu<'a> {
     //       this is marked Done.
     addr_done: OpState,
 
-    // Whether we've previously skipped processing an interrupt due to 2 firing back to back.
-    prev_skip_interrupt: bool,
-
     // The opcode value used to halt the CPU
     halt_opcode: u8,
 
@@ -735,16 +745,6 @@ impl fmt::Display for Cpu<'_> {
         )
     }
 }
-
-// TODO(jchacon): Turn cpu.p into a type so we can print out the flags cleanly
-const P_NEGATIVE: u8 = 0x80;
-const P_OVERFLOW: u8 = 0x40;
-const P_S1: u8 = 0x20; // Always on
-const P_B: u8 = 0x10; // Only set when pushing onto the stack during BRK.
-const P_DECIMAL: u8 = 0x08;
-const P_INTERRUPT: u8 = 0x04;
-const P_ZERO: u8 = 0x02;
-const P_CARRY: u8 = 0x01;
 
 /// Define the characteristics of the 6502 wanted.
 pub struct ChipDef<'a> {
