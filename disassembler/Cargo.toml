@@ -6,5 +6,5 @@ edition = "2021"
 [dependencies]
 rusty6502 = { path = "../", version = "~0.1" }
 c64basic = { path = "../c64basic", version = "~0.1" }
-color-eyre = { version = "0.6.2", default-features = false }
-clap = { version = "~4.0", features = ["derive", "wrap_help"] }
+clap = { workspace = true }
+color-eyre = { workspace = true }

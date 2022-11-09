@@ -22,6 +22,16 @@ default-members = [
     "./chip",
 ]
 
+[workspace.dependencies]
+clap = { version = "~4.0", features = ["derive", "wrap_help"] }
+color-eyre = { version = "0.6.2", default-features = false }
+lazy_static = "1.4.0"
+rand = "0.8.5"
+regex = "1"
+strum_macros = "0.24.1"
+strum = "0.24.1"
+thiserror = "1.0.37"
+
 [package]
 name = "rusty6502"
 version = "0.1.0"

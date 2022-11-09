@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-color-eyre = { version = "0.6.2", default-features = false }
-clap = { version = "~4.0", features = ["derive", "wrap_help"] }
+color-eyre = { workspace = true }
+clap = { workspace = true }

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-assemble = { path = "../assemble", version = "~0.1" }
-color-eyre = { version = "0.6.2", default-features = false }
-clap = { version = "~4.0", features = ["derive", "wrap_help"] }
 rusty6502  = { path = "../", version = "~0.1" }
+assemble = { path = "../assemble", version = "~0.1" }
+color-eyre = { workspace = true }
+clap = { workspace = true }

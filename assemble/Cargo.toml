@@ -4,7 +4,7 @@ name    = "assemble"
 version = "0.1.0"
 
 [dependencies]
-color-eyre = { version = "0.6.2", default-features = false }
 rusty6502  = { path = "../", version = "~0.1" }
-regex = "1"
-lazy_static = "1.4.0"
+color-eyre = { workspace = true }
+regex = { workspace = true }
+lazy_static = { workspace = true }
