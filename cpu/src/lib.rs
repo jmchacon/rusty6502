@@ -1,5 +1,6 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
 use std::num::Wrapping;
+use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 
 use chip::Chip;
 use memory::{Memory, MAX_SIZE};
@@ -360,6 +361,9 @@ pub struct Operation {
     pub mode: AddressMode,
 }
 
+/// `STACK_START` is the location in memory where the stack page starts.
+pub const STACK_START: u16 = 0x0100;
+
 /// `NMI_VECTOR` is the location in memory the 6502 uses for NMI interrupts.
 /// It is a pointer to the location to start execution.
 pub const NMI_VECTOR: u16 = 0xFFFA;
@@ -396,15 +400,16 @@ enum CPUState {
     Halted,
 }
 
-#[derive(Default, Debug, PartialEq, Clone)]
+#[derive(Default, Debug, Display, PartialEq, Clone)]
 enum IRQ {
     #[default]
     None,
     Irq,
     Nmi,
 }
+
 /// OpState is used to indicate whether an opcode/addressing mode is done or not.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, Display, PartialEq)]
 pub enum OpState {
     /// Everything is done.
     Done,
@@ -456,6 +461,166 @@ impl Tick {
     }
 }
 
+/// Flags defines a type to represent the processor flags.
+/// It will print out with all of the flag values but otherwise
+/// can be treated as a u8 when needed.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Flags(u8);
+
+impl BitOr for Flags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl BitOr<&u8> for Flags {
+    type Output = Self;
+
+    fn bitor(self, rhs: &u8) -> Self::Output {
+        Self(self.0 | rhs)
+    }
+}
+
+impl BitOr<u8> for Flags {
+    type Output = Self;
+
+    fn bitor(self, rhs: u8) -> Self::Output {
+        Self(self.0 | rhs)
+    }
+}
+
+impl BitOr<Flags> for u8 {
+    type Output = Flags;
+
+    fn bitor(self, rhs: Flags) -> Self::Output {
+        Flags(self | rhs.0)
+    }
+}
+
+impl BitOrAssign for Flags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl BitOrAssign<&u8> for Flags {
+    fn bitor_assign(&mut self, rhs: &u8) {
+        self.0 |= rhs;
+    }
+}
+
+impl BitOrAssign<u8> for Flags {
+    fn bitor_assign(&mut self, rhs: u8) {
+        self.0 |= rhs;
+    }
+}
+
+impl BitAnd for Flags {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
+    }
+}
+
+impl BitAnd<&u8> for Flags {
+    type Output = Self;
+
+    fn bitand(self, rhs: &u8) -> Self::Output {
+        Self(self.0 & rhs)
+    }
+}
+
+impl BitAnd<u8> for Flags {
+    type Output = Self;
+
+    fn bitand(self, rhs: u8) -> Self::Output {
+        Self(self.0 & rhs)
+    }
+}
+
+impl BitAnd<Flags> for u8 {
+    type Output = Flags;
+
+    fn bitand(self, rhs: Flags) -> Self::Output {
+        Flags(self & rhs.0)
+    }
+}
+
+impl BitAndAssign for Flags {
+    fn bitand_assign(&mut self, rhs: Self) {
+        self.0 &= rhs.0;
+    }
+}
+
+impl BitAndAssign<&u8> for Flags {
+    fn bitand_assign(&mut self, rhs: &u8) {
+        self.0 &= rhs;
+    }
+}
+
+impl BitAndAssign<u8> for Flags {
+    fn bitand_assign(&mut self, rhs: u8) {
+        self.0 &= rhs;
+    }
+}
+
+impl Not for Flags {
+    type Output = Self;
+    fn not(self) -> Self::Output {
+        Self(!self.0)
+    }
+}
+
+impl fmt::Display for Flags {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = String::new();
+        if self.0 & P_NEGATIVE == P_NEGATIVE {
+            out += "N";
+        } else {
+            out += "-";
+        }
+        if self.0 & P_OVERFLOW == P_OVERFLOW {
+            out += "V";
+        } else {
+            out += "-";
+        }
+        if self.0 & P_S1 == P_S1 {
+            out += "S";
+        } else {
+            out += "-";
+        }
+        if self.0 & P_B == P_B {
+            out += "B";
+        } else {
+            out += "-";
+        }
+        if self.0 & P_DECIMAL == P_DECIMAL {
+            out += "D";
+        } else {
+            out += "-";
+        }
+        if self.0 & P_INTERRUPT == P_INTERRUPT {
+            out += "I";
+        } else {
+            out += "-";
+        }
+        if self.0 & P_ZERO == P_ZERO {
+            out += "Z";
+        } else {
+            out += "-";
+        }
+        if self.0 & P_CARRY == P_CARRY {
+            out += "C";
+        } else {
+            out += "-";
+        }
+        write!(f, "{out}")
+    }
+}
+
 /// The definition for a given 6502 implementation.
 pub struct Cpu<'a> {
     // The specific variant implemented.
@@ -474,7 +639,7 @@ pub struct Cpu<'a> {
     pub s: Wrapping<u8>,
 
     /// Status register
-    pub p: u8,
+    pub p: Flags,
 
     /// Program counter
     pub pc: Wrapping<u16>,
@@ -558,6 +723,20 @@ impl fmt::Debug for Cpu<'_> {
             .finish()
     }
 }
+
+impl fmt::Display for Cpu<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (dis, _) = disassemble::step(self.cpu_type, self.pc, self.ram);
+
+        write!(
+            f,
+            "{:>6} {dis:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X}",
+            self.clocks, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr
+        )
+    }
+}
+
+// TODO(jchacon): Turn cpu.p into a type so we can print out the flags cleanly
 const P_NEGATIVE: u8 = 0x80;
 const P_OVERFLOW: u8 = 0x40;
 const P_S1: u8 = 0x20; // Always on
@@ -780,7 +959,7 @@ impl<'a> Cpu<'a> {
             x: Wrapping(0x00),
             y: Wrapping(0x00),
             s: Wrapping(0x00),
-            p: 0x00,
+            p: Flags(0x00),
             pc: Wrapping(0x0000),
             debug: def.debug,
             state: CPUState::Off,
@@ -816,13 +995,12 @@ impl<'a> Cpu<'a> {
         if self.debug.is_none() || self.op_tick != Tick::Tick1 {
             return;
         }
-        let (dis, _) = disassemble::step(self.cpu_type, self.pc, self.ram);
         if let Some(d) = self.debug {
             let mut pre = "";
             if self.state == CPUState::Reset {
                 pre = "reset ";
             }
-            let out = format!("{}{:.6} {}: A: {:0X} X: {:02X} Y: {:02X} S: {:02X} P: {:02X} op_val: {:02X} op_addr: {:04X}\n", pre, self.clocks, dis, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr);
+            let out = format!("{pre}{self}\n");
             d(out);
         }
     }
@@ -845,7 +1023,7 @@ impl<'a> Cpu<'a> {
         let mut rng = rand::thread_rng();
 
         // This is always set and clears the rest.
-        self.p = P_S1;
+        self.p = Flags(P_S1);
 
         // Randomize decimal for CPU's which implement and aren't CMOS.
         self.p |= match self.cpu_type {
@@ -951,14 +1129,14 @@ impl<'a> Cpu<'a> {
                         // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
                         // These reads go nowhere (technically they end up in internal regs but since that's
                         // not visible externally, who cares?).
-                        let addr: u16 = 0x0100 + u16::from(self.s.0);
+                        let addr: u16 = STACK_START + u16::from(self.s.0);
                         self.ram.read(addr);
                         self.s -= 1;
                         Ok(OpState::Processing)
                     }
                     Tick::Tick5 => {
                         // Final write to stack (PC high) but actual read due to being in reset.
-                        let addr: u16 = 0x0100 + u16::from(self.s.0);
+                        let addr: u16 = STACK_START + u16::from(self.s.0);
                         self.ram.read(addr);
                         self.s -= 1;
 
@@ -1824,7 +2002,7 @@ impl<'a> Cpu<'a> {
     //       Instead this breaks out the pieces needed which means this and the status
     //       checks below are standalone methods.
     #[allow(clippy::unnecessary_wraps)]
-    fn load_register(flags: &mut u8, reg: &mut Wrapping<u8>, val: u8) -> Result<OpState> {
+    fn load_register(flags: &mut Flags, reg: &mut Wrapping<u8>, val: u8) -> Result<OpState> {
         *reg = Wrapping(val);
         Self::zero_check(flags, val);
         Self::negative_check(flags, val);
@@ -1898,7 +2076,7 @@ impl<'a> Cpu<'a> {
     }
 
     // zero_check sets the Z flag based on the value.
-    fn zero_check(flags: &mut u8, val: u8) {
+    fn zero_check(flags: &mut Flags, val: u8) {
         *flags &= !P_ZERO;
         if val == 0 {
             *flags |= P_ZERO;
@@ -1906,7 +2084,7 @@ impl<'a> Cpu<'a> {
     }
 
     // negative_check sets the N flag based on the value.
-    fn negative_check(flags: &mut u8, val: u8) {
+    fn negative_check(flags: &mut Flags, val: u8) {
         *flags &= !P_NEGATIVE;
         if (val & P_NEGATIVE) == 0x80 {
             *flags |= P_NEGATIVE;
@@ -1914,9 +2092,9 @@ impl<'a> Cpu<'a> {
     }
 
     // carry_check sets the C flag based on the value.
-    fn carry_check(flags: &mut u8, val: u16) {
+    fn carry_check(flags: &mut Flags, val: u16) {
         *flags &= !P_CARRY;
-        if val >= 0x100 {
+        if val >= 0x0100 {
             *flags |= P_CARRY;
         }
     }
@@ -1924,7 +2102,7 @@ impl<'a> Cpu<'a> {
     // overflow_check sets the V flag is the result of the ALU operation
     // caused a two's complement sign change.
     // Taken from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
-    fn overflow_check(flags: &mut u8, reg: u8, arg: u8, result: u8) {
+    fn overflow_check(flags: &mut Flags, reg: u8, arg: u8, result: u8) {
         *flags &= !P_OVERFLOW;
         // If the original sign differs from the end sign bit.
         if (reg ^ result) & (arg ^ result) & 0x80 != 0x00 {
@@ -2395,7 +2573,7 @@ impl<'a> Cpu<'a> {
                 // We only skip if the last instruction didn't. This way a branch always doesn't prevent interrupt processing
                 // since on real silicon this is what happens (just a delay in the pipelining).
                 if !self.prev_skip_interrupt {
-                    self.prev_skip_interrupt = true;
+                    self.skip_interrupt = true;
                 }
 
                 // Per http://www.6502.org/tutorials/6502opcodes.html
@@ -2467,13 +2645,13 @@ impl<'a> Cpu<'a> {
     // the stack pointer.
     fn pop_stack(&mut self) -> u8 {
         self.s += 1;
-        self.ram.read(u16::from(self.s.0) + 0x0100)
+        self.ram.read(u16::from(self.s.0) + STACK_START)
     }
 
     // push_stack takes the given 8 bit value and pushes it into the stack and adjusts
     // the stack pointer.
     fn push_stack(&mut self, val: u8) {
-        self.ram.write(u16::from(self.s.0) + 0x0100, val);
+        self.ram.write(u16::from(self.s.0) + STACK_START, val);
         self.s -= 1;
     }
 
@@ -2509,7 +2687,6 @@ impl<'a> Cpu<'a> {
             }
             Tick::Tick5 => {
                 let mut push = self.p;
-                self.p |= P_INTERRUPT;
                 // S1 is always set
                 push |= P_S1;
                 // B always set unless this triggered due to IRQ
@@ -2519,9 +2696,10 @@ impl<'a> Cpu<'a> {
                 }
                 // CMOS turns off D always
                 if Type::CMOS == self.cpu_type {
-                    push &= !P_DECIMAL;
+                    self.p &= !P_DECIMAL;
                 }
-                self.push_stack(push);
+                self.p |= P_INTERRUPT;
+                self.push_stack(push.0);
                 Ok(OpState::Processing)
             }
             Tick::Tick6 => {
@@ -2536,7 +2714,7 @@ impl<'a> Cpu<'a> {
                 // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
                 // a handler before firing again.
                 if irq && !self.prev_skip_interrupt {
-                    self.prev_skip_interrupt = true;
+                    self.skip_interrupt = true;
                 }
                 Ok(OpState::Done)
             }
@@ -2552,11 +2730,11 @@ impl<'a> Cpu<'a> {
     fn adc(&mut self) -> Result<OpState> {
         // Pull the carry bit out which thankfully is the low bit so can be
         // used directly.
-        let carry = self.p & P_CARRY;
+        let carry = (self.p & P_CARRY).0;
 
         // Do BCD but not on the Ricoh version which didn't implement it.
         // This is the CPU for the NES.
-        if (self.p & P_DECIMAL) != 0x00 && self.cpu_type != Type::Ricoh {
+        if (self.p & P_DECIMAL) != Flags(0x00) && self.cpu_type != Type::Ricoh {
             // BCD details - http://6502.org/tutorials/decimal_mode.html
             // Also http://nesdev.com/6502_cpu.txt but it has errors
             let mut al = Wrapping(self.a.0 & 0x0F) + Wrapping(self.op_val & 0x0F) + Wrapping(carry);
@@ -2656,7 +2834,7 @@ impl<'a> Cpu<'a> {
         self.ror_acc()?;
 
         // Flags are different based on BCD or not (since the ALU acts different).
-        if self.p & P_DECIMAL != 0x00 {
+        if self.p & P_DECIMAL != Flags(0x00) {
             // Flags are different based on BCD or not (since the ALU acts different).
             if (val ^ self.a.0) & 0x40 == 0x00 {
                 self.p &= !P_OVERFLOW;
@@ -2746,7 +2924,7 @@ impl<'a> Cpu<'a> {
     // bcc implements the BCC instruction and branches if C is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bcc(&mut self) -> Result<OpState> {
-        if self.p & P_CARRY == 0x00 {
+        if self.p & P_CARRY == Flags(0x00) {
             self.perform_branch()
         } else {
             self.branch_nop()
@@ -2756,7 +2934,7 @@ impl<'a> Cpu<'a> {
     // bcs implements the BCS instruction and branches if C is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bcs(&mut self) -> Result<OpState> {
-        if self.p & P_CARRY == 0x00 {
+        if self.p & P_CARRY == Flags(0x00) {
             self.branch_nop()
         } else {
             self.perform_branch()
@@ -2766,7 +2944,7 @@ impl<'a> Cpu<'a> {
     // beq implements the BEQ instruction and branches is Z is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn beq(&mut self) -> Result<OpState> {
-        if self.p & P_ZERO == 0x00 {
+        if self.p & P_ZERO == Flags(0x00) {
             self.branch_nop()
         } else {
             self.perform_branch()
@@ -2790,7 +2968,7 @@ impl<'a> Cpu<'a> {
     // bmi implements the BMI instruction and branches if N is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bmi(&mut self) -> Result<OpState> {
-        if self.p & P_NEGATIVE == 0x00 {
+        if self.p & P_NEGATIVE == Flags(0x00) {
             self.branch_nop()
         } else {
             self.perform_branch()
@@ -2800,7 +2978,7 @@ impl<'a> Cpu<'a> {
     // bne implements the BNE instruction and branches is Z is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bne(&mut self) -> Result<OpState> {
-        if self.p & P_ZERO == 0x00 {
+        if self.p & P_ZERO == Flags(0x00) {
             self.perform_branch()
         } else {
             self.branch_nop()
@@ -2810,7 +2988,7 @@ impl<'a> Cpu<'a> {
     // bpl implements the BPL instruction and branches if N is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bpl(&mut self) -> Result<OpState> {
-        if self.p & P_NEGATIVE == 0x00 {
+        if self.p & P_NEGATIVE == Flags(0x00) {
             self.perform_branch()
         } else {
             self.branch_nop()
@@ -2820,7 +2998,7 @@ impl<'a> Cpu<'a> {
     // bvc implements the BVC instruction and branches if V is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bvc(&mut self) -> Result<OpState> {
-        if self.p & P_OVERFLOW == 0x00 {
+        if self.p & P_OVERFLOW == Flags(0x00) {
             self.perform_branch()
         } else {
             self.branch_nop()
@@ -2830,7 +3008,7 @@ impl<'a> Cpu<'a> {
     // bvs implements the BVS instruction and branches if V is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bvs(&mut self) -> Result<OpState> {
-        if self.p & P_OVERFLOW == 0x00 {
+        if self.p & P_OVERFLOW == Flags(0x00) {
             self.branch_nop()
         } else {
             self.perform_branch()
@@ -3138,7 +3316,7 @@ impl<'a> Cpu<'a> {
 
                 // PHP always sets B where-as IRQ/NMI don't.
                 push |= P_B;
-                self.push_stack(push);
+                self.push_stack(push.0);
                 Ok(OpState::Done)
             }
         }
@@ -3186,7 +3364,7 @@ impl<'a> Cpu<'a> {
             }
             Tick::Tick4 => {
                 // The real read
-                self.p = self.pop_stack();
+                self.p = Flags(self.pop_stack());
                 // The actual flags register always has S1 set to one.
                 self.p |= P_S1;
                 // And the B bit is never set in the register.
@@ -3200,7 +3378,7 @@ impl<'a> Cpu<'a> {
     // the contents of op_ddr and then AND's it against A. Sets flags and carry.
     // Always returns Done since this takes one tick and never returns an error.
     fn rla(&mut self) -> Result<OpState> {
-        let val = (self.op_val << 1) | (self.p & P_CARRY);
+        let val = (self.op_val << 1) | (self.p & P_CARRY).0;
         self.ram.write(self.op_addr, val);
         Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
         let new = self.a.0 & val;
@@ -3212,7 +3390,7 @@ impl<'a> Cpu<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
     fn rol(&mut self) -> Result<OpState> {
-        let carry = self.p & P_CARRY;
+        let carry = (self.p & P_CARRY).0;
         let new = (self.op_val << 1) | carry;
         self.ram.write(self.op_addr, new);
         Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
@@ -3225,7 +3403,7 @@ impl<'a> Cpu<'a> {
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
     fn rol_acc(&mut self) -> Result<OpState> {
-        let carry = self.p & P_CARRY;
+        let carry = (self.p & P_CARRY).0;
         Self::carry_check(&mut self.p, u16::from(self.a.0) << 1);
         let val = (self.a.0 << 1) | carry;
         Self::load_register(&mut self.p, &mut self.a, val)
@@ -3236,7 +3414,7 @@ impl<'a> Cpu<'a> {
     // Always returns Done since this is one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
     fn ror(&mut self) -> Result<OpState> {
-        let carry = (self.p & P_CARRY) << 7;
+        let carry = (self.p & P_CARRY).0 << 7;
         let new = (self.op_val >> 1) | carry;
         self.ram.write(self.op_addr, new);
         // Just see if carry is set or not.
@@ -3250,7 +3428,7 @@ impl<'a> Cpu<'a> {
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
     fn ror_acc(&mut self) -> Result<OpState> {
-        let carry = (self.p & P_CARRY) << 7;
+        let carry = (self.p & P_CARRY).0 << 7;
         // Just see if carry is set or not.
         Self::carry_check(&mut self.p, (u16::from(self.a.0) << 8) & 0x0100);
         let val = (self.a.0 >> 1) | carry;
@@ -3261,7 +3439,7 @@ impl<'a> Cpu<'a> {
     // and then ADC's it against A. Sets flags and carry.
     // Always returns Done since this is one tick and never returns an error.
     fn rra(&mut self) -> Result<OpState> {
-        let n = ((self.p & P_CARRY) << 7) | (self.op_val >> 1);
+        let n = ((self.p & P_CARRY).0 << 7) | (self.op_val >> 1);
         self.ram.write(self.op_addr, n);
         // Old bit 0 becomes carry
         Self::carry_check(&mut self.p, (u16::from(self.op_val) << 8) & 0x0100);
@@ -3285,7 +3463,7 @@ impl<'a> Cpu<'a> {
             }
             Tick::Tick4 => {
                 // The real read for P
-                self.p = self.pop_stack();
+                self.p = Flags(self.pop_stack());
                 // The actual flags registers always has S1 set to one
                 self.p |= P_S1;
                 // And B is never set.
@@ -3347,10 +3525,10 @@ impl<'a> Cpu<'a> {
     fn sbc(&mut self) -> Result<OpState> {
         // Do BCD but not on the Ricoh version which didn't implement it.
         // This is the CPU for the NES.
-        if (self.p & P_DECIMAL) != 0x00 && self.cpu_type != Type::Ricoh {
+        if (self.p & P_DECIMAL) != Flags(0x00) && self.cpu_type != Type::Ricoh {
             // Pull the carry bit out which thankfully is the low bit so can be
             // used directly.
-            let carry = self.p & P_CARRY;
+            let carry = (self.p & P_CARRY).0;
 
             // BCD details - http://6502.org/tutorials/decimal_mode.html
             // Also http://nesdev.com/6502_cpu.txt but it has errors
