@@ -1,7 +1,9 @@
 [package]
-edition = "2021"
 name    = "cpu"
 version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 chip  = { path = "../chip", version = "~0.1" }

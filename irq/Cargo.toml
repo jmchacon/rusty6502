@@ -1,6 +1,8 @@
 [package]
 name = "irq"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]

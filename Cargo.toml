@@ -32,10 +32,17 @@ strum_macros = "0.24.1"
 strum = "0.24.1"
 thiserror = "1.0.37"
 
+[workspace.package]
+edition = "2021"
+rust-version = "1.65"
+authors = ["James Chacon <chacon.james@gmail.com>"]
+
 [package]
 name = "rusty6502"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 memory = { path = "./memory", version = "~0.1" }
