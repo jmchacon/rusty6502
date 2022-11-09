@@ -1,12 +1,14 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        CPUError, ChipDef, Cpu, FlatRAM, OpState, Tick, Type, Vectors, P_DECIMAL, P_NEGATIVE,
-        P_ZERO,
+        CPUError, ChipDef, Cpu, Flags, FlatRAM, OpState, Tick, Type, Vectors, IRQ, P_B, P_DECIMAL,
+        P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
     };
+    use ::irq::Sender;
     use chip::Chip;
     use color_eyre::eyre::Result;
     use memory::Memory;
+    use std::cell::RefCell;
     use std::collections::HashSet;
     use std::num::Wrapping;
 
@@ -15,9 +17,16 @@ mod tests {
     }
 
     const RESET: u16 = 0x1FFE;
-    const IRQ: u16 = 0xD001;
+    const IRQ_ADDR: u16 = 0xD001;
 
-    fn setup(t: Type, hlt: u8, fill: u8, debug: Option<fn(String)>) -> Box<Cpu<'static>> {
+    fn setup(
+        t: Type,
+        hlt: u16,
+        fill: u8,
+        irq: Option<&'static dyn Sender>,
+        nmi: Option<&'static dyn Sender>,
+        debug: Option<fn(String)>,
+    ) -> Box<Cpu<'static>> {
         // NOTE: For tests only we simply put all this on the heap and then
         //       leak things with leak so we can handle all the setup pieces.
 
@@ -26,9 +35,9 @@ mod tests {
         // one) which contains HLT instructions.
         let r = FlatRAM::new()
             .vectors(Vectors {
-                nmi: u16::from(hlt) << 8 | u16::from(hlt),
+                nmi: hlt,
                 reset: RESET,
-                irq: IRQ,
+                irq: IRQ_ADDR,
             })
             .fill_value(fill);
         let mut r = Box::new(r);
@@ -38,8 +47,8 @@ mod tests {
             cpu_type: t,
             ram: Box::leak(r),
             debug: debug,
-            irq: None,
-            nmi: None,
+            irq: irq,
+            nmi: nmi,
             rdy: None,
         });
 
@@ -95,7 +104,7 @@ mod tests {
                             iter = 100;
                         }
                         for _ in 0..=iter {
-                           let mut cpu = setup($type, 0x12, 0xEA, None);
+                           let mut cpu = setup($type, 0x1212, 0xEA, None, None, None);
 
                             // This should fail
                             {
@@ -105,7 +114,7 @@ mod tests {
 
                             // Now it should work.
                             cpu.power_on()?;
-                            if cpu.p&P_DECIMAL == P_DECIMAL {
+                            if cpu.p&P_DECIMAL == Flags(P_DECIMAL) {
                                 track.insert(true);
                             } else {
                                 track.insert(false);
@@ -147,7 +156,7 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let mut cpu = setup($type, 0x12, 0xAA, None);
+                        let mut cpu = setup($type, 0x1212, 0xAA, None, None, None);
 
                         // This should fail as we haven't powered on/reset.
                         {
@@ -218,9 +227,10 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let mut cpu = setup(Type::NMOS, $test.halt, $test.fill, Some(debug));
+                        let addr = u16::from($test.halt) << 8 | u16::from($test.halt);
+                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(debug));
                         // Make a copy so we can compare if RAM changed.
-                        let mut canonical = setup(Type::NMOS, $test.halt, $test.fill, None);
+                        let mut canonical = setup(Type::NMOS, addr, $test.fill, None, None, None);
                         cpu.power_on()?;
                         canonical.a = cpu.a;
                         canonical.x = cpu.x;
@@ -358,7 +368,7 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let mut cpu = setup(Type::NMOS, 0x12, 0xEA, Some(debug));
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0xA1); // LDA ($EA,x)
@@ -409,19 +419,19 @@ mod tests {
                             let cycles = step(&mut cpu)?;
                             assert!(cycles == 6, "Invalid cycle count: {cycles} expected 6");
                             assert!(cpu.a.0 == *e, "A register doesn't have correct value for iteration {iteration}. Got {:02X} and want {e:02X}", cpu.a.0);
-                            let got = cpu.p & P_ZERO == 0x00;
+                            let got = cpu.p & P_ZERO == Flags(0x00);
                             let want = *e != 0x00;
                             assert!(
                                 got == want,
-                                "Z flag is incorrect. Got {:02X} and A is {:02X}",
+                                "Z flag is incorrect. Got {} and A is {:02X}",
                                 cpu.p,
                                 cpu.a.0
                             );
-                            let got = cpu.p & P_NEGATIVE == 0x00;
+                            let got = cpu.p & P_NEGATIVE == Flags(0x00);
                             let want = *e < 0x80;
                             assert!(
                                 got == want,
-                                "N flag is incorrect. Got {:02X} and A is {:02X}",
+                                "N flag is incorrect. Got {} and A is {:02X}",
                                 cpu.p,
                                 cpu.a.0
                             )
@@ -447,7 +457,7 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let mut cpu = setup(Type::NMOS, 0x12, 0xEA, Some(debug));
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0x81); // STA ($EA,x)
@@ -501,7 +511,7 @@ mod tests {
                             assert!(cycles == 6, "Invalid cycle count: {cycles} expected 6");
                             let want = cpu.ram.read(*e);
                             assert!(want == cpu.a.0, "A register doesn't have correct value for iteration {iteration}. Got {:02X} from {e:04X} and want {want:02X}", cpu.a.0);
-                            assert!(p == cpu.p, "Status changed. Orig {p:02X} and got {:02X}", cpu.p);
+                            assert!(p == cpu.p, "Status changed. Orig {p} and got {}", cpu.p);
                         }
                         Ok(())
                     }
@@ -515,4 +525,298 @@ mod tests {
         x_is_zero: 0xAA, 0x00, vec![0x650F, 0xA1FA]
         x_is_10: 0x55, 0x10, vec![0x551F, 0xA20A]
     );
+
+    struct Irq {
+        raised: RefCell<bool>,
+    }
+
+    impl Sender for Irq {
+        fn raised(&self) -> bool {
+            *self.raised.borrow()
+        }
+    }
+
+    #[test]
+    fn irq_and_nmi() -> Result<()> {
+        // This test is little more serial and long than other tests as the corner cases with
+        // interrupt handling only occur when triggered on specific ticks and while in certain states.
+        // So this has to be done clock by clock and conditions checked at each.
+
+        let nmi: u16 = 0x0202; // If executed should halt the processor but we'll put code at this PC.
+        let i = Box::leak(Box::new(Irq {
+            raised: RefCell::new(false),
+        }));
+        let n = Box::leak(Box::new(Irq {
+            raised: RefCell::new(false),
+        }));
+
+        // TODO(jchacon): Make this a macro so we can test for CMOS too and the D bit flips.
+        let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(i), Some(n), Some(debug));
+        cpu.power_on()?;
+
+        cpu.ram.write(IRQ_ADDR, 0x69); // ADC #AB
+        cpu.ram.write(IRQ_ADDR + 1, 0xAB);
+        cpu.ram.write(IRQ_ADDR + 2, 0x40); // RTI
+        cpu.ram.write(nmi, 0x40); // RTI
+        cpu.ram.write(RESET, 0xEA); // NOP
+        cpu.ram.write(RESET + 1, 0x00); // BRK #00
+        cpu.ram.write(RESET + 2, 0x00);
+        cpu.ram.write(RESET + 3, 0xD0); // BNE +2
+        cpu.ram.write(RESET + 4, 0x00);
+        cpu.ram.write(RESET + 5, 0xD0); // BNE +2
+        cpu.ram.write(RESET + 6, 0x00);
+
+        // Set D on up front and I off
+        cpu.p |= P_DECIMAL;
+        cpu.p &= !P_INTERRUPT;
+
+        // Set A to 0
+        cpu.a = Wrapping(0x00);
+
+        // Now wrap this into a RefCell so we can create verify below and use it mutablely there
+        // but still be able to peek inside to check other invariants later.
+        let wrapped_cpu = RefCell::new(cpu);
+
+        // Save a copy of P so we can compare
+        let saved_p = wrapped_cpu.borrow().p;
+
+        let verify = |irq: bool, nmi: bool, state: &str, done: bool| -> Result<()> {
+            *i.raised.borrow_mut() = irq;
+            *n.raised.borrow_mut() = nmi;
+
+            // We don't use Step because we want to inspect/change things on a per tick basis.
+            let c = wrapped_cpu.borrow();
+            println!("pre: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} prev_skip: {} running_interrupt: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.prev_skip_interrupt, c.running_interrupt);
+            drop(c);
+            wrapped_cpu.borrow_mut().tick()?;
+            wrapped_cpu.borrow_mut().tick_done()?;
+            let c = wrapped_cpu.borrow();
+            println!("post: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} prev_skip: {} running_interrupt: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.prev_skip_interrupt, c.running_interrupt);
+            Ok(())
+        };
+
+        verify(false, false, "First NOP", false)?;
+
+        // IRQ but should finish instruction and set PC to RESET+1
+        let state = "2nd NOP";
+        verify(true, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = RESET + 1;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+        // Verify P still has S1 and D set
+        let got = wrapped_cpu.borrow().p;
+        let want = Flags(P_S1 | P_DECIMAL);
+        assert!(got == want, "{state}: got wrong flags {got} want {want}");
+
+        // Don't assert IRQ anymore as should be cached state. Also this should take 7 cycles.
+        let state = "IRQ setup";
+        for _ in 0..6 {
+            verify(false, false, state, false)?;
+        }
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = IRQ_ADDR;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+        // Verify the only things set in flags right now are S1 and I and D. D shouldn't be cleared for NMOS.
+        let got = wrapped_cpu.borrow().p;
+        let want = Flags(P_S1 | P_INTERRUPT | P_DECIMAL);
+        assert!(got == want, "{state}: got wrong flags {got} want {want}");
+        assert!(
+            wrapped_cpu.borrow().irq_raised == IRQ::None,
+            "{state}: IRQ wasn't cleared after run"
+        );
+        assert!(
+            !wrapped_cpu.borrow().running_interrupt,
+            "{state}: running interrupt still?"
+        );
+
+        // Pull P off the stack and verify the B bit didn't get set.
+        let c = wrapped_cpu.borrow();
+        let addr = (c.s + Wrapping(1)).0;
+        let got = Flags(c.ram.read(u16::from(addr) + STACK_START));
+        assert!(
+            got == saved_p,
+            "{state}: flags aren't correct. Didn't match original. got {got} want {saved_p}"
+        );
+        drop(c);
+
+        // Now set IRQ. Should still let this instruction finish since the first instruction
+        // of a handler always completes before we trigger another handler.
+        let state = "ADC #AB";
+        verify(true, false, state, false)?;
+        // Now set NMI also and it should win.
+        verify(true, true, state, true)?;
+        let got = wrapped_cpu.borrow().a.0;
+        let want = 0x11; // TODO(jchacon): 0xAB for non BCD
+        assert!(
+            got == want,
+            "{state}: A doesn't match. got {got:02X} and want {want:02X}"
+        );
+
+        // NMI setup takes 7 cycles too.
+        let state = "NMI setup";
+        for _ in 0..6 {
+            verify(false, false, state, false)?;
+        }
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = nmi;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+        assert!(
+            wrapped_cpu.borrow().irq_raised == IRQ::None,
+            "{state}: IRQ wasn't cleared after run"
+        );
+        assert!(
+            !wrapped_cpu.borrow().running_interrupt,
+            "{state}: running interrupt still?"
+        );
+
+        // Should be an RTI that takes 6 cycles
+        let state = "First RTI";
+        for _ in 0..5 {
+            verify(false, false, state, false)?;
+        }
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = IRQ_ADDR + 2;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+
+        // Another RTI
+        let state = "Second RTI";
+        for _ in 0..5 {
+            verify(false, false, state, false)?;
+        }
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = RESET + 1;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+        let got = wrapped_cpu.borrow().p;
+        assert!(
+            got == saved_p,
+            "{state}: flags didn't reset got {got} and want {saved_p}"
+        );
+
+        // Start running BRK and interrupt part wayn through (with NMI) which should complete BRK
+        // but skip it upon return. This means running 5 ticks normally.
+        let state = "BRK";
+        for _ in 0..5 {
+            verify(false, false, state, false)?;
+        }
+        // Now set NMI
+        verify(false, true, state, false)?;
+        // Now should jump
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = nmi;
+        assert!(got == want, "{state}: Got wrong PC {got} want {want}");
+        // Pull P off the stack and verify the B bit did get set even though we're in an NMI handler.
+        let addr = (wrapped_cpu.borrow().s + Wrapping(1)).0;
+        let got = Flags(wrapped_cpu.borrow().ram.read(STACK_START + u16::from(addr)));
+        let want = saved_p | P_B;
+        assert!(got == want, "{state}: Flags aren't correct. Don't include P_B even for NMI. Got {got} and want {want} - cpu: {}", wrapped_cpu.borrow());
+        assert!(
+            wrapped_cpu.borrow().irq_raised == IRQ::None,
+            "{state}: IRQ wasn't cleared after run"
+        );
+        assert!(
+            !wrapped_cpu.borrow().running_interrupt,
+            "{state}: running interrupt still?"
+        );
+
+        // Yet another RTI
+        let state = "3rd RTI";
+        for _ in 0..5 {
+            verify(false, false, state, false)?;
+        }
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = RESET + 3;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+
+        // Now we're going to run BNE+2 (so the next instruction) and set NMI in the middle of it.
+        // It shoudn't start that processing until after this and the next instruction.
+        // These take 3 cycles since they aren't page boundary crossing.
+        let state = "1st BNE";
+        verify(false, false, state, false)?;
+        verify(false, true, state, false)?;
+        verify(false, false, state, true)?;
+        // PC should have advanced to the next instruction.
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = RESET + 5;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+        // And it should advance again into the next instruction.
+        let state = "2nd BNE";
+        verify(false, false, state, false)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = RESET + 6;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+        // And then finish with NMI set again but it won't skip this time.
+        verify(false, true, state, false)?;
+        verify(false, false, state, true)?;
+        // Now it should start an NMI
+        let state = "2nd NMI setup";
+        for _ in 0..6 {
+            verify(false, false, state, false)?;
+        }
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = nmi;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+
+        // Should be another RTI
+        let state = "4th RTI";
+        for _ in 0..5 {
+            verify(false, false, state, false)?;
+        }
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = RESET + 7;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+
+        // Finally fire off an NMI at the start of this NOP which should immediately run the interrupt.
+        let state = "3rd NMI setup";
+        verify(false, true, state, false)?;
+        for _ in 0..5 {
+            verify(false, false, state, false)?;
+        }
+        verify(false, false, state, true)?;
+        let got = wrapped_cpu.borrow().pc.0;
+        let want = nmi;
+        assert!(
+            got == want,
+            "{state}: got wrong PC {got:04X} want {want:04X}"
+        );
+
+        Ok(())
+    }
 }
