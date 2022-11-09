@@ -589,11 +589,10 @@ pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'stat
         }
         Type::CMOS => todo!("implement CMOS"),
     };
-    if let Some(v) = hm.get(mode) {
-        Ok(v)
-    } else {
-        Err(eyre!("address mode {mode} isn't valid for opcode {op}"))
-    }
+    let Some(v) = hm.get(mode) else {
+        return Err(eyre!("address mode {mode} isn't valid for opcode {op}"));
+    };
+    Ok(v)
 }
 
 /// Given an opcode u8 value this will return the Operation struct
