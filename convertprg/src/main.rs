@@ -47,9 +47,7 @@ fn main() -> Result<()> {
 
     let filename = args.filename;
     let p = Path::new(filename.as_str());
-    let ext = if let Some(ext) = p.extension().and_then(OsStr::to_str) {
-        ext
-    } else {
+    let Some(ext) = p.extension().and_then(OsStr::to_str) else {
         eprintln!("{filename} has no extension");
         std::process::exit(1);
     };
