@@ -418,6 +418,7 @@ pub enum OpState {
 }
 
 // The various types of instruction modes internally used.
+#[derive(PartialEq)]
 enum InstructionMode {
     Load,
     Rmw,
@@ -2268,12 +2269,12 @@ impl<'a> Cpu<'a> {
                 let mut done = Ok(OpState::Done);
                 if t != 0 {
                     self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
-                    if let InstructionMode::Load = mode {
+                    if mode == &InstructionMode::Load {
                         done = Ok(OpState::Processing);
                     }
                 }
                 // For RMW it doesn't matter, we tick again.
-                if let InstructionMode::Rmw = mode {
+                if mode == &InstructionMode::Rmw {
                     done = Ok(OpState::Processing);
                 }
                 done
@@ -2281,7 +2282,7 @@ impl<'a> Cpu<'a> {
             Tick::Tick5 => {
                 // Optional (on load) in case adding reg went past a page boundary.
                 self.op_val = self.ram.read(self.op_addr);
-                if let InstructionMode::Rmw = mode {
+                if mode == &InstructionMode::Rmw {
                     Ok(OpState::Processing)
                 } else {
                     Ok(OpState::Done)
@@ -2438,12 +2439,12 @@ impl<'a> Cpu<'a> {
                 let mut done = Ok(OpState::Done);
                 if t != 0 {
                     self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
-                    if let InstructionMode::Load = mode {
+                    if mode == &InstructionMode::Load {
                         done = Ok(OpState::Processing);
                     }
                 }
                 // For RMW it doesn't matter, we tick again.
-                if let InstructionMode::Rmw = mode {
+                if mode == &InstructionMode::Rmw {
                     done = Ok(OpState::Processing);
                 }
                 done
@@ -2538,7 +2539,7 @@ impl<'a> Cpu<'a> {
                 // Do this as a u8 so it wraps as needed.
                 self.op_addr = u16::from((Wrapping(self.op_val) + Wrapping(reg)).0);
                 // For a store we're done since we have the address needed.
-                if let InstructionMode::Store = mode {
+                if mode == &InstructionMode::Store {
                     Ok(OpState::Done)
                 } else {
                     Ok(OpState::Processing)
@@ -2547,7 +2548,7 @@ impl<'a> Cpu<'a> {
             Tick::Tick4 => {
                 // Now read from the final address.
                 self.op_val = self.ram.read(self.op_addr);
-                if let InstructionMode::Load = mode {
+                if mode == &InstructionMode::Load {
                     Ok(OpState::Done)
                 } else {
                     Ok(OpState::Processing)
