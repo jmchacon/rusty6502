@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        CPUError, ChipDef, Cpu, Flags, FlatRAM, OpState, Tick, Type, Vectors, IRQ, P_B, P_DECIMAL,
-        P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
+        CPUError, ChipDef, Cpu, Flags, FlatRAM, InterruptState, OpState, Tick, Type, Vectors, IRQ,
+        P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
     };
     use ::irq::Sender;
     use chip::Chip;
@@ -586,12 +586,12 @@ mod tests {
 
             // We don't use Step because we want to inspect/change things on a per tick basis.
             let c = wrapped_cpu.borrow();
-            println!("pre: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} prev_skip: {} running_interrupt: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.prev_skip_interrupt, c.running_interrupt);
+            println!("pre: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} prev_skip: {} interrupt_state: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.prev_skip_interrupt, c.interrupt_state);
             drop(c);
             wrapped_cpu.borrow_mut().tick()?;
             wrapped_cpu.borrow_mut().tick_done()?;
             let c = wrapped_cpu.borrow();
-            println!("post: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} prev_skip: {} running_interrupt: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.prev_skip_interrupt, c.running_interrupt);
+            println!("post: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} prev_skip: {} interrupt_state: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.prev_skip_interrupt, c.interrupt_state);
             Ok(())
         };
 
@@ -632,7 +632,7 @@ mod tests {
             "{state}: IRQ wasn't cleared after run"
         );
         assert!(
-            !wrapped_cpu.borrow().running_interrupt,
+            wrapped_cpu.borrow().interrupt_state == InterruptState::None,
             "{state}: running interrupt still?"
         );
 
@@ -676,7 +676,7 @@ mod tests {
             "{state}: IRQ wasn't cleared after run"
         );
         assert!(
-            !wrapped_cpu.borrow().running_interrupt,
+            wrapped_cpu.borrow().interrupt_state == InterruptState::None,
             "{state}: running interrupt still?"
         );
 
@@ -734,7 +734,7 @@ mod tests {
             "{state}: IRQ wasn't cleared after run"
         );
         assert!(
-            !wrapped_cpu.borrow().running_interrupt,
+            wrapped_cpu.borrow().interrupt_state == InterruptState::None,
             "{state}: running interrupt still?"
         );
 

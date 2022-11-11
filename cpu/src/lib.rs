@@ -408,6 +408,13 @@ enum IRQ {
     Nmi,
 }
 
+#[derive(Default, Debug, Display, PartialEq)]
+enum InterruptState {
+    #[default]
+    None,
+    Running,
+}
+
 /// OpState is used to indicate whether an opcode/addressing mode is done or not.
 #[derive(Debug, Copy, Clone, Display, PartialEq)]
 pub enum OpState {
@@ -591,42 +598,42 @@ impl fmt::Display for Flags {
         if self.0 & P_NEGATIVE == P_NEGATIVE {
             out += "N";
         } else {
-            out += "-";
+            out += "n";
         }
         if self.0 & P_OVERFLOW == P_OVERFLOW {
             out += "V";
         } else {
-            out += "-";
+            out += "v";
         }
         if self.0 & P_S1 == P_S1 {
             out += "S";
         } else {
-            out += "-";
+            out += "s";
         }
         if self.0 & P_B == P_B {
             out += "B";
         } else {
-            out += "-";
+            out += "b";
         }
         if self.0 & P_DECIMAL == P_DECIMAL {
             out += "D";
         } else {
-            out += "-";
+            out += "d";
         }
         if self.0 & P_INTERRUPT == P_INTERRUPT {
             out += "I";
         } else {
-            out += "-";
+            out += "i";
         }
         if self.0 & P_ZERO == P_ZERO {
             out += "Z";
         } else {
-            out += "-";
+            out += "z";
         }
         if self.0 & P_CARRY == P_CARRY {
             out += "C";
         } else {
-            out += "-";
+            out += "c";
         }
         write!(f, "{out}")
     }
@@ -674,7 +681,7 @@ pub struct Cpu<'a> {
     rdy: Option<&'a dyn irq::Sender>,
 
     // Whether we're currently running an interrupt
-    running_interrupt: bool,
+    interrupt_state: InterruptState,
 
     // If true we're skipping starting an interrupt for one clock cycle.
     skip_interrupt: bool,
@@ -863,10 +870,10 @@ impl<'a> Chip for Cpu<'a> {
                 // PC advances always when we start a new opcode except for IRQ/NMI (unless we're skipping to run one more instruction)
                 if self.irq_raised == IRQ::None || self.skip_interrupt {
                     self.pc += 1;
-                    self.running_interrupt = false;
+                    self.interrupt_state = InterruptState::None;
                 }
                 if self.irq_raised != IRQ::None && !self.skip_interrupt {
-                    self.running_interrupt = true;
+                    self.interrupt_state = InterruptState::Running;
                 }
 
                 // Move out of the done state.
@@ -894,7 +901,7 @@ impl<'a> Chip for Cpu<'a> {
 
         // Process the opcode or interrupt
         let ret: Result<OpState>;
-        if self.running_interrupt {
+        if self.interrupt_state == InterruptState::Running {
             let mut addr = IRQ_VECTOR;
             if self.irq_raised == IRQ::Nmi {
                 addr = NMI_VECTOR;
@@ -923,10 +930,10 @@ impl<'a> Chip for Cpu<'a> {
 
                 // If we're already running an IRQ clear state so we don't loop
                 // trying to start it again.
-                if self.running_interrupt {
+                if self.interrupt_state == InterruptState::Running {
                     self.irq_raised = IRQ::None;
                 }
-                self.running_interrupt = false;
+                self.interrupt_state = InterruptState::None;
             }
         }
         Ok(())
@@ -968,7 +975,7 @@ impl<'a> Cpu<'a> {
             irq: def.irq,
             nmi: def.nmi,
             rdy: def.rdy,
-            running_interrupt: false,
+            interrupt_state: InterruptState::default(),
             skip_interrupt: false,
             clocks: 0,
             ram: def.ram,
