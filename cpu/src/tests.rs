@@ -586,12 +586,12 @@ mod tests {
 
             // We don't use Step because we want to inspect/change things on a per tick basis.
             let c = wrapped_cpu.borrow();
-            println!("pre: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} prev_skip: {} interrupt_state: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.prev_skip_interrupt, c.interrupt_state);
+            println!("pre: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} interrupt_state: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.interrupt_state);
             drop(c);
             wrapped_cpu.borrow_mut().tick()?;
             wrapped_cpu.borrow_mut().tick_done()?;
             let c = wrapped_cpu.borrow();
-            println!("post: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} prev_skip: {} interrupt_state: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.prev_skip_interrupt, c.interrupt_state);
+            println!("post: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} interrupt_state: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.interrupt_state);
             Ok(())
         };
 

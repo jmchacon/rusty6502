@@ -415,6 +415,14 @@ enum InterruptState {
     Running,
 }
 
+#[derive(Default, Debug, Display, PartialEq)]
+enum SkipInterrupt {
+    #[default]
+    None,
+    Skip,
+    PrevSkip,
+}
+
 /// OpState is used to indicate whether an opcode/addressing mode is done or not.
 #[derive(Debug, Copy, Clone, Display, PartialEq)]
 pub enum OpState {
@@ -684,10 +692,7 @@ pub struct Cpu<'a> {
     interrupt_state: InterruptState,
 
     // If true we're skipping starting an interrupt for one clock cycle.
-    skip_interrupt: bool,
-
-    // Whether we've previously skipped processing an interrupt due to 2 firing back to back.
-    prev_skip_interrupt: bool,
+    skip_interrupt: SkipInterrupt,
 
     // Tracking for reset when we need to clear the extra clocks
     // up front before simulating BRK. If `tick` is called and this
@@ -868,11 +873,11 @@ impl<'a> Chip for Cpu<'a> {
                 self.op = opcode_op(self.cpu_type, self.op_raw);
 
                 // PC advances always when we start a new opcode except for IRQ/NMI (unless we're skipping to run one more instruction)
-                if self.irq_raised == IRQ::None || self.skip_interrupt {
+                if self.irq_raised == IRQ::None || self.skip_interrupt == SkipInterrupt::Skip {
                     self.pc += 1;
                     self.interrupt_state = InterruptState::None;
                 }
-                if self.irq_raised != IRQ::None && !self.skip_interrupt {
+                if self.irq_raised != IRQ::None && self.skip_interrupt != SkipInterrupt::Skip {
                     self.interrupt_state = InterruptState::Running;
                 }
 
@@ -888,10 +893,10 @@ impl<'a> Chip for Cpu<'a> {
                 self.op_val = self.ram.read(self.pc.0);
 
                 // We've started a new instruction so no longer skipping interrupt processing.
-                self.prev_skip_interrupt = false;
-                if self.skip_interrupt {
-                    self.skip_interrupt = false;
-                    self.prev_skip_interrupt = true;
+                if self.skip_interrupt == SkipInterrupt::Skip {
+                    self.skip_interrupt = SkipInterrupt::PrevSkip;
+                } else {
+                    self.skip_interrupt = SkipInterrupt::None;
                 }
             }
             // The remainder don't do anything general per cycle so they can be ignored. Opcode processing determines
@@ -976,7 +981,7 @@ impl<'a> Cpu<'a> {
             nmi: def.nmi,
             rdy: def.rdy,
             interrupt_state: InterruptState::default(),
-            skip_interrupt: false,
+            skip_interrupt: SkipInterrupt::default(),
             clocks: 0,
             ram: def.ram,
             op: Operation::default(),
@@ -986,7 +991,6 @@ impl<'a> Cpu<'a> {
             reset_tick: Tick::Reset,
             op_addr: 0x0000,
             addr_done: OpState::Done,
-            prev_skip_interrupt: false,
             halt_opcode: 0x00,
             halt_pc: 0x0000,
         }
@@ -2580,8 +2584,8 @@ impl<'a> Cpu<'a> {
             Tick::Tick3 => {
                 // We only skip if the last instruction didn't. This way a branch always doesn't prevent interrupt processing
                 // since on real silicon this is what happens (just a delay in the pipelining).
-                if !self.prev_skip_interrupt {
-                    self.skip_interrupt = true;
+                if self.skip_interrupt != SkipInterrupt::PrevSkip {
+                    self.skip_interrupt = SkipInterrupt::Skip;
                 }
 
                 // Per http://www.6502.org/tutorials/6502opcodes.html
@@ -2721,8 +2725,8 @@ impl<'a> Cpu<'a> {
 
                 // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
                 // a handler before firing again.
-                if irq && !self.prev_skip_interrupt {
-                    self.skip_interrupt = true;
+                if irq && self.skip_interrupt != SkipInterrupt::PrevSkip {
+                    self.skip_interrupt = SkipInterrupt::Skip;
                 }
                 Ok(OpState::Done)
             }
