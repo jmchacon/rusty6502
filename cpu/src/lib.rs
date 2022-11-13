@@ -2763,12 +2763,12 @@ impl<'a> Cpu<'a> {
             }
             let res = (sum.0 & 0xFF) as u8;
             let seq = Wrapping(self.a.0 & 0xF0) + Wrapping(self.op_val & 0xF0) + al;
-            let bin = self.a.0 + self.op_val + carry;
+            let bin = self.a + Wrapping(self.op_val) + Wrapping(carry);
             Self::overflow_check(&mut self.p, self.a.0, self.op_val, seq.0);
             Self::carry_check(&mut self.p, sum.0);
             // TODO(jchacon): CMOS gets N/Z set correctly and needs implementing.
             Self::negative_check(&mut self.p, seq.0);
-            Self::zero_check(&mut self.p, bin);
+            Self::zero_check(&mut self.p, bin.0);
             self.a = Wrapping(res);
             return Ok(OpState::Done);
         }
@@ -2968,7 +2968,8 @@ impl<'a> Cpu<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
     fn bit(&mut self) -> Result<OpState> {
-        Self::negative_check(&mut self.p, self.a.0 & self.op_val);
+        Self::zero_check(&mut self.p, self.a.0 & self.op_val);
+        Self::negative_check(&mut self.p, self.op_val);
         // Copy V from bit 6
         self.p &= !P_OVERFLOW;
         if self.op_val & P_OVERFLOW != 0x00 {
@@ -3252,7 +3253,7 @@ impl<'a> Cpu<'a> {
         self.ram.write(self.op_addr, val);
         // Get bit 0 from the original but as a 16 bit value so
         // we can shift it into the carry position.
-        Self::carry_check(&mut self.p, u16::from(self.op_val) << 8);
+        Self::carry_check(&mut self.p, u16::from(self.op_val & 0x01) << 8);
         Self::zero_check(&mut self.p, val);
         Self::negative_check(&mut self.p, val);
         Ok(OpState::Done)
