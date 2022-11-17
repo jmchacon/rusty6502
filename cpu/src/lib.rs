@@ -670,8 +670,8 @@ pub struct Cpu<'a> {
     /// Program counter
     pub pc: Wrapping<u16>,
 
-    // If set `debug` will return data.
-    debug: Option<fn(String)>,
+    // If set `debug` will be passed a CPU state in string form on each instruction.
+    debug: Option<&'a dyn Fn(String)>,
 
     // Initialized or not.
     state: CPUState,
@@ -759,6 +759,17 @@ impl fmt::Display for Cpu<'_> {
     }
 }
 
+impl PartialEq for Cpu<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.a == other.a
+            && self.x == other.x
+            && self.y == other.y
+            && self.s == other.s
+            && self.p == other.p
+            && self.pc == other.pc
+    }
+}
+
 /// Define the characteristics of the 6502 wanted.
 pub struct ChipDef<'a> {
     /// The CPU type.
@@ -778,7 +789,7 @@ pub struct ChipDef<'a> {
     pub rdy: Option<&'a dyn irq::Sender>,
 
     /// If Some debugging is enabled.
-    pub debug: Option<fn(String)>,
+    pub debug: Option<&'a dyn Fn(String)>,
 }
 
 /// `CPUError` defines specific conditions where `tick` may return
@@ -965,7 +976,7 @@ impl<'a> Cpu<'a> {
     /// NOTE: This is not usable at this point. Call `power_on` to begin
     /// operation. Anything else will return errors.
     #[must_use]
-    pub fn new(def: &'a mut ChipDef) -> Self {
+    pub fn new(def: &'a mut ChipDef<'a>) -> Self {
         Cpu {
             cpu_type: def.cpu_type,
             a: Wrapping(0x00),
