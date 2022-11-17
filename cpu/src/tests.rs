@@ -4,16 +4,54 @@ mod tests {
         CPUError, ChipDef, Cpu, Flags, FlatRAM, InterruptState, OpState, Tick, Type, Vectors, IRQ,
         P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
     };
-    use ::irq::Sender;
     use chip::Chip;
-    use color_eyre::eyre::Result;
+    use color_eyre::eyre::{eyre, Result};
+    use irq::Sender;
     use memory::Memory;
+    use ringbuffer::{AllocRingBuffer, RingBufferExt, RingBufferWrite};
     use std::cell::RefCell;
     use std::collections::HashSet;
+    use std::fmt::Write;
+    use std::fs::read;
     use std::num::Wrapping;
+    use std::path::Path;
 
-    fn debug(s: String) {
-        print!("{s}");
+    // Debug provides a way to capture debug output from a Cpu
+    // without having to grab everything. Normally a few recent
+    // instructions is all one needs. The functional test below for
+    // instance runs millions of instructions which can lead to very
+    // large buffering during a test run.
+    struct Debug {
+        buf: RefCell<AllocRingBuffer<String>>,
+    }
+
+    impl Debug {
+        fn new(cap: usize) -> Self {
+            Debug {
+                buf: RefCell::new(AllocRingBuffer::with_capacity(cap)),
+            }
+        }
+
+        fn debug(&self, s: String) {
+            self.buf.borrow_mut().push(s)
+        }
+
+        fn dump(&self, s: String) -> String {
+            let mut out = String::new();
+            writeln!(out, "\nFAIL: {s}\n\nExecution buffer:\n").unwrap();
+            for i in self.buf.borrow().iter() {
+                write!(out, "{i}").unwrap();
+            }
+            out
+        }
+    }
+
+    // tester is a wrapper around assert which is passed a `Debug` so any failure
+    // will also print out the contents of the circular buffer prefixed by the error expression.
+    macro_rules! tester {
+        ($test:expr, $dumper:ident, $error:expr) => {
+            assert!($test, "{}", $dumper.dump(format!($error)))
+        };
     }
 
     const RESET: u16 = 0x1FFE;
@@ -25,7 +63,7 @@ mod tests {
         fill: u8,
         irq: Option<&'static dyn Sender>,
         nmi: Option<&'static dyn Sender>,
-        debug: Option<fn(String)>,
+        debug: Option<&'static dyn Fn(String)>,
     ) -> Box<Cpu<'static>> {
         // NOTE: For tests only we simply put all this on the heap and then
         //       leak things with leak so we can handle all the setup pieces.
@@ -212,6 +250,7 @@ mod tests {
         //   cmos: Type::CMOS,
     );
 
+    #[derive(Debug)]
     struct NopHltTest {
         fill: u8,
         halt: u8,
@@ -227,10 +266,13 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let addr = u16::from($test.halt) << 8 | u16::from($test.halt);
+                        let test = $test;
+                        let addr = u16::from(test.halt) << 8 | u16::from(test.halt);
+                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let debug = Box::leak(Box::new(|s| d.debug(s)));
                         let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(debug));
                         // Make a copy so we can compare if RAM changed.
-                        let mut canonical = setup(Type::NMOS, addr, $test.fill, None, None, None);
+                        let mut canonical = setup(Type::NMOS, addr, test.fill, None, None, None);
                         cpu.power_on()?;
                         canonical.a = cpu.a;
                         canonical.x = cpu.x;
@@ -239,20 +281,24 @@ mod tests {
                         canonical.p = cpu.p;
 
                         // Set things up so we execute 1000 NOP's before halting.
-                        let end = (Wrapping(RESET) + Wrapping(u16::from($test.bump)*1000)).0;
-                        cpu.ram.write(end, $test.halt);
-                        cpu.ram.write(end + 1, $test.halt);
-                        canonical.ram.write(end, $test.halt);
-                        canonical.ram.write(end + 1, $test.halt);
+                        let end = (Wrapping(RESET) + Wrapping(u16::from(test.bump)*1000)).0;
+                        cpu.ram.write(end, test.halt);
+                        cpu.ram.write(end + 1, test.halt);
+                        canonical.ram.write(end, test.halt);
+                        canonical.ram.write(end + 1, test.halt);
 
-                        assert!(cpu.pc == Wrapping(RESET), "PC {:04X} isn't {:04X}", cpu.pc.0, RESET);
+                        let got = cpu.pc.0;
+                        let want = RESET;
+                        tester!(got == want, d, "PC {got:04X} isn't {want:04X}");
 
-                        let mut got: usize = 0;
+                        let mut tot: usize = 0;
                         let mut page_cross = 0;
                         let mut ret: Result<usize>;
 
                         // 9 clocks for a reset sequence.
-                        assert!(cpu.clocks == 9, "cpu clocks wrong. expected 9 and got {}", cpu.clocks);
+                        let got = cpu.clocks;
+                        let want = 9;
+                        tester!(got == want, d, "cpu clocks wrong. expected {want} and got {got}");
                         loop {
                             let pc = cpu.pc;
                             ret = step(&mut cpu);
@@ -262,24 +308,29 @@ mod tests {
                                     break;
                                 }
                             };
-                            got += cycles;
+                            tot += cycles;
 
-                            if cycles != $test.cycles {
-                                if cycles == $test.cycles + 1 {
+                            if cycles != test.cycles {
+                                if cycles == test.cycles + 1 {
                                     page_cross += 1;
                                 } else {
-                                    assert!(true, "cycles incorrect - got {cycles} and want {} for each instruction. On PC {pc}", $test.cycles);
+                                    let got = cycles;
+                                    let want = test.cycles;
+                                    tester!(true, d, "cycles incorrect - got {got} and want {want} or {want}+1 for each instruction.");
                                 }
                             }
 
                             // NOPs generally bump the PC by one but can differ with other addressing modes.
-                            assert!(cpu.pc == pc+Wrapping(u16::from($test.bump)), "PC didn't increment by $bump. Got PC {:04X} and started at {pc:04X}", cpu.pc);
+                            let got = cpu.pc.0;
+                            let want = (pc+Wrapping(u16::from(test.bump))).0;
+                            tester!(got == want, d, "PC didn't increment by bump in {test:?}. Got PC {got:04X} and started at PC {pc:04X}");
 
-                            // Registers shouldn't be changing.
-                            assert!(cpu.a == canonical.a && cpu.x == canonical.x && cpu.y == canonical.y && cpu.s == canonical.s && cpu.p == canonical.p, "Registers differ. CPU - {cpu:?} and saved: {canonical:?}",);
+                            // Registers shouldn't be changing. Move canonical PC to match then compare.
+                            canonical.pc = cpu.pc;
+                            tester!(cpu == canonical, d, "Registers differ. CPU - \n{cpu}\n and saved - \n{canonical}");
 
                             // We've wrapped around so abort
-                            if got > (0xFFFF * 2) {
+                            if tot > (0xFFFF * 2) {
                                 break;
                             }
                         }
@@ -288,26 +339,30 @@ mod tests {
                         for addr in 0x0000u16..=0xFFFF {
                             let got = cpu.ram.read(addr);
                             let want = canonical.ram.read(addr);
-                            assert!(got == want, "RAM contents differ at {addr:04X} - got {got:02X} and want {want:02X}");
+                            tester!(got == want, d, "RAM contents differ at {addr:04X} - got {got:02X} and want {want:02X}");
                         }
 
 
-                        assert!(ret.is_err(), "Loop didn't exit with error");
+                        tester!(ret.is_err(), d, "Loop didn't exit with error");
 
                         // Should end up executing X cycles times 1000 + any page crossings + 2 for halt.
                         // NOTE: since HLT returns an error from tick() step() can't report the 2 cycles it takes so we'll
                         //       check that with clocks from the cpu.
                         let want_clocks: usize = 9 + page_cross + (1000 * $test.cycles) + 2;
                         // The cycles we recorded is 11 less than that (9 for reset plus we don't record HLT clocks in step)
+                        let got = tot;
                         let want = want_clocks - 11;
-                        assert!(got == want, "Invalid cycle count. Stopped PC: {:04X}. Got {got} cycles and want {want} cycles", cpu.pc);
-                        assert!(cpu.clocks == want_clocks, "Invalid clock count. Got {} clocks and want {want_clocks}", cpu.clocks);
+                        let pc = cpu.pc.0;
+                        tester!(got == want, d, "Invalid cycle count. Stopped PC: {pc:04X}. Got {got} cycles and want {want} cycles");
+                        let got = cpu.clocks;
+                        let want = want_clocks;
+                        tester!(got == want, d, "Invalid clock count. Got {got} clocks and want {want}");
                         // Safety: We know it's an error so unwrap_err is fine.
                         let err = ret.unwrap_err();
                         match err.root_cause().downcast_ref::<CPUError>() {
                             Some(CPUError::Halted{op: _}) => {},
                             _ => {
-                                assert!(true, "Error isn't a CPUError::Halted. Is {err}");
+                                  tester!(true, d, "Error isn't a CPUError::Halted. Is '{err}'");
                             }
                         }
                         Ok(())
@@ -368,6 +423,8 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
+                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let debug = Box::leak(Box::new(|s| d.debug(s)));
                         let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
                         cpu.power_on()?;
 
@@ -417,24 +474,22 @@ mod tests {
                             cpu.x = Wrapping($x);
                             // These all take 6 cycles so validate
                             let cycles = step(&mut cpu)?;
-                            assert!(cycles == 6, "Invalid cycle count: {cycles} expected 6");
-                            assert!(cpu.a.0 == *e, "A register doesn't have correct value for iteration {iteration}. Got {:02X} and want {e:02X}", cpu.a.0);
+                            tester!(cycles == 6, d, "Invalid cycle count: {cycles} expected 6");
+                            let got = cpu.a.0;
+                            let want = *e;
+                            tester!(got == want, d, "A register doesn't have correct value for iteration {iteration}. Got {got:02X} and want {want:02X})");
                             let got = cpu.p & P_ZERO == Flags(0x00);
                             let want = *e != 0x00;
-                            assert!(
-                                got == want,
-                                "Z flag is incorrect. Got {} and A is {:02X}",
-                                cpu.p,
-                                cpu.a.0
-                            );
+                            let got_p = cpu.p;
+                            let got_a = cpu.a.0;
+                            tester!(
+                                got == want, d,
+                                "Z flag is incorrect. Got {got_p} and A is {got_a:02X}");
                             let got = cpu.p & P_NEGATIVE == Flags(0x00);
                             let want = *e < 0x80;
-                            assert!(
-                                got == want,
-                                "N flag is incorrect. Got {} and A is {:02X}",
-                                cpu.p,
-                                cpu.a.0
-                            )
+                            tester!(
+                                got == want, d,
+                                "N flag is incorrect. Got {got_p} and A is {got_a:02X}");
                         }
                         Ok(())
                     }
@@ -457,6 +512,8 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
+                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let debug = Box::leak(Box::new(|s| d.debug(s)));
                         let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
                         cpu.power_on()?;
 
@@ -508,10 +565,12 @@ mod tests {
                             cpu.x = Wrapping($x);
                             // These all take 6 cycles so validate
                             let cycles = step(&mut cpu)?;
-                            assert!(cycles == 6, "Invalid cycle count: {cycles} expected 6");
+                            tester!(cycles == 6, d, "Invalid cycle count: {cycles} expected 6");
+                            let got = cpu.a.0;
                             let want = cpu.ram.read(*e);
-                            assert!(want == cpu.a.0, "A register doesn't have correct value for iteration {iteration}. Got {:02X} from {e:04X} and want {want:02X}", cpu.a.0);
-                            assert!(p == cpu.p, "Status changed. Orig {p} and got {}", cpu.p);
+                            tester!(got == want, d, "A register doesn't have correct value for iteration {iteration}. Got {got:02X} from {e:04X} and want {want:02X}");
+                            let got_p = cpu.p;
+                            tester!(got_p == p, d, "Status changed. Orig {p} and got {got_p}");
                         }
                         Ok(())
                     }
@@ -551,6 +610,8 @@ mod tests {
         }));
 
         // TODO(jchacon): Make this a macro so we can test for CMOS too and the D bit flips.
+        let d = Box::leak(Box::new(Debug::new(128)));
+        let debug = Box::leak(Box::new(|s| d.debug(s)));
         let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(i), Some(n), Some(debug));
         cpu.power_on()?;
 
@@ -602,14 +663,15 @@ mod tests {
         verify(true, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = RESET + 1;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
         // Verify P still has S1 and D set
         let got = wrapped_cpu.borrow().p;
         let want = Flags(P_S1 | P_DECIMAL);
-        assert!(got == want, "{state}: got wrong flags {got} want {want}");
+        tester!(got == want, d, "{state}: got wrong flags {got} want {want}");
 
         // Don't assert IRQ anymore as should be cached state. Also this should take 7 cycles.
         let state = "IRQ setup";
@@ -619,20 +681,23 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = IRQ_ADDR;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
         // Verify the only things set in flags right now are S1 and I and D. D shouldn't be cleared for NMOS.
         let got = wrapped_cpu.borrow().p;
         let want = Flags(P_S1 | P_INTERRUPT | P_DECIMAL);
-        assert!(got == want, "{state}: got wrong flags {got} want {want}");
-        assert!(
+        tester!(got == want, d, "{state}: got wrong flags {got} want {want}");
+        tester!(
             wrapped_cpu.borrow().irq_raised == IRQ::None,
+            d,
             "{state}: IRQ wasn't cleared after run"
         );
-        assert!(
+        tester!(
             wrapped_cpu.borrow().interrupt_state == InterruptState::None,
+            d,
             "{state}: running interrupt still?"
         );
 
@@ -640,8 +705,9 @@ mod tests {
         let c = wrapped_cpu.borrow();
         let addr = (c.s + Wrapping(1)).0;
         let got = Flags(c.ram.read(u16::from(addr) + STACK_START));
-        assert!(
+        tester!(
             got == saved_p,
+            d,
             "{state}: flags aren't correct. Didn't match original. got {got} want {saved_p}"
         );
         drop(c);
@@ -654,8 +720,9 @@ mod tests {
         verify(true, true, state, true)?;
         let got = wrapped_cpu.borrow().a.0;
         let want = 0x11; // TODO(jchacon): 0xAB for non BCD
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: A doesn't match. got {got:02X} and want {want:02X}"
         );
 
@@ -667,16 +734,19 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = nmi;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
-        assert!(
+        tester!(
             wrapped_cpu.borrow().irq_raised == IRQ::None,
+            d,
             "{state}: IRQ wasn't cleared after run"
         );
-        assert!(
+        tester!(
             wrapped_cpu.borrow().interrupt_state == InterruptState::None,
+            d,
             "{state}: running interrupt still?"
         );
 
@@ -688,8 +758,9 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = IRQ_ADDR + 2;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
 
@@ -701,13 +772,15 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = RESET + 1;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
         let got = wrapped_cpu.borrow().p;
-        assert!(
+        tester!(
             got == saved_p,
+            d,
             "{state}: flags didn't reset got {got} and want {saved_p}"
         );
 
@@ -723,18 +796,22 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = nmi;
-        assert!(got == want, "{state}: Got wrong PC {got} want {want}");
+        tester!(got == want, d, "{state}: Got wrong PC {got} want {want}");
         // Pull P off the stack and verify the B bit did get set even though we're in an NMI handler.
         let addr = (wrapped_cpu.borrow().s + Wrapping(1)).0;
         let got = Flags(wrapped_cpu.borrow().ram.read(STACK_START + u16::from(addr)));
         let want = saved_p | P_B;
-        assert!(got == want, "{state}: Flags aren't correct. Don't include P_B even for NMI. Got {got} and want {want} - cpu: {}", wrapped_cpu.borrow());
-        assert!(
+        let c = wrapped_cpu.borrow();
+        tester!(got == want, d, "{state}: Flags aren't correct. Don't include P_B even for NMI. Got {got} and want {want} - cpu: {c}");
+        drop(c);
+        tester!(
             wrapped_cpu.borrow().irq_raised == IRQ::None,
+            d,
             "{state}: IRQ wasn't cleared after run"
         );
-        assert!(
+        tester!(
             wrapped_cpu.borrow().interrupt_state == InterruptState::None,
+            d,
             "{state}: running interrupt still?"
         );
 
@@ -746,8 +823,9 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = RESET + 3;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
 
@@ -761,8 +839,9 @@ mod tests {
         // PC should have advanced to the next instruction.
         let got = wrapped_cpu.borrow().pc.0;
         let want = RESET + 5;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
         // And it should advance again into the next instruction.
@@ -770,8 +849,9 @@ mod tests {
         verify(false, false, state, false)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = RESET + 6;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
         // And then finish with NMI set again but it won't skip this time.
@@ -785,8 +865,9 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = nmi;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
 
@@ -798,8 +879,9 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = RESET + 7;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
 
@@ -812,11 +894,110 @@ mod tests {
         verify(false, false, state, true)?;
         let got = wrapped_cpu.borrow().pc.0;
         let want = nmi;
-        assert!(
+        tester!(
             got == want,
+            d,
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
 
         Ok(())
     }
+
+    struct RomTest<'a> {
+        filename: &'a str,
+        cpu: Type,
+        start_pc: u16,
+        end_check: fn(u16, &Cpu) -> bool,
+        success_check: fn(u16, &Cpu) -> Result<()>,
+        expected_cycles: Option<usize>,
+        expected_instructions: Option<usize>,
+    }
+
+    macro_rules! rom_test {
+        ($suite:ident, $($name:ident: $rom_test:expr)*) => {
+            mod $suite {
+                use super::*;
+
+                $(
+                    #[test]
+                    fn $name() -> Result<()> {
+                        let r = $rom_test;
+                        // Initialize as always but then we'll overwrite it with a ROM image.
+			            // For this we'll use BRK and a vector which if executed should halt the processor.
+                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let debug = Box::leak(Box::new(|s| d.debug(s)));
+                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, Some(debug));
+                        cpu.power_on()?;
+
+                        // Get the input ROM and poke it into place.
+                        let bytes = read(Path::new("../testdata/").join(r.filename))?;
+
+                        for (addr, b) in bytes.iter().enumerate() {
+                            cpu.ram.write(addr as u16, *b);
+                        }
+
+                        // Do reset
+                        loop {
+                            match cpu.reset() {
+                                Ok(OpState::Done) => break,
+                                Ok(OpState::Processing) => continue,
+                                Err(e) => return Err(e),
+                            }
+                        }
+
+                        cpu.pc = Wrapping($rom_test.start_pc);
+
+                        let mut total_cycles: usize = 0;
+                        let mut total_instructions: usize = 0;
+
+                        loop {
+                            let old_pc = cpu.pc.0;
+                            let cycles = step(&mut cpu)?;
+                            total_cycles += cycles;
+                            total_instructions += 1;
+
+                            if (r.end_check)(old_pc, &cpu) {
+                                let res = (r.success_check)(old_pc, &cpu);
+                                if let Err(err) = res {
+                                    tester!(true, d, "{err}");
+                                }
+                                break;
+                            }
+                        }
+
+                        let got = total_cycles;
+                        if let Some(want) = r.expected_cycles {
+                            tester!(got == want, d, "cycles don't match: got {got} and want {want}");
+                        }
+
+                        let got = total_instructions;
+                        if let Some(want) = r.expected_instructions {
+                            tester!(got == want, d, "instructions don't match: got {got} and want {want}");
+                        }
+                        Ok(())
+                    }
+                )*
+            }
+        }
+    }
+
+    rom_test!(
+        rom_tests,
+        functional_test: RomTest{
+            filename: "6502_functional_test.bin",
+            cpu: Type::NMOS,
+            start_pc: 0x0400,
+            end_check: |old, cpu| {
+                old == cpu.pc.0
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0x3469 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(96241367),
+            expected_instructions: Some(30646177),
+        }
+    );
 }

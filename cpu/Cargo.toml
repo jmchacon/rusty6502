@@ -15,3 +15,4 @@ rand = { workspace = true }
 strum_macros = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
+ringbuffer = { version = "0.10.0" }
