@@ -99,7 +99,7 @@ fn main() -> Result<()> {
             let res = match list(pc, &ram) {
                 Ok((out, pc)) => (out, pc),
                 Err(err) => {
-                    eprintln!("{}", err);
+                    eprintln!("{err}");
                     std::process::exit(1);
                 }
             };
