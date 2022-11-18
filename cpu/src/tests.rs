@@ -924,7 +924,7 @@ mod tests {
                         let r = $rom_test;
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			            // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let d = Box::leak(Box::new(Debug::new(8192)));
                         let debug = Box::leak(Box::new(|s| d.debug(s)));
                         let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, Some(debug));
                         cpu.power_on()?;
@@ -1012,8 +1012,9 @@ mod tests {
                 }
                 Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
             },
+            // No expected cycles/instructions because OAL can generate different paths.
             expected_cycles: None,
-            expected_instructions: Some(2435),
+            expected_instructions: None,
         }
     );
 }
