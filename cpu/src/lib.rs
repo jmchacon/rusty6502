@@ -401,7 +401,7 @@ enum CPUState {
 }
 
 #[derive(Default, Debug, Display, PartialEq, Clone)]
-enum IRQ {
+enum InterruptStyle {
     #[default]
     None,
     Irq,
@@ -423,7 +423,7 @@ enum SkipInterrupt {
     PrevSkip,
 }
 
-/// OpState is used to indicate whether an opcode/addressing mode is done or not.
+/// `OpState` is used to indicate whether an opcode/addressing mode is done or not.
 #[derive(Debug, Copy, Clone, Display, PartialEq)]
 pub enum OpState {
     /// Everything is done.
@@ -677,7 +677,7 @@ pub struct Cpu<'a> {
     state: CPUState,
 
     // State of IRQ line
-    irq_raised: IRQ,
+    irq_raised: InterruptStyle,
 
     // Whether IRQ is asserted
     irq: Option<&'a dyn irq::Sender>,
@@ -862,18 +862,18 @@ impl<'a> Chip for Cpu<'a> {
         // to NMI from IRQ mid processing.
         if irq_raised || nmi_raised {
             match self.irq_raised {
-                IRQ::None => {
-                    self.irq_raised = IRQ::Irq;
+                InterruptStyle::None => {
+                    self.irq_raised = InterruptStyle::Irq;
                     if nmi_raised {
-                        self.irq_raised = IRQ::Nmi;
+                        self.irq_raised = InterruptStyle::Nmi;
                     }
                 }
-                IRQ::Irq => {
+                InterruptStyle::Irq => {
                     if nmi_raised {
-                        self.irq_raised = IRQ::Nmi;
+                        self.irq_raised = InterruptStyle::Nmi;
                     }
                 }
-                IRQ::Nmi => {}
+                InterruptStyle::Nmi => {}
             }
         }
         match self.op_tick {
@@ -884,11 +884,15 @@ impl<'a> Chip for Cpu<'a> {
                 self.op = opcode_op(self.cpu_type, self.op_raw);
 
                 // PC advances always when we start a new opcode except for IRQ/NMI (unless we're skipping to run one more instruction)
-                if self.irq_raised == IRQ::None || self.skip_interrupt == SkipInterrupt::Skip {
+                if self.irq_raised == InterruptStyle::None
+                    || self.skip_interrupt == SkipInterrupt::Skip
+                {
                     self.pc += 1;
                     self.interrupt_state = InterruptState::None;
                 }
-                if self.irq_raised != IRQ::None && self.skip_interrupt != SkipInterrupt::Skip {
+                if self.irq_raised != InterruptStyle::None
+                    && self.skip_interrupt != SkipInterrupt::Skip
+                {
                     self.interrupt_state = InterruptState::Running;
                 }
 
@@ -919,7 +923,7 @@ impl<'a> Chip for Cpu<'a> {
         let ret: Result<OpState>;
         if self.interrupt_state == InterruptState::Running {
             let mut addr = IRQ_VECTOR;
-            if self.irq_raised == IRQ::Nmi {
+            if self.irq_raised == InterruptStyle::Nmi {
                 addr = NMI_VECTOR;
             }
             ret = self.run_interrupt(addr, true);
@@ -947,7 +951,7 @@ impl<'a> Chip for Cpu<'a> {
                 // If we're already running an IRQ clear state so we don't loop
                 // trying to start it again.
                 if self.interrupt_state == InterruptState::Running {
-                    self.irq_raised = IRQ::None;
+                    self.irq_raised = InterruptStyle::None;
                 }
                 self.interrupt_state = InterruptState::None;
             }
@@ -987,7 +991,7 @@ impl<'a> Cpu<'a> {
             pc: Wrapping(0x0000),
             debug: def.debug,
             state: CPUState::Off,
-            irq_raised: IRQ::default(),
+            irq_raised: InterruptStyle::default(),
             irq: def.irq,
             nmi: def.nmi,
             rdy: def.rdy,
@@ -3049,14 +3053,14 @@ impl<'a> Cpu<'a> {
 
         // New PC comes from IRQ_VECTOR unless we've raised an NMI.
         let ret = match self.irq_raised {
-            IRQ::Irq => self.run_interrupt(IRQ_VECTOR, true),
-            IRQ::Nmi => self.run_interrupt(NMI_VECTOR, true),
-            IRQ::None => self.run_interrupt(IRQ_VECTOR, false),
+            InterruptStyle::Irq => self.run_interrupt(IRQ_VECTOR, true),
+            InterruptStyle::Nmi => self.run_interrupt(NMI_VECTOR, true),
+            InterruptStyle::None => self.run_interrupt(IRQ_VECTOR, false),
         };
         // If we're done on this tick eat any pending interrupt since BRK is special.
         if let Ok(r) = ret {
             if r == OpState::Done {
-                self.irq_raised = IRQ::None;
+                self.irq_raised = InterruptStyle::None;
             }
         }
         ret

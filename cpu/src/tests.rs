@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        CPUError, ChipDef, Cpu, Flags, FlatRAM, InterruptState, OpState, Tick, Type, Vectors, IRQ,
-        P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
+        CPUError, ChipDef, Cpu, Flags, FlatRAM, InterruptState, InterruptStyle, OpState, Tick,
+        Type, Vectors, P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
     };
     use chip::Chip;
     use color_eyre::eyre::{eyre, Result};
@@ -691,7 +691,7 @@ mod tests {
         let want = Flags(P_S1 | P_INTERRUPT | P_DECIMAL);
         tester!(got == want, d, "{state}: got wrong flags {got} want {want}");
         tester!(
-            wrapped_cpu.borrow().irq_raised == IRQ::None,
+            wrapped_cpu.borrow().irq_raised == InterruptStyle::None,
             d,
             "{state}: IRQ wasn't cleared after run"
         );
@@ -740,7 +740,7 @@ mod tests {
             "{state}: got wrong PC {got:04X} want {want:04X}"
         );
         tester!(
-            wrapped_cpu.borrow().irq_raised == IRQ::None,
+            wrapped_cpu.borrow().irq_raised == InterruptStyle::None,
             d,
             "{state}: IRQ wasn't cleared after run"
         );
@@ -805,7 +805,7 @@ mod tests {
         tester!(got == want, d, "{state}: Flags aren't correct. Don't include P_B even for NMI. Got {got} and want {want} - cpu: {c}");
         drop(c);
         tester!(
-            wrapped_cpu.borrow().irq_raised == IRQ::None,
+            wrapped_cpu.borrow().irq_raised == InterruptStyle::None,
             d,
             "{state}: IRQ wasn't cleared after run"
         );
@@ -924,7 +924,7 @@ mod tests {
                         let r = $rom_test;
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			            // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let d = Box::leak(Box::new(Debug::new(8192)));
                         let debug = Box::leak(Box::new(|s| d.debug(s)));
                         let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, Some(debug));
                         cpu.power_on()?;
@@ -998,6 +998,23 @@ mod tests {
             },
             expected_cycles: Some(96241367),
             expected_instructions: Some(30646177),
+        }
+        undocumented_opcodes_test: RomTest{
+            filename: "undocumented.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xC000,
+            end_check: |old, cpu| {
+                old == cpu.pc.0
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xC123 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            // No expected cycles/instructions because OAL can generate different paths.
+            expected_cycles: None,
+            expected_instructions: None,
         }
     );
 }

@@ -568,7 +568,7 @@ lazy_static! {
             }
         }
 
-        assert!(hs.len() == (1 << 8), "Didn't fill out {} opcodes. Only defined {} - {:?}", 1<<8, hs.len(), m);
+        assert!(hs.len() == (1 << 8), "Didn't fill out {} opcodes. Only defined {} - {m:?}", 1<<8, hs.len());
         m
     };
 }
