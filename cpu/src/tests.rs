@@ -999,6 +999,42 @@ mod tests {
             expected_cycles: Some(96241367),
             expected_instructions: Some(30646177),
         }
+        // The next tests (up to and including vsbx.bin) all come from http://nesdev.com/6502_cpu.txt
+        // NOTE: They are hard to debug even with the ring buffer since we don't snapshot memory
+        //       state and the test itself is self modifying code...So you'll have to use the register values
+        //       to infer state along the way.
+        dadc_test: RomTest{
+            filename: "dadc.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xD000,
+            end_check: |old, cpu| {
+                old == cpu.pc.0
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xD004 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(21230741),
+            expected_instructions: Some(8109022),
+        }
+        dincsbc_test: RomTest{
+            filename: "dincsbc.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xD000,
+            end_check: |old, cpu| {
+                old == cpu.pc.0
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xD004 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(18939481),
+            expected_instructions: Some(6781980),
+        }
         undocumented_opcodes_test: RomTest{
             filename: "undocumented.bin",
             cpu: Type::NMOS,
