@@ -925,8 +925,8 @@ mod tests {
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			            // For this we'll use BRK and a vector which if executed should halt the processor.
                         let d = Box::leak(Box::new(Debug::new(8192)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, Some(debug));
+                        //let debug = Box::leak(Box::new(|s| d.debug(s)));
+                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None);//Some(debug));
                         cpu.power_on()?;
 
                         // Get the input ROM and poke it into place.
