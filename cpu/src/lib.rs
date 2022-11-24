@@ -805,6 +805,12 @@ pub enum CPUError {
     },
 }
 
+enum Register {
+    A,
+    X,
+    Y,
+}
+
 impl<'a> Chip for Cpu<'a> {
     /// `tick` is used to move the clock forward one tick and either start processing
     /// a new opcode or continue on one already started.
@@ -1615,14 +1621,11 @@ impl<'a> Cpu<'a> {
             }
             // 0x88 - DEY
             (Opcode::DEY, AddressMode::Implied) => {
-                let val = (self.y - Wrapping(1)).0;
-                Self::load_register(&mut self.p, &mut self.y, val)
+                self.load_register(Register::Y, (self.y - Wrapping(1)).0)
             }
             // 0x89 - NOP see 0x80
             // 0x8A - TXA
-            (Opcode::TXA, AddressMode::Implied) => {
-                Self::load_register(&mut self.p, &mut self.a, self.x.0)
-            }
+            (Opcode::TXA, AddressMode::Implied) => self.load_register(Register::A, self.x.0),
             // 0x8B - XAA #i
             (Opcode::XAA, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::xaa)
@@ -1669,9 +1672,7 @@ impl<'a> Cpu<'a> {
                 self.store_instruction(Self::addr_zp_y, self.a.0 & self.x.0)
             }
             // 0x98 - TYA
-            (Opcode::TYA, AddressMode::Implied) => {
-                Self::load_register(&mut self.p, &mut self.a, self.y.0)
-            }
+            (Opcode::TYA, AddressMode::Implied) => self.load_register(Register::A, self.y.0),
             // 0x99 - STA a,y
             (Opcode::STA, AddressMode::AbsoluteY) => {
                 self.store_instruction(Self::addr_absolute_y, self.a.0)
@@ -1724,17 +1725,13 @@ impl<'a> Cpu<'a> {
             // 0xA7 - LAX d
             (Opcode::LAX, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::lax),
             // 0xA8 - TAY
-            (Opcode::TAY, AddressMode::Implied) => {
-                Self::load_register(&mut self.p, &mut self.y, self.a.0)
-            }
+            (Opcode::TAY, AddressMode::Implied) => self.load_register(Register::Y, self.a.0),
             // 0xA9 - LDA #i
             (Opcode::LDA, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::load_register_a)
             }
             // 0xAA - TAX
-            (Opcode::TAX, AddressMode::Implied) => {
-                Self::load_register(&mut self.p, &mut self.x, self.a.0)
-            }
+            (Opcode::TAX, AddressMode::Implied) => self.load_register(Register::X, self.a.0),
             // 0xAB - OAL #i
             (Opcode::OAL, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::oal)
@@ -1789,9 +1786,7 @@ impl<'a> Cpu<'a> {
                 self.load_instruction(Self::addr_absolute_y, Self::load_register_a)
             }
             // 0xBA - TSX
-            (Opcode::TSX, AddressMode::Implied) => {
-                Self::load_register(&mut self.p, &mut self.x, self.s.0)
-            }
+            (Opcode::TSX, AddressMode::Implied) => self.load_register(Register::X, self.s.0),
             // 0xBB - LAS a,y
             (Opcode::LAS, AddressMode::AbsoluteY) => {
                 self.load_instruction(Self::addr_absolute_y, Self::las)
@@ -1839,8 +1834,7 @@ impl<'a> Cpu<'a> {
             (Opcode::DCP, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::dcp),
             // 0xC8 - INY
             (Opcode::INY, AddressMode::Implied) => {
-                let val = (self.y + Wrapping(1)).0;
-                Self::load_register(&mut self.p, &mut self.y, val)
+                self.load_register(Register::Y, (self.y + Wrapping(1)).0)
             }
             // 0xC9 - CMP #i
             (Opcode::CMP, AddressMode::Immediate) => {
@@ -1848,8 +1842,7 @@ impl<'a> Cpu<'a> {
             }
             // 0xCA - DEX
             (Opcode::DEX, AddressMode::Implied) => {
-                let val = (self.x - Wrapping(1)).0;
-                Self::load_register(&mut self.p, &mut self.x, val)
+                self.load_register(Register::X, (self.x - Wrapping(1)).0)
             }
             // 0xCB - AXS #i
             (Opcode::AXS, AddressMode::Immediate) => {
@@ -1944,8 +1937,7 @@ impl<'a> Cpu<'a> {
             (Opcode::ISC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::isc),
             // 0xE8 - INX
             (Opcode::INX, AddressMode::Implied) => {
-                let val = (self.x + Wrapping(1)).0;
-                Self::load_register(&mut self.p, &mut self.x, val)
+                self.load_register(Register::X, (self.x + Wrapping(1)).0)
             }
             // 0xE9 0xEB - SBC #i
             (Opcode::SBC, AddressMode::Immediate) => {
@@ -2024,15 +2016,15 @@ impl<'a> Cpu<'a> {
     // load_register takes the val and inserts it into the given register.
     // It then does Z and N checks against the new value and sets flags.
     // Always returns OpState::Done as this happens on a single tick.
-    // NOTE: This isn't a Self method as that would require passing both
-    //       a mutable self and a reference to the register which double borrows.
-    //       Instead this breaks out the pieces needed which means this and the status
-    //       checks below are standalone methods.
     #[allow(clippy::unnecessary_wraps)]
-    fn load_register(flags: &mut Flags, reg: &mut Wrapping<u8>, val: u8) -> Result<OpState> {
-        *reg = Wrapping(val);
-        Self::zero_check(flags, val);
-        Self::negative_check(flags, val);
+    fn load_register(&mut self, reg: Register, val: u8) -> Result<OpState> {
+        match reg {
+            Register::A => self.a = Wrapping(val),
+            Register::X => self.x = Wrapping(val),
+            Register::Y => self.y = Wrapping(val),
+        };
+        self.zero_check(val);
+        self.negative_check(val);
         Ok(OpState::Done)
     }
 
@@ -2040,29 +2032,29 @@ impl<'a> Cpu<'a> {
     // This way it can be used as the op_func argument during load/rmw instructions.
     // Always returns Done since this is a single tick operation.
     fn load_register_a(&mut self) -> Result<OpState> {
-        Self::load_register(&mut self.p, &mut self.a, self.op_val)
+        self.load_register(Register::A, self.op_val)
     }
 
     // load_register_x is the curried version of load_register that uses op_val and X implicitly.
     // This way it can be used as the op_func argument during load/rmw instructions.
     // Always returns Done since this is a single tick operation.
     fn load_register_x(&mut self) -> Result<OpState> {
-        Self::load_register(&mut self.p, &mut self.x, self.op_val)
+        self.load_register(Register::X, self.op_val)
     }
 
     // load_register_y is the curried version of load_register that uses op_val and Y implicitly.
     // This way it can be used as the op_func argument during load/rmw instructions.
     // Always returns Done since this is a single tick operation.
     fn load_register_y(&mut self) -> Result<OpState> {
-        Self::load_register(&mut self.p, &mut self.y, self.op_val)
+        self.load_register(Register::Y, self.op_val)
     }
 
     // store_with_flags writes the value to the address given but also updates
     // N/Z flags at the same time.
     #[allow(clippy::unnecessary_wraps)]
     fn store_with_flags(&mut self, addr: u16, val: u8) -> Result<OpState> {
-        Self::zero_check(&mut self.p, val);
-        Self::negative_check(&mut self.p, val);
+        self.zero_check(val);
+        self.negative_check(val);
         self.ram.write(addr, val);
         Ok(OpState::Done)
     }
@@ -2073,11 +2065,11 @@ impl<'a> Cpu<'a> {
     #[allow(clippy::unnecessary_wraps)]
     fn compare(&mut self, reg: u8, val: u8) -> Result<OpState> {
         let check = (Wrapping(reg) - Wrapping(val)).0;
-        Self::zero_check(&mut self.p, check);
-        Self::negative_check(&mut self.p, check);
+        self.zero_check(check);
+        self.negative_check(check);
         // A-M done as 2's complement addition by ones complement and add 1
         // This way we get valid sign extension and a carry bit test.
-        Self::carry_check(&mut self.p, u16::from(reg) + u16::from(!val) + 1);
+        self.carry_check(u16::from(reg) + u16::from(!val) + 1);
         Ok(OpState::Done)
     }
 
@@ -2103,37 +2095,37 @@ impl<'a> Cpu<'a> {
     }
 
     // zero_check sets the Z flag based on the value.
-    fn zero_check(flags: &mut Flags, val: u8) {
-        *flags &= !P_ZERO;
+    fn zero_check(&mut self, val: u8) {
+        self.p &= !P_ZERO;
         if val == 0 {
-            *flags |= P_ZERO;
+            self.p |= P_ZERO;
         }
     }
 
     // negative_check sets the N flag based on the value.
-    fn negative_check(flags: &mut Flags, val: u8) {
-        *flags &= !P_NEGATIVE;
+    fn negative_check(&mut self, val: u8) {
+        self.p &= !P_NEGATIVE;
         if (val & P_NEGATIVE) == 0x80 {
-            *flags |= P_NEGATIVE;
+            self.p |= P_NEGATIVE;
         }
     }
 
     // carry_check sets the C flag based on the value.
-    fn carry_check(flags: &mut Flags, val: u16) {
-        *flags &= !P_CARRY;
+    fn carry_check(&mut self, val: u16) {
+        self.p &= !P_CARRY;
         if val >= 0x0100 {
-            *flags |= P_CARRY;
+            self.p |= P_CARRY;
         }
     }
 
     // overflow_check sets the V flag is the result of the ALU operation
     // caused a two's complement sign change.
     // Taken from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
-    fn overflow_check(flags: &mut Flags, reg: u8, arg: u8, result: u8) {
-        *flags &= !P_OVERFLOW;
+    fn overflow_check(&mut self, reg: u8, arg: u8, result: u8) {
+        self.p &= !P_OVERFLOW;
         // If the original sign differs from the end sign bit.
         if (reg ^ result) & (arg ^ result) & 0x80 != 0x00 {
-            *flags |= P_OVERFLOW;
+            self.p |= P_OVERFLOW;
         }
     }
 
@@ -2779,27 +2771,24 @@ impl<'a> Cpu<'a> {
             let res = (sum.0 & 0xFF) as u8;
             let seq = Wrapping(self.a.0 & 0xF0) + Wrapping(self.op_val & 0xF0) + al;
             let bin = self.a + Wrapping(self.op_val) + Wrapping(carry);
-            Self::overflow_check(&mut self.p, self.a.0, self.op_val, seq.0);
-            Self::carry_check(&mut self.p, sum.0);
+            self.overflow_check(self.a.0, self.op_val, seq.0);
+            self.carry_check(sum.0);
             // TODO(jchacon): CMOS gets N/Z set correctly and needs implementing.
-            Self::negative_check(&mut self.p, seq.0);
-            Self::zero_check(&mut self.p, bin.0);
+            self.negative_check(seq.0);
+            self.zero_check(bin.0);
             self.a = Wrapping(res);
             return Ok(OpState::Done);
         }
 
         // Otherwise do normal binary math.
-        let sum = self.a + Wrapping(self.op_val) + Wrapping(carry);
-        Self::overflow_check(&mut self.p, self.a.0, self.op_val, sum.0);
+        let sum = (self.a + Wrapping(self.op_val) + Wrapping(carry)).0;
+        self.overflow_check(self.a.0, self.op_val, sum);
 
         // Yes, could do bit checks here like the hardware but
         // just treating as uint16 math is simpler to code.
-        Self::carry_check(
-            &mut self.p,
-            u16::from(self.a.0) + u16::from(self.op_val) + u16::from(carry),
-        );
+        self.carry_check(u16::from(self.a.0) + u16::from(self.op_val) + u16::from(carry));
         // Now set the accumulator so the other flag checks are against the result.
-        Self::load_register(&mut self.p, &mut self.a, sum.0)
+        self.load_register(Register::A, sum)
     }
 
     // ahx implements the undocumented AHX instruction based on the addressing mode passed in.
@@ -2817,8 +2806,8 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val = self.a & self.x & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1));
-                self.ram.write(self.op_addr, val.0);
+                let val = (self.a & self.x & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
+                self.ram.write(self.op_addr, val);
                 Ok(OpState::Done)
             }
         }
@@ -2828,8 +2817,7 @@ impl<'a> Cpu<'a> {
     // This does AND #i (op_val) and then LSR on A setting all associated flags.
     // Always returns Done since this takes one tick and never returns an error.
     fn alr(&mut self) -> Result<OpState> {
-        let val = self.a.0 & self.op_val;
-        Self::load_register(&mut self.p, &mut self.a, val)?;
+        self.load_register(Register::A, self.a.0 & self.op_val)?;
         self.lsr_acc()
     }
 
@@ -2837,9 +2825,8 @@ impl<'a> Cpu<'a> {
     // sets carry based on bit 7 (sign extend).
     // Always returns Done since this takes one tick and never returns an error.
     fn anc(&mut self) -> Result<OpState> {
-        let val = self.a.0 & self.op_val;
-        Self::load_register(&mut self.p, &mut self.a, val)?;
-        Self::carry_check(&mut self.p, u16::from(self.a.0) << 1);
+        self.load_register(Register::A, self.a.0 & self.op_val)?;
+        self.carry_check(u16::from(self.a.0) << 1);
         Ok(OpState::Done)
     }
 
@@ -2847,8 +2834,7 @@ impl<'a> Cpu<'a> {
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since this takes one tick and never returns an error.
     fn and(&mut self) -> Result<OpState> {
-        let val = self.a.0 & self.op_val;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.load_register(Register::A, self.a.0 & self.op_val)
     }
 
     // arr implements implements the undocumented opcode for ARR.
@@ -2857,12 +2843,12 @@ impl<'a> Cpu<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     fn arr(&mut self) -> Result<OpState> {
         let val = self.a.0 & self.op_val;
-        Self::load_register(&mut self.p, &mut self.a, val)?;
+        self.load_register(Register::A, val)?;
         self.ror_acc()?;
 
         // Flags are different based on BCD or not (since the ALU acts different).
         if self.p & P_DECIMAL != Flags(0x00) {
-            // Flags are different based on BCD or not (since the ALU acts different).
+            // If bit 6 changed state between AND output and rotate output then set V.
             if (val ^ self.a.0) & 0x40 == 0x00 {
                 self.p &= !P_OVERFLOW;
             } else {
@@ -2885,7 +2871,7 @@ impl<'a> Cpu<'a> {
         }
 
         // C is bit 6
-        Self::carry_check(&mut self.p, (u16::from(self.a.0) << 2) & 0x0100);
+        self.carry_check((u16::from(self.a.0) << 2) & 0x0100);
         // V is bit 5 ^ bit 6
         if ((self.a.0 & 0x40) >> 6) ^ ((self.a.0 & 0x20) >> 5) == 0x00 {
             self.p &= !P_OVERFLOW;
@@ -2902,9 +2888,9 @@ impl<'a> Cpu<'a> {
     fn asl(&mut self) -> Result<OpState> {
         let new = self.op_val << 1;
         self.ram.write(self.op_addr, new);
-        Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
-        Self::zero_check(&mut self.p, new);
-        Self::negative_check(&mut self.p, new);
+        self.carry_check(u16::from(self.op_val) << 1);
+        self.zero_check(new);
+        self.negative_check(new);
         Ok(OpState::Done)
     }
 
@@ -2912,9 +2898,8 @@ impl<'a> Cpu<'a> {
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
     fn asl_acc(&mut self) -> Result<OpState> {
-        Self::carry_check(&mut self.p, u16::from(self.a.0) << 1);
-        let val = self.a.0 << 1;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.carry_check(u16::from(self.a.0) << 1);
+        self.load_register(Register::A, self.a.0 << 1)
     }
 
     // axs implements the undocumented opcode for AXS.
@@ -2923,8 +2908,7 @@ impl<'a> Cpu<'a> {
     fn axs(&mut self) -> Result<OpState> {
         // Save A off to restore later
         let a = self.a.0;
-        let val = self.a.0 & self.x.0;
-        Self::load_register(&mut self.p, &mut self.a, val)?;
+        self.load_register(Register::A, self.a.0 & self.x.0)?;
         // Carry is always set
         self.p |= P_CARRY;
 
@@ -2940,8 +2924,8 @@ impl<'a> Cpu<'a> {
 
         // Save A in a temp so we can load registers in the right order to set flags (based on X, not old A)
         let x = self.a.0;
-        Self::load_register(&mut self.p, &mut self.a, a)?;
-        Self::load_register(&mut self.p, &mut self.x, x)?;
+        self.load_register(Register::A, a)?;
+        self.load_register(Register::X, x)?;
 
         // Restore D & V from our initial state.
         self.p |= d | v;
@@ -2983,8 +2967,8 @@ impl<'a> Cpu<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
     fn bit(&mut self) -> Result<OpState> {
-        Self::zero_check(&mut self.p, self.a.0 & self.op_val);
-        Self::negative_check(&mut self.p, self.op_val);
+        self.zero_check(self.a.0 & self.op_val);
+        self.negative_check(self.op_val);
         // Copy V from bit 6
         self.p &= !P_OVERFLOW;
         if self.op_val & P_OVERFLOW != 0x00 {
@@ -3116,8 +3100,7 @@ impl<'a> Cpu<'a> {
     // eor implements the EOR instruction which XORs op_val with A.
     // Always returns true since this takes one tick and never returns an error.
     fn eor(&mut self) -> Result<OpState> {
-        let val = self.a.0 ^ self.op_val;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.load_register(Register::A, self.a.0 ^ self.op_val)
     }
 
     // inc implements the INC instruction by incrementing the value (op_val) at op_addr.
@@ -3248,16 +3231,16 @@ impl<'a> Cpu<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     fn las(&mut self) -> Result<OpState> {
         self.s &= self.op_val;
-        Self::load_register(&mut self.p, &mut self.x, self.s.0)?;
-        Self::load_register(&mut self.p, &mut self.a, self.s.0)
+        self.load_register(Register::X, self.s.0)?;
+        self.load_register(Register::A, self.s.0)
     }
 
     // lax implements the undocumented opcode for LAX.
     // This loads A and X with the same value and sets all associated flags.
     // Always returns Done since this takes one tick and never returns an error.
     fn lax(&mut self) -> Result<OpState> {
-        Self::load_register(&mut self.p, &mut self.a, self.op_val)?;
-        Self::load_register(&mut self.p, &mut self.x, self.op_val)
+        self.load_register(Register::A, self.op_val)?;
+        self.load_register(Register::X, self.op_val)
     }
 
     // lsr implements the LSR instruction as a logical shift right on op_addr.
@@ -3268,9 +3251,9 @@ impl<'a> Cpu<'a> {
         self.ram.write(self.op_addr, val);
         // Get bit 0 from the original but as a 16 bit value so
         // we can shift it into the carry position.
-        Self::carry_check(&mut self.p, u16::from(self.op_val & 0x01) << 8);
-        Self::zero_check(&mut self.p, val);
-        Self::negative_check(&mut self.p, val);
+        self.carry_check(u16::from(self.op_val & 0x01) << 8);
+        self.zero_check(val);
+        self.negative_check(val);
         Ok(OpState::Done)
     }
 
@@ -3279,9 +3262,8 @@ impl<'a> Cpu<'a> {
     fn lsr_acc(&mut self) -> Result<OpState> {
         // Get bit 0 from A but in a 16 bit value and then shift it up into
         // the carry position
-        Self::carry_check(&mut self.p, u16::from(self.a.0 & 0x01) << 8);
-        let val = self.a.0 >> 1;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.carry_check(u16::from(self.a.0 & 0x01) << 8);
+        self.load_register(Register::A, self.a.0 >> 1)
     }
 
     // oal implements the undocumented opcode for OAL.
@@ -3294,15 +3276,14 @@ impl<'a> Cpu<'a> {
             return self.xaa();
         }
         let val = self.a.0 & self.op_val;
-        Self::load_register(&mut self.p, &mut self.a, val)?;
-        Self::load_register(&mut self.p, &mut self.x, val)
+        self.load_register(Register::A, val)?;
+        self.load_register(Register::X, val)
     }
 
     // ora implements the ORA instruction which ORs op_val with A.
     // Always returns Done since this takes one tick and never returns an error.
     fn ora(&mut self) -> Result<OpState> {
-        let val = self.a.0 | self.op_val;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.load_register(Register::A, self.a.0 | self.op_val)
     }
 
     // pha implements the PHA instruction for pushing A onto the stack.
@@ -3369,7 +3350,7 @@ impl<'a> Cpu<'a> {
             Tick::Tick4 => {
                 // The real read
                 let val = self.pop_stack();
-                Self::load_register(&mut self.p, &mut self.a, val)
+                self.load_register(Register::A, val)
             }
         }
     }
@@ -3408,9 +3389,8 @@ impl<'a> Cpu<'a> {
     fn rla(&mut self) -> Result<OpState> {
         let val = (self.op_val << 1) | (self.p & P_CARRY).0;
         self.ram.write(self.op_addr, val);
-        Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
-        let new = self.a.0 & val;
-        Self::load_register(&mut self.p, &mut self.a, new)
+        self.carry_check(u16::from(self.op_val) << 1);
+        self.load_register(Register::A, self.a.0 & val)
     }
 
     // rol implements the ROL instruction which does a rotate left on op_addr.
@@ -3421,9 +3401,9 @@ impl<'a> Cpu<'a> {
         let carry = (self.p & P_CARRY).0;
         let new = (self.op_val << 1) | carry;
         self.ram.write(self.op_addr, new);
-        Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
-        Self::zero_check(&mut self.p, new);
-        Self::negative_check(&mut self.p, new);
+        self.carry_check(u16::from(self.op_val) << 1);
+        self.zero_check(new);
+        self.negative_check(new);
         Ok(OpState::Done)
     }
 
@@ -3432,9 +3412,8 @@ impl<'a> Cpu<'a> {
     // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
     fn rol_acc(&mut self) -> Result<OpState> {
         let carry = (self.p & P_CARRY).0;
-        Self::carry_check(&mut self.p, u16::from(self.a.0) << 1);
-        let val = (self.a.0 << 1) | carry;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.carry_check(u16::from(self.a.0) << 1);
+        self.load_register(Register::A, (self.a.0 << 1) | carry)
     }
 
     // ror implements the ROR instruction for doing a rotate right on the contents
@@ -3446,9 +3425,9 @@ impl<'a> Cpu<'a> {
         let new = (self.op_val >> 1) | carry;
         self.ram.write(self.op_addr, new);
         // Just see if carry is set or not.
-        Self::carry_check(&mut self.p, (u16::from(self.op_val) << 8) & 0x0100);
-        Self::zero_check(&mut self.p, new);
-        Self::negative_check(&mut self.p, new);
+        self.carry_check((u16::from(self.op_val) << 8) & 0x0100);
+        self.zero_check(new);
+        self.negative_check(new);
         Ok(OpState::Done)
     }
 
@@ -3458,9 +3437,8 @@ impl<'a> Cpu<'a> {
     fn ror_acc(&mut self) -> Result<OpState> {
         let carry = (self.p & P_CARRY).0 << 7;
         // Just see if carry is set or not.
-        Self::carry_check(&mut self.p, (u16::from(self.a.0) << 8) & 0x0100);
-        let val = (self.a.0 >> 1) | carry;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.carry_check((u16::from(self.a.0) << 8) & 0x0100);
+        self.load_register(Register::A, (self.a.0 >> 1) | carry)
     }
 
     // rra implements the undocumented opcode for RRA. This does a ROR on op_addr
@@ -3470,7 +3448,7 @@ impl<'a> Cpu<'a> {
         let n = ((self.p & P_CARRY).0 << 7) | (self.op_val >> 1);
         self.ram.write(self.op_addr, n);
         // Old bit 0 becomes carry
-        Self::carry_check(&mut self.p, (u16::from(self.op_val) << 8) & 0x0100);
+        self.carry_check((u16::from(self.op_val) << 8) & 0x0100);
         self.op_val = n;
         self.adc()
     }
@@ -3584,16 +3562,13 @@ impl<'a> Cpu<'a> {
 
             // Do normal binary math to set C,N,Z
             let b = self.a + Wrapping(!self.op_val) + Wrapping(carry);
-            Self::overflow_check(&mut self.p, self.a.0, !self.op_val, b.0);
-            Self::negative_check(&mut self.p, b.0);
+            self.overflow_check(self.a.0, !self.op_val, b.0);
+            self.negative_check(b.0);
 
             // Yes, could do bit checks here like the hardware but
             // just treating as uint16 math is simpler to code.
-            Self::carry_check(
-                &mut self.p,
-                u16::from(self.a.0) + u16::from(!self.op_val) + u16::from(carry),
-            );
-            Self::zero_check(&mut self.p, b.0);
+            self.carry_check(u16::from(self.a.0) + u16::from(!self.op_val) + u16::from(carry));
+            self.zero_check(b.0);
             self.a = Wrapping(res);
             return Ok(OpState::Done);
         }
@@ -3642,8 +3617,8 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val = self.x & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1));
-                self.ram.write(self.op_addr, val.0);
+                let val = (self.x & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
+                self.ram.write(self.op_addr, val);
                 Ok(OpState::Done)
             }
         }
@@ -3664,8 +3639,8 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val = self.y & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1));
-                self.ram.write(self.op_addr, val.0);
+                let val = (self.y & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
+                self.ram.write(self.op_addr, val);
                 Ok(OpState::Done)
             }
         }
@@ -3676,9 +3651,8 @@ impl<'a> Cpu<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     fn slo(&mut self) -> Result<OpState> {
         self.ram.write(self.op_addr, self.op_val << 1);
-        Self::carry_check(&mut self.p, u16::from(self.op_val) << 1);
-        let val = (self.op_val << 1) | self.a.0;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.carry_check(u16::from(self.op_val) << 1);
+        self.load_register(Register::A, (self.op_val << 1) | self.a.0)
     }
 
     // sre implements the undocumented opcode for SRE. This does a LSR on
@@ -3687,9 +3661,8 @@ impl<'a> Cpu<'a> {
     fn sre(&mut self) -> Result<OpState> {
         self.ram.write(self.op_addr, self.op_val >> 1);
         // Old bit 0 becomes carry
-        Self::carry_check(&mut self.p, u16::from(self.op_val) << 8);
-        let val = (self.op_val >> 1) & self.a.0;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.carry_check(u16::from(self.op_val) << 8);
+        self.load_register(Register::A, (self.op_val >> 1) & self.a.0)
     }
 
     // tas implements the undocumented opcode for TAS which only has one addressing mode.
@@ -3707,8 +3680,7 @@ impl<'a> Cpu<'a> {
     // https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
     // Always returns Done since this takes one tick and never returns an error.
     fn xaa(&mut self) -> Result<OpState> {
-        let val = (self.a.0 | 0xEE) & self.x.0 & self.op_val;
-        Self::load_register(&mut self.p, &mut self.a, val)
+        self.load_register(Register::A, (self.a.0 | 0xEE) & self.x.0 & self.op_val)
     }
 }
 

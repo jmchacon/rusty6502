@@ -925,8 +925,8 @@ mod tests {
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			            // For this we'll use BRK and a vector which if executed should halt the processor.
                         let d = Box::leak(Box::new(Debug::new(8192)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, Some(debug));
+                        //let debug = Box::leak(Box::new(|s| d.debug(s)));
+                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None);//Some(debug));
                         cpu.power_on()?;
 
                         // Get the input ROM and poke it into place.
@@ -1034,6 +1034,139 @@ mod tests {
             },
             expected_cycles: Some(18939481),
             expected_instructions: Some(6781980),
+        }
+        dincsbc_deccmp_test: RomTest{
+            filename: "dincsbc-deccmp.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xD000,
+            end_check: |old, cpu| {
+                old == cpu.pc.0
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xD004 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(18095480),
+            expected_instructions: Some(5507189),
+        }
+        droradc_test: RomTest{
+            filename: "droradc.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xD000,
+            end_check: |old, cpu| {
+                old == cpu.pc.0
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xD004 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(22148245),
+            expected_instructions: Some(8240094),
+        }
+        dsbc_test: RomTest{
+            filename: "dsbc.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xD000,
+            end_check: |old, cpu| {
+                old == cpu.pc.0
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xD004 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(18021977),
+            expected_instructions: Some(6650908),
+        }
+        dsbc_cmp_flags_test: RomTest{
+            filename: "dsbc-cmp-flags.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xD000,
+            end_check: |old, cpu| {
+                old == cpu.pc.0
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xD004 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(14425356),
+            expected_instructions: Some(4982869),
+        }
+        sbx_test: RomTest{
+            filename: "sbx.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xD000,
+            end_check: |old, cpu| {
+                if old == cpu.pc.0 {
+                    println!("");
+                    return true
+                }
+                // On this test it JSR's to FFD2 which is the C64
+                // ROM print routine. It prints a dot for each iteration.
+                // Do the same for easier debugging if it fails.
+                if cpu.pc.0 == 0xFFd2 {
+                    print!(".");
+                }
+                false
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xD004 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(6044288253),
+            expected_instructions: Some(2081694800),
+        }
+        vsbx_test: RomTest{
+            filename: "vsbx.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xD000,
+            end_check: |old, cpu| {
+                if old == cpu.pc.0 {
+                    println!("");
+                    return true
+                }
+                // On this test it JSR's to FFD2 which is the C64
+                // ROM print routine. It prints a dot for each iteration.
+                // Do the same for easier debugging if it fails.
+                if cpu.pc.0 == 0xFFd2 {
+                    print!(".");
+                }
+                false
+            },
+            success_check: |_old, cpu| {
+                if cpu.pc.0 == 0xD004 {
+                    return Ok(());
+                }
+                Err(eyre!("CPU looping at PC: 0x{:04X}", cpu.pc.0))
+            },
+            expected_cycles: Some(7525173529),
+            expected_instructions: Some(2552776790),
+        }
+        bcd_test: RomTest{
+            filename: "bcd_test.bin",
+            cpu: Type::NMOS,
+            start_pc: 0xC000,
+            end_check: |old, cpu| {
+                old == cpu.pc.0 || old == 0xC04B
+            },
+            success_check: |_old, cpu| {
+                let val = cpu.ram.read(0x0000);
+                if val != 0x00 {
+                    return Err(eyre!("Invalid value at 0x0000: Got {val:2X} and want 0x00"))
+                }
+                return Ok(());
+            },
+            expected_cycles: Some(53953828),
+            expected_instructions: Some(17609916),
         }
         undocumented_opcodes_test: RomTest{
             filename: "undocumented.bin",
