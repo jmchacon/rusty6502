@@ -377,26 +377,27 @@ pub const RESET_VECTOR: u16 = 0xFFFC;
 pub const IRQ_VECTOR: u16 = 0xFFFE;
 
 #[derive(Debug, Display, Copy, Clone, PartialEq, EnumString)]
-enum CPUState {
-    // The default when initialized.
-    // Will throw errors in any functions if this state because `power_on`
-    // hasn't been called.
+/// `State` defines the current CPU state. i.e. on/off/resetting, etc
+pub enum State {
+    /// The default when initialized.
+    /// Will throw errors in any functions if this state because `power_on`
+    /// hasn't been called.
     Off,
 
-    // The state `power_on` leaves the chip which generally moves
-    // immediate into Reset.
+    /// The state `power_on` leaves the chip which generally moves
+    /// immediate into Reset.
     On,
 
-    // If we're in a reset sequence and not done yet.
+    /// If we're in a reset sequence and not done yet.
     Reset,
 
-    // Set in `reset` or `tick_done`
+    /// Set in `reset` or `tick_done`
     Running,
 
-    // The mode we are in after a `tick` has run
+    /// The mode we are in after a `tick` has run
     Tick,
 
-    // If we ran a halted instruction we end up here.
+    /// If we ran a halted instruction we end up here.
     Halted,
 }
 
@@ -647,34 +648,95 @@ impl fmt::Display for Flags {
     }
 }
 
-/// The definition for a given 6502 implementation.
-pub struct Cpu<'a> {
-    // The specific variant implemented.
-    cpu_type: Type,
+/// `CPUState` is the public information about the CPU and RAM
+/// at a point in time. This is generally used through the debug Option
+/// in the Cpu below.
+pub struct CPUState {
+    /// CPU type
+    pub cpu_type: Type,
+
+    /// CPU state
+    pub state: State,
 
     /// Accumulator register
-    pub a: Wrapping<u8>,
+    pub a: u8,
 
     /// X register
-    pub x: Wrapping<u8>,
+    pub x: u8,
 
     /// Y register
-    pub y: Wrapping<u8>,
+    pub y: u8,
 
     /// Stack pointer
-    pub s: Wrapping<u8>,
+    pub s: u8,
 
     /// Status register
     pub p: Flags,
 
     /// Program counter
-    pub pc: Wrapping<u16>,
+    pub pc: u16,
 
-    // If set `debug` will be passed a CPU state in string form on each instruction.
-    debug: Option<&'a dyn Fn(String)>,
+    /// RAM contents
+    pub ram: [u8; MAX_SIZE],
+
+    /// How many clocks have run since power on
+    pub clocks: usize,
+
+    /// The current op_val
+    pub op_val: u8,
+
+    /// The current op_addr
+    pub op_addr: u16,
+}
+
+impl fmt::Display for CPUState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (dis, _) = disassemble::step(self.cpu_type, Wrapping(self.pc), &self.ram);
+
+        write!(
+            f,
+            "{:>6} {dis:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X}",
+            self.clocks, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr
+        )
+    }
+}
+
+/// The definition for a given 6502 implementation.
+pub struct Cpu<'a> {
+    // The specific variant implemented.
+    cpu_type: Type,
+
+    // Accumulator register
+    a: Wrapping<u8>,
+
+    // X register
+    x: Wrapping<u8>,
+
+    // Y register
+    y: Wrapping<u8>,
+
+    // Stack pointer
+    s: Wrapping<u8>,
+
+    // Status register
+    p: Flags,
+
+    // Program counter
+    pc: Wrapping<u16>,
+
+    // If set `debug_string` will be passed a CPU state in string form on each instruction.
+    // NOTE: This is very expensive to do on every instruction so only turn this on
+    //       for short durations or be prepared for an order of magnitude slowdown.
+    //       At the expense of memory using debug will be faster as resolution on happens
+    //       on-demand.
+    debug_string: Option<&'a dyn Fn(String)>,
+
+    // If set `debug` will be passed a raw `CpuState` on each instruction.
+    // NOTE: This includes a memory dump which will add up if these are stored.
+    debug: Option<&'a dyn Fn(CPUState)>,
 
     // Initialized or not.
-    state: CPUState,
+    state: State,
 
     // State of IRQ line
     irq_raised: InterruptStyle,
@@ -787,9 +849,6 @@ pub struct ChipDef<'a> {
     /// rdy is an optional IRQ source to trigger the RDY line (which halts the CPU).
     /// This is not technically an IRQ but acts the same.
     pub rdy: Option<&'a dyn irq::Sender>,
-
-    /// If Some debugging is enabled.
-    pub debug: Option<&'a dyn Fn(String)>,
 }
 
 /// `CPUError` defines specific conditions where `tick` may return
@@ -822,19 +881,19 @@ impl<'a> Chip for Cpu<'a> {
     /// and already being halted.
     fn tick(&mut self) -> Result<()> {
         // Fast path if halted. PC doesn't advance nor do we take clocks.
-        if self.state == CPUState::Halted {
+        if self.state == State::Halted {
             return Err(ErrReport::new(CPUError::Halted {
                 op: self.halt_opcode,
             }));
         }
 
         // Handles improper state. Only tick_done() or reset() can move into this state.
-        if self.state != CPUState::Running {
+        if self.state != State::Running {
             return Err(eyre!("CPU not in Running state - {}", self.state));
         }
 
         // Move to the state tick_done() has to move us out of.
-        self.state = CPUState::Tick;
+        self.state = State::Tick;
 
         // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
         //                Ok, this technically only works like this in combination with SYNC being held high as well.
@@ -940,8 +999,8 @@ impl<'a> Chip for Cpu<'a> {
         // We'll treat an error as halted since internal state is unknown at that point.
         // For halted instructions though we'll return a custom error type so it can
         // be detected vs internal errors.
-        if self.state == CPUState::Halted || ret.is_err() {
-            self.state = CPUState::Halted;
+        if self.state == State::Halted || ret.is_err() {
+            self.state = State::Halted;
             self.halt_opcode = self.op_raw;
             ret?;
             return Err(ErrReport::new(CPUError::Halted {
@@ -972,11 +1031,11 @@ impl<'a> Chip for Cpu<'a> {
     /// # Errors
     /// Bad internal state will result in errors.
     fn tick_done(&mut self) -> Result<()> {
-        if self.state != CPUState::Tick {
+        if self.state != State::Tick {
             return Err(eyre!("tick_done called outside Tick - {}", self.state));
         }
         // Move to the next state.
-        self.state = CPUState::Running;
+        self.state = State::Running;
         Ok(())
     }
 }
@@ -995,8 +1054,9 @@ impl<'a> Cpu<'a> {
             s: Wrapping(0x00),
             p: Flags(0x00),
             pc: Wrapping(0x0000),
-            debug: def.debug,
-            state: CPUState::Off,
+            debug: None,
+            debug_string: None,
+            state: State::Off,
             irq_raised: InterruptStyle::default(),
             irq: def.irq,
             nmi: def.nmi,
@@ -1017,6 +1077,16 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    /// Use this to enable or disable string based debugging dynamically.
+    pub fn set_debug_string(&mut self, d: Option<&'a dyn Fn(String)>) {
+        self.debug_string = d;
+    }
+
+    /// Use this to enable or disable state based debugging dynamically.
+    pub fn set_debug(&mut self, d: Option<&'a dyn Fn(CPUState)>) {
+        self.debug = d;
+    }
+
     /// debug will emit a filled in value on the start of new instructions (assuming not frozen due to RDY)
     pub fn debug(&self) {
         // Only emit when we're going to run a new instruction and aren't frozen.
@@ -1025,16 +1095,33 @@ impl<'a> Cpu<'a> {
                 return;
             }
         }
-        if self.debug.is_none() || self.op_tick != Tick::Tick1 {
+        if (self.debug_string.is_none() && self.debug.is_none()) || self.op_tick != Tick::Tick1 {
             return;
         }
-        if let Some(d) = self.debug {
+        if let Some(d) = self.debug_string {
             let mut pre = "";
-            if self.state == CPUState::Reset {
+            if self.state == State::Reset {
                 pre = "reset ";
             }
             let out = format!("{pre}{self}\n");
             d(out);
+        }
+        if let Some(d) = self.debug {
+            let s = CPUState {
+                cpu_type: self.cpu_type,
+                state: self.state,
+                a: self.a.0,
+                x: self.x.0,
+                y: self.y.0,
+                s: self.s.0,
+                p: self.p,
+                pc: self.pc.0,
+                ram: self.ram.ram(),
+                clocks: self.clocks,
+                op_val: self.op_val,
+                op_addr: self.op_addr,
+            };
+            d(s);
         }
     }
 
@@ -1049,7 +1136,7 @@ impl<'a> Cpu<'a> {
     ///
     /// TODO(jchacon): See if any of this gets more defined on CMOS versions.
     pub fn power_on(&mut self) -> Result<()> {
-        if self.state != CPUState::Off {
+        if self.state != State::Off {
             return Err(eyre!("cannot power on except from an off state"));
         }
 
@@ -1076,7 +1163,7 @@ impl<'a> Cpu<'a> {
         self.y = rng.gen();
         self.s = rng.gen();
 
-        self.state = CPUState::On;
+        self.state = State::On;
 
         // Use reset to get everything else done.
         loop {
@@ -1104,13 +1191,13 @@ impl<'a> Cpu<'a> {
     ///
     /// TODO: Can we reuse the BRK code for this?
     pub fn reset(&mut self) -> Result<OpState> {
-        if self.state == CPUState::Off {
+        if self.state == State::Off {
             return Err(eyre!("power_on not called before calling reset!"));
         }
 
         // If we haven't started a reset sequence start it now.
-        if self.state != CPUState::Reset {
-            self.state = CPUState::Reset;
+        if self.state != State::Reset {
+            self.state = State::Reset;
             self.op_tick = Tick::Reset;
             self.reset_tick = Tick::Tick1;
         }
@@ -1205,7 +1292,7 @@ impl<'a> Cpu<'a> {
                         );
                         self.reset_tick = Tick::Reset;
                         self.op_tick = Tick::Reset;
-                        self.state = CPUState::Running;
+                        self.state = State::Running;
                         Ok(OpState::Done)
                     }
                     // Technically both this and the reset_tick one below are impossible
@@ -1230,7 +1317,7 @@ impl<'a> Cpu<'a> {
             }
             // 0x02 0x12 0x22 0x32 0x42 0x52 0x62 0x72 0x92 0xB2 0xD2 0xF2 - HLT
             (Opcode::HLT, AddressMode::Implied) => {
-                self.state = CPUState::Halted;
+                self.state = State::Halted;
                 Ok(OpState::Done)
             }
             // 0x03 - SLO (d,x)
@@ -3739,6 +3826,11 @@ impl Memory for FlatRAM {
         self.memory[(RESET_VECTOR + 1) as usize] = ((self.vectors.reset & 0xff00) >> 8) as u8;
         self.memory[IRQ_VECTOR as usize] = (self.vectors.irq & 0xFF) as u8;
         self.memory[(IRQ_VECTOR + 1) as usize] = ((self.vectors.irq & 0xff00) >> 8) as u8;
+    }
+
+    /// `ram` gives a copy of FlatRAM back out as an array.
+    fn ram(&self) -> [u8; MAX_SIZE] {
+        self.memory
     }
 }
 

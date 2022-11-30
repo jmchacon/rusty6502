@@ -788,10 +788,10 @@ pub fn list(pc: Wrapping<u16>, r: &impl Memory) -> Result<(String, Wrapping<u16>
             0x00 => break,
             0x01..=ASCII_END => {
                 b[0] = tok;
-                // Safety: We know this is < 128 so it must be valid utf8.
+                // SAFETY: We know this is < 128 so it must be valid utf8.
                 unsafe { str::from_utf8(&b).unwrap_unchecked() }
             }
-            // Safety: We know the range of map keys.
+            // SAFETY: We know the range of map keys.
             KEYWORD_START..=KEYWORD_HIGH => unsafe {
                 tmp = KEYWORDS.get(&tok).unwrap_unchecked().to_string();
                 tmp.as_str()

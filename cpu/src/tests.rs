@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use crate::{
-        CPUError, ChipDef, Cpu, Flags, FlatRAM, InterruptState, InterruptStyle, OpState, Tick,
-        Type, Vectors, P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
+        CPUError, CPUState, ChipDef, Cpu, Flags, FlatRAM, InterruptState, InterruptStyle, OpState,
+        Tick, Type, Vectors, P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
     };
     use chip::Chip;
     use color_eyre::eyre::{eyre, Result};
@@ -11,7 +11,7 @@ mod tests {
     use ringbuffer::{AllocRingBuffer, RingBufferExt, RingBufferWrite};
     use std::cell::RefCell;
     use std::collections::HashSet;
-    use std::fmt::Write;
+    use std::fmt::{Display, Write};
     use std::fs::read;
     use std::num::Wrapping;
     use std::path::Path;
@@ -21,19 +21,15 @@ mod tests {
     // instructions is all one needs. The functional test below for
     // instance runs millions of instructions which can lead to very
     // large buffering during a test run.
-    struct Debug {
-        buf: RefCell<AllocRingBuffer<String>>,
+    struct Debug<T> {
+        buf: RefCell<AllocRingBuffer<T>>,
     }
 
-    impl Debug {
+    impl<T: Display> Debug<T> {
         fn new(cap: usize) -> Self {
             Debug {
                 buf: RefCell::new(AllocRingBuffer::with_capacity(cap)),
             }
-        }
-
-        fn debug(&self, s: String) {
-            self.buf.borrow_mut().push(s)
         }
 
         fn dump(&self, s: String) -> String {
@@ -43,6 +39,18 @@ mod tests {
                 write!(out, "{i}").unwrap();
             }
             out
+        }
+    }
+
+    impl Debug<String> {
+        fn debug(&self, s: String) {
+            self.buf.borrow_mut().push(s)
+        }
+    }
+
+    impl Debug<CPUState> {
+        fn debug(&self, s: CPUState) {
+            self.buf.borrow_mut().push(s)
         }
     }
 
@@ -63,7 +71,8 @@ mod tests {
         fill: u8,
         irq: Option<&'static dyn Sender>,
         nmi: Option<&'static dyn Sender>,
-        debug: Option<&'static dyn Fn(String)>,
+        debug_string: Option<&'static dyn Fn(String)>,
+        debug: Option<&'static dyn Fn(CPUState)>,
     ) -> Box<Cpu<'static>> {
         // NOTE: For tests only we simply put all this on the heap and then
         //       leak things with leak so we can handle all the setup pieces.
@@ -84,13 +93,15 @@ mod tests {
         let def = Box::new(ChipDef {
             cpu_type: t,
             ram: Box::leak(r),
-            debug: debug,
             irq: irq,
             nmi: nmi,
             rdy: None,
         });
 
-        Box::new(Cpu::new(Box::leak(def)))
+        let mut cpu = Box::new(Cpu::new(Box::leak(def)));
+        cpu.set_debug_string(debug_string);
+        cpu.set_debug(debug);
+        cpu
     }
 
     fn step(cpu: &mut Cpu) -> Result<usize> {
@@ -142,7 +153,7 @@ mod tests {
                             iter = 100;
                         }
                         for _ in 0..=iter {
-                           let mut cpu = setup($type, 0x1212, 0xEA, None, None, None);
+                           let mut cpu = setup($type, 0x1212, 0xEA, None, None, None, None);
 
                             // This should fail
                             {
@@ -194,7 +205,7 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let mut cpu = setup($type, 0x1212, 0xAA, None, None, None);
+                        let mut cpu = setup($type, 0x1212, 0xAA, None, None, None, None);
 
                         // This should fail as we haven't powered on/reset.
                         {
@@ -268,11 +279,11 @@ mod tests {
                     fn $name() -> Result<()> {
                         let test = $test;
                         let addr = u16::from(test.halt) << 8 | u16::from(test.halt);
-                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
                         let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(debug));
+                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(debug), None);
                         // Make a copy so we can compare if RAM changed.
-                        let mut canonical = setup(Type::NMOS, addr, test.fill, None, None, None);
+                        let mut canonical = setup(Type::NMOS, addr, test.fill, None, None, None, None);
                         cpu.power_on()?;
                         canonical.a = cpu.a;
                         canonical.x = cpu.x;
@@ -357,7 +368,7 @@ mod tests {
                         let got = cpu.clocks;
                         let want = want_clocks;
                         tester!(got == want, d, "Invalid clock count. Got {got} clocks and want {want}");
-                        // Safety: We know it's an error so unwrap_err is fine.
+                        // SAFETY: We know it's an error so unwrap_err is fine.
                         let err = ret.unwrap_err();
                         match err.root_cause().downcast_ref::<CPUError>() {
                             Some(CPUError::Halted{op: _}) => {},
@@ -423,9 +434,9 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
                         let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug), None);
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0xA1); // LDA ($EA,x)
@@ -512,9 +523,9 @@ mod tests {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Box::leak(Box::new(Debug::new(128)));
+                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
                         let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug), None);
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0x81); // STA ($EA,x)
@@ -610,9 +621,9 @@ mod tests {
         }));
 
         // TODO(jchacon): Make this a macro so we can test for CMOS too and the D bit flips.
-        let d = Box::leak(Box::new(Debug::new(128)));
+        let d = Box::leak(Box::new(Debug::<String>::new(128)));
         let debug = Box::leak(Box::new(|s| d.debug(s)));
-        let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(i), Some(n), Some(debug));
+        let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(i), Some(n), Some(debug), None);
         cpu.power_on()?;
 
         cpu.ram.write(IRQ_ADDR, 0x69); // ADC #AB
@@ -924,13 +935,15 @@ mod tests {
                         let r = $rom_test;
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			            // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let d = Box::leak(Box::new(Debug::new(8192)));
-                        //let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None);//Some(debug));
+                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128)));
+                        let debug = Box::leak(Box::new(|s| d.debug(s)));
+                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None, Some(debug));
                         cpu.power_on()?;
 
                         // Get the input ROM and poke it into place.
-                        let bytes = read(Path::new("../testdata/").join(r.filename))?;
+                        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata").join(r.filename);
+                        println!("path: {}", path.display());
+                        let bytes = read(path)?;
 
                         for (addr, b) in bytes.iter().enumerate() {
                             cpu.ram.write(addr as u16, *b);
