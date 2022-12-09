@@ -1,6 +1,8 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
+use std::cell::RefCell;
 use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
+use std::rc::Rc;
 
 use chip::Chip;
 use memory::{Memory, MAX_SIZE};
@@ -376,12 +378,13 @@ pub const RESET_VECTOR: u16 = 0xFFFC;
 /// It is a pointer to the location to start execution.
 pub const IRQ_VECTOR: u16 = 0xFFFE;
 
-#[derive(Debug, Display, Copy, Clone, PartialEq, EnumString)]
+#[derive(Debug, Default, Display, Copy, Clone, PartialEq, EnumString)]
 /// `State` defines the current CPU state. i.e. on/off/resetting, etc
 pub enum State {
     /// The default when initialized.
     /// Will throw errors in any functions if this state because `power_on`
     /// hasn't been called.
+    #[default]
     Off,
 
     /// The state `power_on` leaves the chip which generally moves
@@ -689,6 +692,24 @@ pub struct CPUState {
     pub op_addr: u16,
 }
 
+impl Default for CPUState {
+    fn default() -> Self {
+        Self {
+            cpu_type: Type::NMOS,
+            state: State::Off,
+            a: 0x00,
+            x: 0x00,
+            y: 0x00,
+            s: 0x00,
+            p: Flags(0x00),
+            pc: 0x0000,
+            clocks: 0,
+            op_val: 0x00,
+            op_addr: 0x0000,
+            ram: [0; MAX_SIZE],
+        }
+    }
+}
 impl fmt::Display for CPUState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (dis, _) = disassemble::step(self.cpu_type, Wrapping(self.pc), &self.ram);
@@ -733,7 +754,7 @@ pub struct Cpu<'a> {
 
     // If set `debug` will be passed a raw `CpuState` on each instruction.
     // NOTE: This includes a memory dump which will add up if these are stored.
-    debug: Option<&'a dyn Fn(CPUState)>,
+    debug: Option<&'a dyn Fn() -> Rc<RefCell<CPUState>>>,
 
     // Initialized or not.
     state: State,
@@ -1083,7 +1104,7 @@ impl<'a> Cpu<'a> {
     }
 
     /// Use this to enable or disable state based debugging dynamically.
-    pub fn set_debug(&mut self, d: Option<&'a dyn Fn(CPUState)>) {
+    pub fn set_debug(&mut self, d: Option<&'a dyn Fn() -> Rc<RefCell<CPUState>>>) {
         self.debug = d;
     }
 
@@ -1103,25 +1124,31 @@ impl<'a> Cpu<'a> {
             if self.state == State::Reset {
                 pre = "reset ";
             }
-            let out = format!("{pre}{self}\n");
+            let out = format!("{pre}{self}");
             d(out);
         }
         if let Some(d) = self.debug {
-            let s = CPUState {
-                cpu_type: self.cpu_type,
-                state: self.state,
-                a: self.a.0,
-                x: self.x.0,
-                y: self.y.0,
-                s: self.s.0,
-                p: self.p,
-                pc: self.pc.0,
-                ram: self.ram.ram(),
-                clocks: self.clocks,
-                op_val: self.op_val,
-                op_addr: self.op_addr,
-            };
-            d(s);
+            let ref_state = d();
+            let mut state = ref_state.borrow_mut();
+            state.cpu_type = self.cpu_type;
+            state.state = self.state;
+            state.a = self.a.0;
+            state.x = self.x.0;
+            state.y = self.y.0;
+            state.s = self.s.0;
+            state.p = self.p;
+            state.pc = self.pc.0;
+            state.clocks = self.clocks;
+            state.op_val = self.op_val;
+            state.op_addr = self.op_addr;
+
+            // We don't need to memcpy 64k. We just need
+            // the 3 possible instructions bytes at PC.
+            let ram = self.ram.ram();
+            let pc = usize::from(self.pc.0);
+            state.ram[pc] = ram[pc];
+            state.ram[pc + 1] = ram[pc + 1];
+            state.ram[pc + 2] = ram[pc + 2];
         }
     }
 
@@ -3829,8 +3856,8 @@ impl Memory for FlatRAM {
     }
 
     /// `ram` gives a copy of FlatRAM back out as an array.
-    fn ram(&self) -> [u8; MAX_SIZE] {
-        self.memory
+    fn ram<'a>(&'a self) -> &'a [u8; MAX_SIZE] {
+        &self.memory
     }
 }
 

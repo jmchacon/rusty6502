@@ -16,7 +16,7 @@ pub trait Memory {
     /// Get a copy of the whole 64k RAM block as the CPU would see it.
     /// i.e. if there is shadowing this will show that with copies in the
     /// relevant places.
-    fn ram(&self) -> [u8; MAX_SIZE];
+    fn ram<'a>(&'a self) -> &'a [u8; MAX_SIZE];
 }
 
 /// The maxmimum memory size one can address.
@@ -33,7 +33,7 @@ impl Memory for [u8; MAX_SIZE] {
 
     fn power_on(&mut self) {}
 
-    fn ram(&self) -> [u8; MAX_SIZE] {
-        *self
+    fn ram<'a>(&'a self) -> &'a [u8; MAX_SIZE] {
+        self
     }
 }

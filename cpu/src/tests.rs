@@ -8,13 +8,13 @@ mod tests {
     use color_eyre::eyre::{eyre, Result};
     use irq::Sender;
     use memory::Memory;
-    use ringbuffer::{AllocRingBuffer, RingBufferExt, RingBufferWrite};
     use std::cell::RefCell;
     use std::collections::HashSet;
     use std::fmt::{Display, Write};
     use std::fs::read;
     use std::num::Wrapping;
     use std::path::Path;
+    use std::rc::Rc;
 
     // Debug provides a way to capture debug output from a Cpu
     // without having to grab everything. Normally a few recent
@@ -22,35 +22,65 @@ mod tests {
     // instance runs millions of instructions which can lead to very
     // large buffering during a test run.
     struct Debug<T> {
-        buf: RefCell<AllocRingBuffer<T>>,
+        state: Vec<Rc<RefCell<T>>>,
+        cur: RefCell<usize>,
+        wrapped: RefCell<bool>,
     }
 
-    impl<T: Display> Debug<T> {
+    impl<T: Display + std::default::Default> Debug<T> {
         fn new(cap: usize) -> Self {
-            Debug {
-                buf: RefCell::new(AllocRingBuffer::with_capacity(cap)),
+            let mut d = Self {
+                state: Vec::with_capacity(cap),
+                cur: RefCell::new(0),
+                wrapped: RefCell::new(false),
+            };
+            for _ in 0..cap {
+                d.state.push(Rc::new(RefCell::new(T::default())));
             }
+            d
         }
 
         fn dump(&self, s: String) -> String {
             let mut out = String::new();
             writeln!(out, "\nFAIL: {s}\n\nExecution buffer:\n").unwrap();
-            for i in self.buf.borrow().iter() {
-                write!(out, "{i}").unwrap();
+            if *self.wrapped.borrow() {
+                for i in *self.cur.borrow()..self.state.len() {
+                    writeln!(out, "{}", self.state[i].borrow()).unwrap();
+                }
+            }
+            for i in 0..*self.cur.borrow() {
+                writeln!(out, "{}", self.state[i].borrow()).unwrap();
             }
             out
+        }
+
+        fn roll_buffer(&self) {
+            // Now roll the circular buffer portion of this.
+            let mut new = *self.cur.borrow() + 1;
+            if new >= self.state.len() {
+                *self.wrapped.borrow_mut() = true;
+                new = 0;
+            }
+            *self.cur.borrow_mut() = new;
         }
     }
 
     impl Debug<String> {
         fn debug(&self, s: String) {
-            self.buf.borrow_mut().push(s)
+            let r = &*self.state[*self.cur.borrow()];
+            let _ = &*r.replace(s);
+            // Now roll the circular buffer portion of this.
+            self.roll_buffer();
         }
     }
 
     impl Debug<CPUState> {
-        fn debug(&self, s: CPUState) {
-            self.buf.borrow_mut().push(s)
+        fn debug(&self) -> Rc<RefCell<CPUState>> {
+            let ret = Rc::clone(&self.state[*self.cur.borrow()]);
+
+            // Now roll the circular buffer portion of this.
+            self.roll_buffer();
+            ret
         }
     }
 
@@ -72,7 +102,7 @@ mod tests {
         irq: Option<&'static dyn Sender>,
         nmi: Option<&'static dyn Sender>,
         debug_string: Option<&'static dyn Fn(String)>,
-        debug: Option<&'static dyn Fn(CPUState)>,
+        debug: Option<&'static dyn Fn() -> Rc<RefCell<CPUState>>>,
     ) -> Box<Cpu<'static>> {
         // NOTE: For tests only we simply put all this on the heap and then
         //       leak things with leak so we can handle all the setup pieces.
@@ -936,7 +966,7 @@ mod tests {
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			            // For this we'll use BRK and a vector which if executed should halt the processor.
                         let d = Box::leak(Box::new(Debug::<CPUState>::new(128)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
+                        let debug = Box::leak(Box::new(|| d.debug()));
                         let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None, Some(debug));
                         cpu.power_on()?;
 
