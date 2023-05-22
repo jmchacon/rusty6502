@@ -1,0 +1,28 @@
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-Clink-arg=-fuse-ld=lld"]
+
+# NOTE: you must manually install https://github.com/michaeleisel/zld on mac. you can easily do this with the "brew" package manager:
+# `brew install michaeleisel/zld/zld`
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=/usr/local/bin/zld"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=/opt/homebrew/bin/zld"]
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+
+[target.wasm32-unknown-unknown]
+runner = "wasm-server-runner"
+
+[target.'cfg(all())']
+rustflags = [
+    "-Wclippy::pedantic",
+    "-Wclippy::unwrap_used",
+    "-Wclippy::expect_used",
+    "-Wclippy::doc_markdown",
+    "-Wclippy::doc_link_with_quotes",
+    "-Wclippy::missing_panics_doc",
+    "-Wmissing_docs",
+]
