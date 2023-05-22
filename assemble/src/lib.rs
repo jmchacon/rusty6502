@@ -214,14 +214,11 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 }
                 // An ORG statement must be followed by a u16 value.
                 State::Org => {
-                    let pc = match parse_val(token, true) {
-                        Some(TokenVal::Val16(v)) => v,
-                        _ => {
+                    let Some(TokenVal::Val16(pc)) = parse_val(token, true) else {
                             return Err(eyre!(
                                 "Error parsing line {}: invalid ORG value not 16 bit - {token} - {line}",
                                 line_num + 1,
                             ));
-                        }
                     };
                     l.push(Token::Org(pc));
                     State::Remainder

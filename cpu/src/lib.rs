@@ -18,6 +18,7 @@ pub use crate::lookup::*;
 
 pub mod disassemble;
 
+#[cfg(test)]
 mod tests;
 
 /// `AddressMode` defines the 6502 addressing modes.
@@ -885,6 +886,7 @@ pub enum CPUError {
     },
 }
 
+#[derive(Copy, Clone)]
 enum Register {
     A,
     X,
@@ -3855,8 +3857,8 @@ impl Memory for FlatRAM {
         self.memory[(IRQ_VECTOR + 1) as usize] = ((self.vectors.irq & 0xff00) >> 8) as u8;
     }
 
-    /// `ram` gives a copy of FlatRAM back out as an array.
-    fn ram<'a>(&'a self) -> &'a [u8; MAX_SIZE] {
+    /// `ram` gives a copy of `FlatRAM` back out as an array.
+    fn ram(&self) -> &[u8; MAX_SIZE] {
         &self.memory
     }
 }

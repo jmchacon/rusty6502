@@ -578,6 +578,9 @@ lazy_static! {
 ///
 /// # Errors
 /// If the `AddressMode` is not valid for this opcode an error will result.
+///
+/// # Panics
+/// CMOS unimplemented at present.
 pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
     let hm: &HashMap<AddressMode, Vec<u8>>;
     match t {
@@ -597,6 +600,9 @@ pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'stat
 
 /// Given an opcode u8 value this will return the Operation struct
 /// defining it. i.e. `Opcode` and `AddressMode`.
+///
+/// # Panics
+/// CMOS unimplemented at present.
 #[must_use]
 pub fn opcode_op(t: Type, op: u8) -> Operation {
     match t {

@@ -8,6 +8,7 @@ use std::num::Wrapping;
 use std::str;
 use strum_macros::{Display, EnumIter, EnumString};
 
+#[cfg(test)]
 mod tests;
 
 /// `BASIC_LOAD_ADDR` is the memory location where c64 basic programs
