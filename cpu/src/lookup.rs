@@ -578,11 +578,14 @@ lazy_static! {
 ///
 /// # Errors
 /// If the `AddressMode` is not valid for this opcode an error will result.
+///
+/// # Panics
+/// CMOS unimplemented at present.
 pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
     let hm: &HashMap<AddressMode, Vec<u8>>;
     match t {
         Type::NMOS | Type::NMOS6510 | Type::Ricoh => {
-            // Safety: When we built OPCODES we validated all Opcode were present
+            // SAFETY: When we built OPCODES we validated all Opcode were present
             unsafe {
                 hm = NMOS_OPCODES.get(op).unwrap_unchecked();
             }
@@ -597,11 +600,14 @@ pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'stat
 
 /// Given an opcode u8 value this will return the Operation struct
 /// defining it. i.e. `Opcode` and `AddressMode`.
+///
+/// # Panics
+/// CMOS unimplemented at present.
 #[must_use]
 pub fn opcode_op(t: Type, op: u8) -> Operation {
     match t {
         Type::NMOS | Type::NMOS6510 | Type::Ricoh =>
-        // Safety: We know a u8 is in range due to how we build this
+        // SAFETY: We know a u8 is in range due to how we build this
         //         so a direct index is fine.
         {
             NMOS_OPCODES_VALUES[usize::from(op)]

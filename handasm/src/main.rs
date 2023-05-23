@@ -80,17 +80,13 @@ fn main() -> Result<()> {
         let mut op2 = None;
 
         // If the first field matches as an addr this must be something we can use.
-        let addr = match usize::from_str_radix(fields[0], 16) {
-            Ok(addr) => addr,
-            Err(_) => continue,
+        let Ok(addr) = usize::from_str_radix(fields[0], 16) else {
+            continue;
         };
 
         // If we have an addr opcode is required or this is a bad line and we should stop.
-        let op = match u8::from_str_radix(fields[1], 16) {
-            Ok(op) => op,
-            Err(_) => {
-                return Err(eyre!("Error parsing line {}: {}", line_num + 1, line));
-            }
+        let Ok(op) = u8::from_str_radix(fields[1], 16) else {
+            return Err(eyre!("Error parsing line {}: {}", line_num + 1, line));
         };
 
         // The next 2 are optional
@@ -128,5 +124,5 @@ where
 #[test]
 fn verify_cli() {
     use clap::CommandFactory;
-    Args::command().debug_assert()
+    Args::command().debug_assert();
 }

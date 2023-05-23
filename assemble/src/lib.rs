@@ -214,14 +214,11 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 }
                 // An ORG statement must be followed by a u16 value.
                 State::Org => {
-                    let pc = match parse_val(token, true) {
-                        Some(TokenVal::Val16(v)) => v,
-                        _ => {
+                    let Some(TokenVal::Val16(pc)) = parse_val(token, true) else {
                             return Err(eyre!(
                                 "Error parsing line {}: invalid ORG value not 16 bit - {token} - {line}",
                                 line_num + 1,
                             ));
-                        }
                     };
                     l.push(Token::Org(pc));
                     State::Remainder
@@ -338,7 +335,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             // Either Absolute, ZeroPage, Relative or a Label
                             _ => token.as_bytes(),
                         };
-                        // Safety: We know the remainder is valid utf8 since we only removed ASCII
+                        // SAFETY: We know the remainder is valid utf8 since we only removed ASCII
                         //         and started with a valid utf8 str.
                         let op_val = unsafe { std::str::from_utf8(val).unwrap_unchecked() };
 
@@ -654,7 +651,7 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                 }
                 Token::Equ(td) => {
                     let val: TokenVal;
-                    // Safety: EQU is defined always per above parsing.
+                    // SAFETY: EQU is defined always per above parsing.
                     unsafe { val = get_label(&ast_output.labels, td).val.unwrap_unchecked() }
                     match val {
                         TokenVal::Val8(v) => {
@@ -750,7 +747,7 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                                 if s == "*" {
                                     TokenVal::Val16(o.pc)
                                 } else {
-                                    // Safety: We just checked labels above has everything referenced and filled in.
+                                    // SAFETY: We just checked labels above has everything referenced and filled in.
                                     // The one exception is * which we just handled.
                                     unsafe {
                                         get_label(&ast_output.labels, s).val.unwrap_unchecked()
@@ -881,12 +878,12 @@ pub fn parse(ty: Type, lines: Lines<BufReader<File>>) -> Result<Assembly> {
 // Given a labels map (label->LabelDef) return the labeldef directly w/o checking.
 // This should be only called after AST building as it assumes all labels are valid.
 fn get_label<'a>(hm: &'a HashMap<String, LabelDef>, label: &String) -> &'a LabelDef {
-    // Safety: Only called after AST built so all labels are in map.
+    // SAFETY: Only called after AST built so all labels are in map.
     unsafe { hm.get(label).unwrap_unchecked() }
 }
 
 fn get_label_mut<'a>(hm: &'a mut HashMap<String, LabelDef>, label: &String) -> &'a mut LabelDef {
-    // Safety: Only called after AST built so all labels are in map.
+    // SAFETY: Only called after AST built so all labels are in map.
     unsafe { hm.get_mut(label).unwrap_unchecked() }
 }
 

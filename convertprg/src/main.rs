@@ -191,5 +191,5 @@ fn write_c64_values(block: &mut [u8]) {
 #[test]
 fn verify_cli() {
     use clap::CommandFactory;
-    Args::command().debug_assert()
+    Args::command().debug_assert();
 }
