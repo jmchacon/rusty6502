@@ -62,7 +62,7 @@ jobs:
       - name: cargo miri test
         run: cargo miri test
         env:
-          MIRIFLAGS: "-Zmiri-isolation-error=warn"
+          MIRIFLAGS: "-Zmiri-disable-isolation"
   #loom:
   #  runs-on: ubuntu-latest
   #  steps:
