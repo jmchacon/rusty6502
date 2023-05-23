@@ -184,8 +184,7 @@ macro_rules! init_test {
 
                             // This should fail
                             {
-                                let ret = cpu.reset();
-                                assert!(ret.is_err(), "reset worked before power_on");
+                                assert!(cpu.reset().is_err(), "reset worked before power_on");
                             }
 
                             // Now it should work.
