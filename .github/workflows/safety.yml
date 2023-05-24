@@ -62,7 +62,7 @@ jobs:
       - name: cargo miri test
         run: cargo miri test
         env:
-          MIRIFLAGS: "-Zmiri-disable-isolation,-Zmiri-disable-stacked-borrows"
+          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
   #loom:
   #  runs-on: ubuntu-latest
   #  steps:
