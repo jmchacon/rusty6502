@@ -1,0 +1,2 @@
+# These tests are intended to leak some top level objects
+leak:cpu::tests::
