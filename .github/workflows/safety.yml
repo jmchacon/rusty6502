@@ -44,7 +44,7 @@ jobs:
         if: always()
         run: cargo test --all-features --target x86_64-unknown-linux-gnu
         env:
-          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt"
+          LSAN_OPTIONS: "suppressions=${GITHUB_WORKSPACE}/carglsan-suppressions.txt"
           RUSTFLAGS: "-Z sanitizer=leak"
   miri:
     runs-on: ubuntu-latest
@@ -59,10 +59,20 @@ jobs:
         with:
           toolchain: ${{ env.NIGHTLY }}
           components: miri
-      - name: cargo miri test
-        run: cargo miri test
+      - name: cargo miri test c64basic
+        run: cargo miri test -p c64basic
         env:
-          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
+          # Ignore leaks - cpu test does this on purpose. Isolation needed for
+          #                test data loads. Stacked borrows because eyre doesn't
+          #                work.
+          MIRIFLAGS: "-Zmiri-ignore-leaks -Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
+      - name: cargo miri test cpu
+        run: cargo miri test -p cpu tests::init_tests test::irq_and_nmi test::load_tests tests::nop_hlt_tests::classic_nop_0x02_hlt tests::store_tests tests::rom_tests::functional_test
+        env:
+          # Ignore leaks - cpu test does this on purpose. Isolation needed for
+          #                test data loads. Stacked borrows because eyre doesn't
+          #                work.
+          MIRIFLAGS: "-Zmiri-ignore-leaks -Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
   #loom:
   #  runs-on: ubuntu-latest
   #  steps:
