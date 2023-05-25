@@ -67,7 +67,7 @@ jobs:
           #                work.
           MIRIFLAGS: "-Zmiri-ignore-leaks -Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
       - name: cargo miri test cpu
-        run: cargo miri test -p cpu tests::init_tests test::irq_and_nmi test::load_tests tests::nop_hlt_tests::classic_nop_0x02_hlt tests::store_tests tests::rom_tests::functional_test
+        run: cargo miri test -p cpu --test tests::init_tests --test test::irq_and_nmi --test test::load_tests --test tests::nop_hlt_tests::classic_nop_0x02_hlt --test tests::store_tests --test tests::rom_tests::functional_test
         env:
           # Ignore leaks - cpu test does this on purpose. Isolation needed for
           #                test data loads. Stacked borrows because eyre doesn't
