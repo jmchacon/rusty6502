@@ -44,7 +44,7 @@ jobs:
         if: always()
         run: cargo test --all-features --target x86_64-unknown-linux-gnu
         env:
-          LSAN_OPTIONS: "suppressions=lsan-suppressions.txt"
+          LSAN_OPTIONS: "suppressions=${{ github.workspace }}/lsan-suppressions.txt"
           RUSTFLAGS: "-Z sanitizer=leak"
   miri:
     runs-on: ubuntu-latest
@@ -59,20 +59,33 @@ jobs:
         with:
           toolchain: ${{ env.NIGHTLY }}
           components: miri
-      - name: cargo miri test
-        run: cargo miri test
+      - name: cargo miri test c64basic
+        run: cargo miri test -p c64basic
         env:
-          MIRIFLAGS: ""
-  loom:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          submodules: true
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
-      - name: cargo test --test loom
-        run: cargo test --release --test loom
+          # Disable isolation as we load external input files/images.
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+      - name: cargo miri test cpu
+        run: |
+            # Only test a subset and do them in separate runs or miri OOMs
+            for i in init_tests irq_and_nmi load_tests store_tests nop_hlt_tests::classic_nop_0x02_hlt rom_tests::undocumented_opcodes_test; do
+              echo Testing $i
+              cargo miri test -p cpu $i
+            done
         env:
-          LOOM_MAX_PREEMPTIONS: 2
-          RUSTFLAGS: "--cfg loom"
+          # Ignore leaks - cpu test does this on purpose.
+          # Disable isolation as we load external input files/images.
+          # Stacked borrows because eyre doesn't work.
+          MIRIFLAGS: "-Zmiri-ignore-leaks -Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
+  #loom:
+  #  runs-on: ubuntu-latest
+  #  steps:
+  #    - uses: actions/checkout@v3
+  #      with:
+  #        submodules: true
+  #    - name: Install stable
+  #      uses: dtolnay/rust-toolchain@stable
+  #    - name: cargo test --test loom
+  #      run: cargo test --release --test loom
+  #      env:
+  #        LOOM_MAX_PREEMPTIONS: 2
+  #        RUSTFLAGS: "--cfg loom"

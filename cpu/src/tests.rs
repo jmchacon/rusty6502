@@ -183,10 +183,7 @@ macro_rules! init_test {
                            let mut cpu = setup($type, 0x1212, 0xEA, None, None, None, None);
 
                             // This should fail
-                            {
-                                let ret = cpu.reset();
-                                assert!(ret.is_err(), "reset worked before power_on");
-                            }
+                            assert!(cpu.reset().is_err(), "reset worked before power_on");
 
                             // Now it should work.
                             cpu.power_on()?;
@@ -197,10 +194,7 @@ macro_rules! init_test {
                             }
 
                             // This should fail now.
-                            {
-                                let ret = cpu.power_on();
-                                assert!(ret.is_err(), "power_on passes twice");
-                            }
+                            assert!(cpu.power_on().is_err(), "power_on passes twice");
                         }
                         if $rand {
                             assert!(track.len() == 2, "didn't get both decimal states");
