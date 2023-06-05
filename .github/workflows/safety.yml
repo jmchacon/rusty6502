@@ -44,7 +44,7 @@ jobs:
         if: always()
         run: cargo test --all-features --target x86_64-unknown-linux-gnu
         env:
-          LSAN_OPTIONS: "suppressions=/${GITHUB_WORKSPACE}/lsan-suppressions.txt"
+          LSAN_OPTIONS: "suppressions=${{ github.workspace }}/lsan-suppressions.txt"
           RUSTFLAGS: "-Z sanitizer=leak"
   miri:
     runs-on: ubuntu-latest
@@ -67,7 +67,7 @@ jobs:
       - name: cargo miri test cpu
         run: |
             # Only test a subset and do them in separate runs or miri OOMs
-            for i in init_tests irq_and_nmi load_tests store_tests nop_hlt_tests::classic_nop_0x02_hlt rom_tests::functional_test; do
+            for i in init_tests irq_and_nmi load_tests store_tests nop_hlt_tests::classic_nop_0x02_hlt rom_tests::undocumented_opcodes_test; do
               echo Testing $i
               cargo miri test -p cpu $i
             done
