@@ -933,12 +933,26 @@ fn irq_and_nmi() -> Result<()> {
 
 struct RomTest<'a> {
     filename: &'a str,
+    nes: bool,
     cpu: Type,
     start_pc: u16,
+    init: Option<fn(&mut Cpu)>,
+    load_traces: Option<fn() -> Vec<Verify>>,
     end_check: fn(u16, &Cpu) -> bool,
     success_check: fn(u16, &Cpu) -> Result<()>,
     expected_cycles: Option<usize>,
     expected_instructions: Option<usize>,
+}
+
+#[derive(Debug)]
+struct Verify {
+    pc: u16,
+    a: u8,
+    x: u8,
+    y: u8,
+    p: Flags,
+    s: u8,
+    cyc: usize,
 }
 
 macro_rules! rom_test {
@@ -951,7 +965,7 @@ macro_rules! rom_test {
                     fn $name() -> Result<()> {
                         let r = $rom_test;
                         // Initialize as always but then we'll overwrite it with a ROM image.
-			            // For this we'll use BRK and a vector which if executed should halt the processor.
+			                  // For this we'll use BRK and a vector which if executed should halt the processor.
                         let d = Box::leak(Box::new(Debug::<CPUState>::new(128)));
                         let debug = Box::leak(Box::new(|| d.debug()));
                         let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None, Some(debug));
@@ -962,8 +976,32 @@ macro_rules! rom_test {
                         println!("path: {}", path.display());
                         let bytes = read(path)?;
 
-                        for (addr, b) in bytes.iter().enumerate() {
-                            cpu.ram.write(addr as u16, *b);
+                        if r.nes {
+                            assert!(bytes.len() >= 16_384 && bytes[0] == b'N' && bytes[1] == b'E' && bytes[2] == b'S' && bytes[3] == 0x1A, "Bad NES ROM format");
+                            let prg_count = bytes[4];
+                            let chr_count = bytes[5];
+                            println!("PRG: {prg_count}\nCHR: {chr_count}");
+
+                            // Map the first PRG into place
+                            for i in 0..16*1024 {
+                              cpu.ram.write(i as u16 + 0xC000, bytes[16+i]);
+                            }
+                            // Nothing else needs to happen unless we get more extensive NES ROM's
+                        } else {
+                            for (addr, b) in bytes.iter().enumerate() {
+                                cpu.ram.write(addr as u16, *b);
+                            }
+                        }
+
+                        if let Some(init) = r.init {
+                            init(&mut cpu);
+                        }
+
+                        // Load up traces if we need them.
+                        let mut traces: Vec<Verify> = Vec::new();
+
+                        if let Some(load_traces) = r.load_traces {
+                            traces = load_traces();
                         }
 
                         // Do reset
@@ -982,6 +1020,19 @@ macro_rules! rom_test {
 
                         loop {
                             let old_pc = cpu.pc.0;
+
+                            if traces.len() > 0 {
+                                tester!(total_instructions < traces.len(), d, "Ran out of trace log at PC: {old_pc:04X}");
+
+                                let entry = &traces[total_instructions];
+                                // TODO(jchacon): What is this again?
+                                let test_cycle = ((total_cycles * 3) % 341);
+
+                                if cpu.pc.0 != entry.pc || cpu.p != entry.p || cpu.a.0 != entry.a || cpu.x.0 != entry.x || cpu.y.0 != entry.y || cpu.s.0 != entry.s || test_cycle != entry.cyc {
+                                  tester!(true, d, "Trace log violation.\nGot CPU: {cpu:?}\nWant entry: {entry:?}");
+                                }
+                            }
+
                             let cycles = step(&mut cpu)?;
                             total_cycles += cycles;
                             total_instructions += 1;
@@ -1015,8 +1066,11 @@ rom_test!(
     rom_tests,
     functional_test: RomTest{
         filename: "6502_functional_test.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0x0400,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0
         },
@@ -1035,8 +1089,11 @@ rom_test!(
     //       to infer state along the way.
     dadc_test: RomTest{
         filename: "dadc.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xD000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0
         },
@@ -1051,8 +1108,11 @@ rom_test!(
     }
     dincsbc_test: RomTest{
         filename: "dincsbc.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xD000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0
         },
@@ -1067,8 +1127,11 @@ rom_test!(
     }
     dincsbc_deccmp_test: RomTest{
         filename: "dincsbc-deccmp.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xD000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0
         },
@@ -1083,8 +1146,11 @@ rom_test!(
     }
     droradc_test: RomTest{
         filename: "droradc.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xD000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0
         },
@@ -1099,8 +1165,11 @@ rom_test!(
     }
     dsbc_test: RomTest{
         filename: "dsbc.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xD000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0
         },
@@ -1115,8 +1184,11 @@ rom_test!(
     }
     dsbc_cmp_flags_test: RomTest{
         filename: "dsbc-cmp-flags.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xD000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0
         },
@@ -1131,8 +1203,11 @@ rom_test!(
     }
     sbx_test: RomTest{
         filename: "sbx.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xD000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             if old == cpu.pc.0 {
                 println!();
@@ -1157,8 +1232,11 @@ rom_test!(
     }
     vsbx_test: RomTest{
         filename: "vsbx.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xD000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             if old == cpu.pc.0 {
                 println!();
@@ -1183,8 +1261,11 @@ rom_test!(
     }
     bcd_test: RomTest{
         filename: "bcd_test.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xC000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0 || old == 0xC04B
         },
@@ -1200,8 +1281,11 @@ rom_test!(
     }
     undocumented_opcodes_test: RomTest{
         filename: "undocumented.bin",
+        nes: false,
         cpu: Type::NMOS,
         start_pc: 0xC000,
+        init: None,
+        load_traces: None,
         end_check: |old, cpu| {
             old == cpu.pc.0
         },
@@ -1214,5 +1298,31 @@ rom_test!(
         // No expected cycles/instructions because OAL can generate different paths.
         expected_cycles: None,
         expected_instructions: None,
+    }
+    nes_functional_test: RomTest{
+      filename: "nestest.nes",
+      nes: true,
+      cpu: Type::Ricoh,
+      start_pc: 0xC000,
+      init: Some(|cpu| {
+          // The NES test assumes registers are zeroed and SP is FD.
+				  // Easier to do that here than modifying it and it's trace log.
+          cpu.a = Wrapping(0x00);
+          cpu.x = Wrapping(0x00);
+          cpu.y = Wrapping(0x00);
+          cpu.s = Wrapping(0xFD);
+      }),
+      load_traces: None,
+      end_check: |old, cpu| {
+            old == 0xC66E || cpu.ram.read(0x0002) != 0x00 || cpu.ram.read(0x0003) != 0x00
+      },
+      success_check: |_old, cpu| {
+          if cpu.pc.0 == 0xC66E {
+              return Ok(());
+          }
+          Err(eyre!("Error codes - 0x02: {:04X} 0x03: {:04X}", cpu.ram.read(0x0002), cpu.ram.read(0x0003)))
+      },
+      expected_cycles: Some(26553),
+      expected_instructions: Some(8991),
     }
 );
