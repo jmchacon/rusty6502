@@ -485,7 +485,7 @@ impl Tick {
 /// Flags defines a type to represent the processor flags.
 /// It will print out with all of the flag values but otherwise
 /// can be treated as a u8 when needed.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Flags(u8);
 
 impl BitOr for Flags {
@@ -1396,7 +1396,7 @@ impl<'a> Cpu<'a> {
             // 0x12 - HLT see 0x02
             // 0x13 - SLO (d),y
             (Opcode::SLO, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::slo)
+                self.rmw_instruction(Self::addr_indirect_y, Self::slo)
             }
             // 0x14 0x34 0x54 0x74 0xD4 0xF4 - NOP d,x
             (Opcode::NOP, AddressMode::ZeroPageX) => self.addr_zp_x(&InstructionMode::Load),
@@ -3778,7 +3778,7 @@ impl<'a> Cpu<'a> {
         self.ram.write(self.op_addr, self.op_val >> 1);
         // Old bit 0 becomes carry
         self.carry_check(u16::from(self.op_val) << 8);
-        self.load_register(Register::A, (self.op_val >> 1) & self.a.0)
+        self.load_register(Register::A, (self.op_val >> 1) ^ self.a.0)
     }
 
     // tas implements the undocumented opcode for TAS which only has one addressing mode.
