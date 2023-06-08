@@ -105,6 +105,6 @@ fn bad_token() {
     let res = list(Wrapping(BASIC_LOAD_ADDR), &r);
     assert!(res.is_err());
     if let Err(e) = res {
-        println!("{e}");
+        println!("{e:?} - {e}");
     }
 }
