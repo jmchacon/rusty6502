@@ -8,8 +8,8 @@ use irq::Sender;
 use memory::Memory;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fmt::{Display, Write, self};
-use std::fs::{File, read};
+use std::fmt::{self, Display, Write};
+use std::fs::{read, File};
 use std::io::{self, BufRead};
 use std::num::Wrapping;
 use std::path::Path;
@@ -958,7 +958,11 @@ struct Verify {
 
 impl fmt::Display for Verify {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Verify {{ pc: {:04X}, a: {:02X}, x: {:02X}, y: {:02X}, s: {:02X}, p: {}, cyc: {} }}", self.pc, self.a, self.x, self.y, self.s, self.p, self.cyc)
+        write!(
+            f,
+            "Verify {{ pc: {:04X}, a: {:02X}, x: {:02X}, y: {:02X}, s: {:02X}, p: {}, cyc: {} }}",
+            self.pc, self.a, self.x, self.y, self.s, self.p, self.cyc
+        )
     }
 }
 
@@ -1319,7 +1323,7 @@ rom_test!(
       start_pc: 0xC000,
       init: Some(|cpu| {
           // The NES test assumes registers are zeroed and SP is FD.
-				  // Easier to do that here than modifying it and it's trace log.
+          // Easier to do that here than modifying it and it's trace log.
           cpu.a = Wrapping(0x00);
           cpu.x = Wrapping(0x00);
           cpu.y = Wrapping(0x00);
