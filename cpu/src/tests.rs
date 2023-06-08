@@ -8,8 +8,9 @@ use irq::Sender;
 use memory::Memory;
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fmt::{Display, Write};
-use std::fs::read;
+use std::fmt::{Display, Write, self};
+use std::fs::{File, read};
+use std::io::{self, BufRead};
 use std::num::Wrapping;
 use std::path::Path;
 use std::rc::Rc;
@@ -937,14 +938,14 @@ struct RomTest<'a> {
     cpu: Type,
     start_pc: u16,
     init: Option<fn(&mut Cpu)>,
-    load_traces: Option<fn() -> Vec<Verify>>,
+    load_traces: Option<fn() -> Result<Vec<Verify>>>,
     end_check: fn(u16, &Cpu) -> bool,
     success_check: fn(u16, &Cpu) -> Result<()>,
     expected_cycles: Option<usize>,
     expected_instructions: Option<usize>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Verify {
     pc: u16,
     a: u8,
@@ -953,6 +954,12 @@ struct Verify {
     p: Flags,
     s: u8,
     cyc: usize,
+}
+
+impl fmt::Display for Verify {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Verify {{ pc: {:04X}, a: {:02X}, x: {:02X}, y: {:02X}, s: {:02X}, p: {}, cyc: {} }}", self.pc, self.a, self.x, self.y, self.s, self.p, self.cyc)
+    }
 }
 
 macro_rules! rom_test {
@@ -1001,7 +1008,7 @@ macro_rules! rom_test {
                         let mut traces: Vec<Verify> = Vec::new();
 
                         if let Some(load_traces) = r.load_traces {
-                            traces = load_traces();
+                            traces = load_traces()?;
                         }
 
                         // Do reset
@@ -1025,11 +1032,17 @@ macro_rules! rom_test {
                                 tester!(total_instructions < traces.len(), d, "Ran out of trace log at PC: {old_pc:04X}");
 
                                 let entry = &traces[total_instructions];
-                                // TODO(jchacon): What is this again?
-                                let test_cycle = ((total_cycles * 3) % 341);
+                                // The NES executes 3 clocks per cpu clock and rolls every 341 to account for scan lines.
+                                // Adjust to match cycle counts if this an nes test cart.
+
+                                let test_cycle = if r.nes {
+                                    ((total_cycles * 3) % 341)
+                                } else {
+                                    total_cycles
+                                };
 
                                 if cpu.pc.0 != entry.pc || cpu.p != entry.p || cpu.a.0 != entry.a || cpu.x.0 != entry.x || cpu.y.0 != entry.y || cpu.s.0 != entry.s || test_cycle != entry.cyc {
-                                  tester!(true, d, "Trace log violation.\nGot CPU: {cpu:?}\nWant entry: {entry:?}");
+                                  tester!(false, d, "Trace log violation.\nGot CPU: {cpu} cyc: {test_cycle}\nWant entry: {entry}");
                                 }
                             }
 
@@ -1040,7 +1053,7 @@ macro_rules! rom_test {
                             if (r.end_check)(old_pc, &cpu) {
                                 let res = (r.success_check)(old_pc, &cpu);
                                 if let Err(err) = res {
-                                    tester!(true, d, "{err}");
+                                    tester!(false, d, "{err}");
                                 }
                                 break;
                             }
@@ -1312,12 +1325,34 @@ rom_test!(
           cpu.y = Wrapping(0x00);
           cpu.s = Wrapping(0xFD);
       }),
-      load_traces: None,
+      load_traces: Some(|| -> Result<Vec<Verify>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/nestest.log");
+        println!("trace path: {}", path.display());
+        let file = File::open(path)?;
+        let lines = io::BufReader::new(file).lines();
+
+        let mut ret = Vec::new();
+
+        for line in lines.flatten() {
+            // Each line is 81 characters and each field is a specific offset.
+            ret.push(Verify {
+                pc: u16::from_str_radix(&line[0..4], 16)?,
+                a: u8::from_str_radix(&line[50..52], 16)?,
+                x: u8::from_str_radix(&line[55..57], 16)?,
+                y: u8::from_str_radix(&line[60..62], 16)?,
+                p: Flags(u8::from_str_radix(&line[65..67], 16)?),
+                s: u8::from_str_radix(&line[71..73], 16)?,
+                cyc: line[78..81].trim().parse::<usize>()?,
+            });
+        }
+
+        Ok(ret)
+      }),
       end_check: |old, cpu| {
             old == 0xC66E || cpu.ram.read(0x0002) != 0x00 || cpu.ram.read(0x0003) != 0x00
       },
-      success_check: |_old, cpu| {
-          if cpu.pc.0 == 0xC66E {
+      success_check: |old, cpu| {
+          if old == 0xC66E {
               return Ok(());
           }
           Err(eyre!("Error codes - 0x02: {:04X} 0x03: {:04X}", cpu.ram.read(0x0002), cpu.ram.read(0x0003)))
