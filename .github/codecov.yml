@@ -15,6 +15,13 @@ coverage:
 ignore:
   - "**/tests.rs"
 
+# Ignore main binaries
+ignore:
+  - "assembler/src/main.rs"
+  - "convertprg/src/main.rs"
+  - "disassembler/src/main.rs"
+  - "handasm/src/main.rs"
+
 # Make comments less noisy
 comment:
   layout: "files"
