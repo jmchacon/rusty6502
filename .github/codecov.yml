@@ -11,12 +11,10 @@ coverage:
         # Avoid false negatives
         threshold: 1%
 
-# Test files aren't important for coverage
 ignore:
+  # Test files aren't important for coverage
   - "**/tests.rs"
-
-# Ignore main binaries
-ignore:
+  # Ignore main binaries
   - "assembler/src/main.rs"
   - "convertprg/src/main.rs"
   - "disassembler/src/main.rs"
