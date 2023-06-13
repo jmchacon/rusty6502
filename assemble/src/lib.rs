@@ -13,6 +13,9 @@ use std::num::Wrapping;
 use std::str::FromStr;
 use std::{fs::File, io::Lines};
 
+#[cfg(test)]
+mod tests;
+
 // State defines the state machine for parsing a given line.
 //
 // Begin starts all lines and the progressions that are valid:
@@ -859,7 +862,9 @@ pub fn parse(ty: Type, lines: Lines<BufReader<File>>) -> Result<Assembly> {
             .map(|x| format!("{x}"))
             .collect::<Vec<_>>()
             .join(",");
-        if ld.line == 0 || ld.val.is_none() {
+        // As long as it's not "*" (which is resolved in generate_output) makes
+        // sure everything else resolves.
+        if l != "*" && (ld.line == 0 || ld.val.is_none()) {
             writeln!(
                 errors,
                 "Parsing error: Label {l} was never defined. Located on lines {locs}"

@@ -1,25 +1,27 @@
 [workspace]
 members = [
-    "./cpu",
-    "./c64basic",
-    "./disassembler",
-    "./convertprg",
-    "./irq",
-    "./handasm",
     "./assemble",
     "./assembler",
+    "./c64basic",
     "./chip",
+    "./convertprg",
+    "./cpu",
+    "./disassembler",
+    "./handasm",
+    "./irq",
+    "./memory",
 ]
 default-members = [
-    "./cpu",
-    "./c64basic",
-    "./disassembler",
-    "./convertprg",
-    "./irq",
-    "./handasm",
     "./assemble",
     "./assembler",
+    "./c64basic",
     "./chip",
+    "./convertprg",
+    "./cpu",
+    "./disassembler",
+    "./handasm",
+    "./irq",
+    "./memory",
 ]
 
 [profile.test]
