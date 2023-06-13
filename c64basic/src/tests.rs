@@ -24,7 +24,7 @@ macro_rules! list_test {
                         r.power_on();
 
 
-                        let bytes = read(Path::new("../testdata/").join($file)).unwrap_or_else(|_| panic!("can't read file: {}", $file));
+                        let bytes = read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/").join($file))?;
 
                         assert!(bytes[0] == (BASIC_LOAD_ADDR&0xFF) as u8 && bytes[1] == ((BASIC_LOAD_ADDR >> 8)&0xFF) as u8, "{} doesn't appear to be a valid Basic PRG file. Start address not 0x0801 but: {:#04X}{:02X}", $file, bytes[1], bytes[0]);
 
