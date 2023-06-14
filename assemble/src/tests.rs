@@ -132,4 +132,20 @@ bad_assemble_test!(
       asm: "invalid_equ_value.asm",
       error: "not valid u8 or u16 for EQU",
   }
+  double_equ_ref: BadAssembleTest{
+      asm: "double_equ_ref.asm",
+      error: "can't redefine EQU label",
+  }
+  bad_opcode_label: BadAssembleTest{
+      asm: "bad_opcode_label.asm",
+      error: "invalid opcode label",
+  }
+  bad_org: BadAssembleTest{
+      asm: "bad_org.asm",
+      error: "missing data",
+  }
+  bad_label: BadAssembleTest{
+      asm: "bad_label.asm",
+      error: "missing data",
+  }
 );

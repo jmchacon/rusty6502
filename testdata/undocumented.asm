@@ -3,7 +3,8 @@
   ;; These aren't comprehensive WRT flags. Mostly checking the flag state that should correspond to final A or documented side effects.
 	PHA
 	LDA #$71
-	ALR #$55
+	ALR #VAL
+  VAL EQU $55
 	BEQ * ; Check Z is clear
 	BCC * ; Check C is set
 	BMI * ; Check N is clear

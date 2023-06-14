@@ -352,7 +352,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                                     operation.mode = AddressMode::ZeroPage;
                                                 }
                                                 (true, true) => {
-                                                    return Err(eyre!("Internal error line {}: can't have x and y index set", line_num+1));
+                                                    panic!("Internal error line {}: can't have x and y index set", line_num+1);
                                                 }
                                             }
                                         }
@@ -368,7 +368,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                                     operation.mode = AddressMode::Absolute;
                                                 }
                                                 (true, true) => {
-                                                    return Err(eyre!("Internal error line {}: can't have x and y index set", line_num+1));
+                                                    panic!("Internal error line {}: can't have x and y index set", line_num+1);
                                                 }
                                             }
                                         }
@@ -396,7 +396,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                 }
                                 Err(err) => {
                                     return Err(eyre!(
-                                        "Error parsing line {}: invalid label {err} - {line}",
+                                        "Error parsing line {}: invalid opcode label {err} - {line}",
                                         line_num + 1,
                                     ));
                                 }
@@ -422,12 +422,21 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 mode: AddressMode::Implied,
                 ..Default::default()
             })),
+            // These are valid states to exit so we can ignore them.
             State::Begin | State::Remainder => {}
-            State::Label(_) | State::Equ(_) | State::Org => {
+            // Label and Org can happen if they define and then end the line
+            State::Label(_) | State::Org => {
                 return Err(eyre!(
-                    "Error parsing line {}: invalid state {state:?} - {line}",
+                    "Error parsing line {}: missing data for {state:?} - {line}",
                     line_num + 1,
                 ));
+            }
+            // Anything else is an internal error which shouldn't be possible.
+            State::Equ(_) => {
+                panic!(
+                    "Internal error parsing line {}: invalid state {state:?} - {line}",
+                    line_num + 1
+                )
             }
         };
         ret.ast.push(l);
