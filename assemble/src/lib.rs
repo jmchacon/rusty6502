@@ -171,15 +171,9 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                     line_num + 1
                                 ));
                             }
-                            match parse_label(label.as_str()) {
-                                Ok(_) => State::Equ(label),
-                                Err(err) => {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: invalid label {err} - {line}",
-                                        line_num + 1
-                                    ));
-                                }
-                            }
+                            // Don't have to validate label since State::Begin did it above before
+                            // progressing here.
+                            State::Equ(label)
                         }
                         // Otherwise this should be an opcode and we can push a label
                         // into tokens. Phase 2 will figure out its value.
@@ -234,7 +228,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                     [b';', ..] => State::Comment(String::from(&token[1..])),
                     _ => {
                         return Err(eyre!(
-                            "Error parsing line {}: only comment after parsed tokens allowed - {line}",
+                            "Error parsing line {}: only comment after parsed tokens allowed - remainder {token} - {line}",
                             line_num + 1,
                         ));
                     }
