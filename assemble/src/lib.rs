@@ -66,7 +66,7 @@ struct Operation {
 // OpVal defines the operation value for an opcode.
 // This is either an 8/16 bit value or a label which
 // eventually will reference an 8/16 bit value.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum OpVal {
     Label(String),
     Val(TokenVal),
@@ -278,6 +278,10 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                     State::Remainder
                 }
                 State::Op(op) => {
+                    // Start all address modes with implied. If we can figure
+                    // it out at a given point change to the correct one. This
+                    // way later steps can determine if we haven't determined
+                    // it completely yet.
                     let mut operation = Operation {
                         op,
                         mode: AddressMode::Implied,
@@ -304,12 +308,12 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                 operation.mode = AddressMode::Immediate;
                                 val
                             }
-                            // Zero page X - (val,x)
+                            // Indirect X - (val,x)
                             [b'(', val @ .., b',', b'x' | b'X', b')'] => {
                                 operation.mode = AddressMode::IndirectX;
                                 val
                             }
-                            // Zero page Y - (val),y
+                            // Indirect Y - (val),y
                             [b'(', val @ .., b')', b',', b'y' | b'Y'] => {
                                 operation.mode = AddressMode::IndirectY;
                                 val
@@ -807,11 +811,17 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                             AddressMode::Indirect => {
                                 write!(output, " ({val})").unwrap();
                             }
-                            AddressMode::ZeroPageX => {
-                                write!(output, " ({val}),X").unwrap();
+                            AddressMode::IndirectX => {
+                                write!(output, " ({val},X)").unwrap();
                             }
-                            AddressMode::ZeroPageY => {
-                                write!(output, " ({val},Y)").unwrap();
+                            AddressMode::IndirectY => {
+                                write!(output, " ({val}),Y").unwrap();
+                            }
+                            AddressMode::AbsoluteX | AddressMode::ZeroPageX => {
+                                write!(output, " {val},X").unwrap();
+                            }
+                            AddressMode::AbsoluteY | AddressMode::ZeroPageY => {
+                                write!(output, " {val},Y").unwrap();
                             }
                             _ => {
                                 if !val.is_empty() {
