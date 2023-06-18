@@ -1,10 +1,11 @@
 	ORG $C000
+  TESTLOC EQU $1300
+  VAL EQU $55
 
   ;; These aren't comprehensive WRT flags. Mostly checking the flag state that should correspond to final A or documented side effects.
 	PHA
 	LDA #$71
 	ALR #VAL
-  VAL EQU $55
 	BEQ * ; Check Z is clear
 	BCC * ; Check C is set
 	BMI * ; Check N is clear
@@ -89,29 +90,29 @@ CONT	DEY
 	STA $FF
 	LDA #$12
 	STA $00 ; Setup (d),y for FF to point at 12F0
- 	STA $1300 ; The final addr + Y. Put 12 there for now.
+ 	STA TESTLOC ; The final addr + Y. Put 12 there for now.
 	LDA #$B5
 	LDX #$D3
 	LDY #$10
 	AHX ($FF),Y
-	LDA $1300
+	LDA TESTLOC
 	CMP #$10
 	BNE *
 	LDA #$FF
-	STA $1300 ; Reset for 2nd call using absolute,Y
+	STA TESTLOC ; Reset for 2nd call using absolute,Y
 	LDA #$B5
 	AHX $12F0,Y
-	LDA $1300
+	LDA TESTLOC
 	CMP #$10
 	BNE *
 	TSX ; Need to save S since LAS/TAS will change it, but can't use stack
 	STX $01
 	LDA #$FF
-	STA $1300 ; Reset for TAS
+	STA TESTLOC ; Reset for TAS
 	LDX #$D3	 ; Reset X as before
 	LDA #$B5
 	TAS $12F0,Y
-	LDA $1300
+	LDA TESTLOC
 	CMP #$10
 	BNE *
 	TSX
@@ -133,21 +134,21 @@ CONT	DEY
 	LDX $01
 	TXS ; Restore S
 	LDA #$FF
-	STA $1300 ; Reset for SHY
+	STA TESTLOC ; Reset for SHY
 	LDA #$B5
 	LDX #$10
 	LDY #$D3 ; Use same values as before but swap regs
 	SHY $12F0,X
-	LDA $1300
+	LDA TESTLOC
 	CMP #$10
 	BNE *
 	LDA #$FF
-	STA $1300 ; Reset for SHX
+	STA TESTLOC ; Reset for SHX
 	LDA #$B5
 	LDX #$D3
 	LDY #$10 ; Use same values as before but swap regs
 	SHX $12F0,Y
-	LDA $1300
+	LDA TESTLOC
 	CMP #$10
 	BNE *
 	BEQ * ; We're done
