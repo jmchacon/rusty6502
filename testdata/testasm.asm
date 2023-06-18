@@ -1,0 +1,5 @@
+LDA ($00,X)
+LDA ($01),Y
+JMP ($C000)
+LDA $02,X
+LDX $03,Y
