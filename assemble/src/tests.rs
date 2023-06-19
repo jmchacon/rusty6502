@@ -70,6 +70,10 @@ assemble_test!(
         asm: "undocumented.asm",
         bin: "undocumented.bin",
     }
+    testasm_test: AssembleTest{
+        asm: "testasm.asm",
+        bin: "testasm.bin",
+    }
 );
 
 struct BadAssembleTest<'a> {

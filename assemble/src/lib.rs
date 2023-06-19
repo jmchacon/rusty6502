@@ -803,6 +803,8 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                             String::new()
                         };
 
+                        // TODO(jchacon): Can we use disassemble here instead
+                        //                of duplicating this logic?
                         write!(output, "{op:?}").unwrap();
                         match o.mode {
                             AddressMode::Immediate => {
