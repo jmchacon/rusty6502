@@ -1,11 +1,14 @@
 	ORG $C000
   TESTLOC EQU $1300
-  VAL EQU $55
 
   ;; These aren't comprehensive WRT flags. Mostly checking the flag state that should correspond to final A or documented side effects.
 	PHA
 	LDA #$71
 	ALR #VAL
+
+  ;; VAL declared here for coverage in assembler
+  VAL EQU $55
+
 	BEQ * ; Check Z is clear
 	BCC * ; Check C is set
 	BMI * ; Check N is clear

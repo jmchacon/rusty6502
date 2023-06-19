@@ -3,3 +3,4 @@ LDA ($01),Y
 JMP ($C000)
 LDA $02,X
 LDX $03,Y
+LDA $C000
