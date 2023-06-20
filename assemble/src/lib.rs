@@ -40,6 +40,7 @@ enum State {
 // Some values (such as the Operation in Op) may only be
 // partially filled in at this point until further parse
 // rounds occur.
+#[derive(Debug)]
 enum Token {
     Label(String),
     Org(u16),
@@ -95,6 +96,7 @@ enum TokenVal {
 // declaration (i.e. EQU or a location label). Also
 // anywhere that references this label also has the locations
 // recorded.
+#[derive(Debug)]
 struct LabelDef {
     val: Option<TokenVal>,
     line: usize,
@@ -343,40 +345,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         operation.op_val = match parse_val(op_val, false) {
                             Some(v) => {
                                 if operation.mode == AddressMode::Implied {
-                                    match v {
-                                        TokenVal::Val8(_) => {
-                                            match (operation.x_index, operation.y_index) {
-                                                (true, false) => {
-                                                    operation.mode = AddressMode::ZeroPageX;
-                                                }
-                                                (false, true) => {
-                                                    operation.mode = AddressMode::ZeroPageY;
-                                                }
-                                                (false, false) => {
-                                                    operation.mode = AddressMode::ZeroPage;
-                                                }
-                                                (true, true) => {
-                                                    panic!("Internal error line {}: can't have x and y index set", line_num+1);
-                                                }
-                                            }
-                                        }
-                                        TokenVal::Val16(_) => {
-                                            match (operation.x_index, operation.y_index) {
-                                                (true, false) => {
-                                                    operation.mode = AddressMode::AbsoluteX;
-                                                }
-                                                (false, true) => {
-                                                    operation.mode = AddressMode::AbsoluteY;
-                                                }
-                                                (false, false) => {
-                                                    operation.mode = AddressMode::Absolute;
-                                                }
-                                                (true, true) => {
-                                                    panic!("Internal error line {}: can't have x and y index set", line_num+1);
-                                                }
-                                            }
-                                        }
-                                    };
+                                    operation.mode = find_mode(v, &operation);
                                 }
                                 Some(OpVal::Val(v))
                             }
@@ -470,18 +439,16 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                 Token::Op(o) => {
                     let op = &o.op;
                     let width: u16;
-                    if o.mode != AddressMode::Implied {
-                        // Implied gets handled in the match as it could resolve
-                        // into another mode.
-                        if resolve_opcode(ty, op, &o.mode).is_err() {
-                            return Err(eyre!(
-                                "Error parsing line {}: opcode {op} doesn't support mode {}",
-                                line_num + 1,
-                                o.mode
-                            ));
-                        }
+                    if o.mode != AddressMode::Implied && resolve_opcode(ty, op, &o.mode).is_err() {
+                        return Err(eyre!(
+                            "Error parsing line {}: opcode {op} doesn't support mode {}",
+                            line_num + 1,
+                            o.mode
+                        ));
                     }
                     match o.mode {
+                        // Implied gets handled here as it could resolve into another mode
+                        // still due to not knowing all labels earlier.
                         AddressMode::Implied => {
                             // Check the operand and if there is one it means
                             // this isn't Implied and we need to use this to compute either ZeroPage or Absolute
@@ -489,50 +456,18 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                                 Some(OpVal::Label(l)) => {
                                     let ld = get_label(&ast_output.labels, l);
                                     if let Some(TokenVal::Val8(_)) = ld.val {
-                                        match (o.x_index, o.y_index) {
-                                            (true, false) => {
-                                                o.mode = AddressMode::ZeroPageX;
-                                            }
-                                            (false, true) => {
-                                                o.mode = AddressMode::ZeroPageY;
-                                            }
-                                            (false, false) => {
-                                                o.mode = AddressMode::ZeroPage;
-                                            }
-                                            (true, true) => {
-                                                return Err(eyre!("Error parsing line {}: can't have both x and y index", line_num+1));
-                                            }
-                                        }
+                                        o.mode = find_mode(TokenVal::Val8(0), o);
                                         width = 2;
                                     } else {
                                         // Anything else is either 16 bit or a label we don't know which
                                         // also must be 16 bit at this point.
-                                        match (o.x_index, o.y_index) {
-                                            (true, false) => {
-                                                o.mode = AddressMode::AbsoluteX;
-                                            }
-                                            (false, true) => {
-                                                o.mode = AddressMode::AbsoluteY;
-                                            }
-                                            (false, false) => {
-                                                o.mode = AddressMode::Absolute;
-                                            }
-                                            (true, true) => {
-                                                return Err(eyre!("Error parsing line {}: can't have both x and y index", line_num+1));
-                                            }
-                                        };
+                                        o.mode = find_mode(TokenVal::Val16(0), o);
                                         width = 3;
                                     }
                                 }
-                                Some(OpVal::Val(TokenVal::Val8(_))) => {
-                                    o.mode = AddressMode::ZeroPage;
-                                    width = 2;
-                                }
-                                Some(OpVal::Val(TokenVal::Val16(_))) => {
-                                    o.mode = AddressMode::Absolute;
-                                    width = 3;
-                                }
-                                None => {
+                                // Anything else was a direct value and already matched in pass1 or is actually implied.
+                                // If it directly matched that'll resolve below.
+                                _ => {
                                     width = 1;
                                 }
                             };
@@ -540,7 +475,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                             // checked yet for this opcode.
                             if resolve_opcode(ty, op, &o.mode).is_err() {
                                 return Err(eyre!(
-                                    "Error parsing line {}: opcode {op} doesn't support mode {}",
+                                    "Error parsing line {}: opcode {op} doesn't support mode - {}",
                                     line_num + 1,
                                     o.mode
                                 ));
@@ -590,9 +525,8 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                                             get_label(&ast_output.labels, l).val
                                         {
                                             ok = true;
-                                        }
-                                        // location ref which must be 16 bit.
-                                        if get_label(&ast_output.labels, l).val.is_none() {
+                                        } else if get_label(&ast_output.labels, l).val.is_none() {
+                                            // location ref which must be 16 bit.
                                             ok = true;
                                         }
                                     }
@@ -620,12 +554,6 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                         }
                     };
 
-                    if !(1..=3).contains(&width) {
-                        return Err(eyre!(
-                            "Internal error. Width {width} invalid for {o:#?} on line {}",
-                            line_num + 1
-                        ));
-                    }
                     o.pc = pc;
                     o.width = width;
                     pc += width;
@@ -679,18 +607,12 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                     write!(output, "{c}").unwrap();
                 }
                 Token::Op(o) => {
-                    let modes = match resolve_opcode(ty, &o.op, &o.mode) {
-                        Ok(modes) => modes,
-                        Err(err) => {
-                            return Err(eyre!("Internal error on line {}: {err}", line_num + 1));
-                        }
-                    };
-                    if o.op_val.is_none() && o.mode != AddressMode::Implied {
-                        return Err(eyre!("Internal error on line {}: no op val but not implied instruction for opcode {}", line_num+1, o.op));
-                    }
-                    if o.mode == AddressMode::Implied && o.width != 1 {
-                        return Err(eyre!("Internal error on line {}: implied mode for opcode {} but width not 1: {o:#?}", line_num+1, o.op));
-                    }
+                    let modes = resolve_opcode(ty, &o.op, &o.mode).unwrap_or_else(|err| {
+                        panic!("Internal error on line {}: {err}", line_num + 1)
+                    });
+
+                    assert!(!(o.op_val.is_none() && o.mode != AddressMode::Implied),"Internal error on line {}: no op val but not implied instruction for opcode {}", line_num+1, o.op);
+                    assert!(!(o.mode == AddressMode::Implied && o.width != 1), "Internal error on line {}: implied mode for opcode {} but width not 1: {o:#?}", line_num+1, o.op);
 
                     // Things are mutable here as we may have to fixup op_val for branches before
                     // emitting bytes below.
@@ -854,7 +776,7 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
 ///
 /// # Errors
 /// Any parsing error of the input stream can be returned in Result.
-pub fn parse(ty: Type, lines: Lines<BufReader<File>>) -> Result<Assembly> {
+pub fn parse(ty: Type, lines: Lines<BufReader<File>>, debug: bool) -> Result<Assembly> {
     // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
     // while filling in a label mapping. The 2nd one does actual assembly over
     // the tokens with labels getting filled in from the map or computed as needed.
@@ -863,9 +785,9 @@ pub fn parse(ty: Type, lines: Lines<BufReader<File>>) -> Result<Assembly> {
     // for our AST. The labels map that comes back is complete so referencing keys
     // we lookup in later passes can use get_label to resolve them.
     let mut ast_output = pass1(ty, lines)?;
-    //    let (mut ast, mut labels) = pass1(lines)?;
 
-    // Do another run so we can fill in label references. Also compute addressing mode, validate and set pc.
+    // Do another run so we can fill in label references.
+    // Also compute addressing mode, validate and set pc.
     compute_refs(ty, &mut ast_output)?;
 
     // Verify all the labels defined got values (EQU and location definitions/references line up)
@@ -889,6 +811,19 @@ pub fn parse(ty: Type, lines: Lines<BufReader<File>>) -> Result<Assembly> {
     }
     if !errors.is_empty() {
         return Err(eyre!(errors));
+    }
+
+    // If debug print this out
+    if debug {
+        println!("AST:\n");
+        for a in &ast_output.ast {
+            println!("{a:?}");
+        }
+        println!();
+        println!("Labels:\n");
+        for (k, v) in &ast_output.labels {
+            println!("{k:?} -> {v:?}");
+        }
     }
 
     // Finally generate the output
@@ -973,4 +908,25 @@ lazy_static! {
             }
         }
     };
+}
+
+fn find_mode(v: TokenVal, operation: &Operation) -> AddressMode {
+    match v {
+        TokenVal::Val8(_) => match (operation.x_index, operation.y_index) {
+            (true, false) => AddressMode::ZeroPageX,
+            (false, true) => AddressMode::ZeroPageY,
+            (false, false) => AddressMode::ZeroPage,
+            (true, true) => {
+                panic!("can't have x and y index set - {operation:?}");
+            }
+        },
+        TokenVal::Val16(_) => match (operation.x_index, operation.y_index) {
+            (true, false) => AddressMode::AbsoluteX,
+            (false, true) => AddressMode::AbsoluteY,
+            (false, false) => AddressMode::Absolute,
+            (true, true) => {
+                panic!("can't have x and y index set - {operation:?}");
+            }
+        },
+    }
 }

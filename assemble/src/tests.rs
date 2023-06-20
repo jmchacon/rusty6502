@@ -37,7 +37,7 @@ macro_rules! assemble_test {
 
                       let file = File::open(path)?;
                       let lines = io::BufReader::new(file).lines();
-                      let asm = parse(t, lines)?;
+                      let asm = parse(t, lines, true)?;
 
                       let diff = image
                           .iter()
@@ -97,7 +97,7 @@ macro_rules! bad_assemble_test {
                     let file = File::open(path)?;
                     let lines = io::BufReader::new(file).lines();
 
-                    let asm = parse(Type::NMOS, lines);
+                    let asm = parse(Type::NMOS, lines, true);
                     assert!(asm.is_err(), "Didn't get error for {}", a.asm);
                     let e = asm.err().unwrap();
                     assert!(e.to_string().contains(a.error), "Missing error string {} for {e:?}", a.error);
@@ -154,5 +154,29 @@ bad_assemble_test!(
   bad_label: BadAssembleTest{
       asm: "bad_label.asm",
       error: "missing data",
+  }
+  bad_label2: BadAssembleTest{
+      asm: "bad_label2.asm",
+      error: "Label START was never defined",
+  }
+  bad_opcode: BadAssembleTest{
+      asm: "bad_opcode.asm",
+      error: "opcode LDA doesn't support mode",
+  }
+  bad_opcode2: BadAssembleTest{
+      asm: "bad_opcode2.asm",
+      error: "opcode LDA doesn't support mode -",
+  }
+  bad_opcode3: BadAssembleTest{
+      asm: "bad_opcode3.asm",
+      error: "Immediate must have an 8 bit arg",
+  }
+  bad_opcode4: BadAssembleTest{
+      asm: "bad_opcode4.asm",
+      error: "Indirect must have a 16 bit arg",
+  }
+  bad_token: BadAssembleTest{
+      asm: "bad_token.asm",
+      error: "Error parsing label",
   }
 );

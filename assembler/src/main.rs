@@ -27,7 +27,7 @@ fn main() -> Result<()> {
 
     let lines = read_lines(args.filename)?;
 
-    match parse(args.cpu_type, lines) {
+    match parse(args.cpu_type, lines, false) {
         Err(e) => Err(e),
         Ok(res) => {
             write(Path::new(args.output.as_str()), res.bin)?;
