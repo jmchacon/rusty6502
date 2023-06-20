@@ -179,4 +179,8 @@ bad_assemble_test!(
       asm: "bad_token.asm",
       error: "Error parsing label",
   }
+  bad_branch: BadAssembleTest{
+      asm: "bad_branch.asm",
+      error: "either not 8 bit or out of range",
+  }
 );

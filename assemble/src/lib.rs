@@ -676,23 +676,16 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                     if let Some(val) = &o.op_val {
                         let val = match val {
                             OpVal::Label(s) => {
-                                if s == "*" {
-                                    TokenVal::Val16(o.pc)
-                                } else {
-                                    // SAFETY: We just checked labels above has everything referenced and filled in.
-                                    // The one exception is * which we just handled.
-                                    unsafe {
-                                        get_label(&ast_output.labels, s).val.unwrap_unchecked()
-                                    }
-                                }
+                                // SAFETY: We just checked labels above has everything referenced and filled in.
+                                // The one exception is * which we just handled.
+                                unsafe { get_label(&ast_output.labels, s).val.unwrap_unchecked() }
                             }
                             OpVal::Val(t) => *t,
                         };
                         match val {
                             TokenVal::Val8(b) => {
-                                if o.width != 2 {
-                                    return Err(eyre!("Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode));
-                                }
+                                assert!(o.width == 2,"Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode);
+
                                 res.bin[usize::from(o.pc + 1)] = b;
                                 write!(
                                     output,
@@ -702,9 +695,8 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                                 .unwrap();
                             }
                             TokenVal::Val16(b) => {
-                                if o.width != 3 {
-                                    return Err(eyre!("Internal error on line {}: got 16 bit value and expect 8 bit for op {} and mode {}", line_num+1, o.op, o.mode));
-                                }
+                                assert!(o.width == 3,"Internal error on line {}: got 16 bit value and expect 8 bit for op {} and mode {}", line_num+1, o.op, o.mode);
+
                                 // Store 16 bit values in little endian.
                                 let low = (b & 0x00FF) as u8;
                                 let high = ((b & 0xFF00) >> 8) as u8;
@@ -719,11 +711,11 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                             }
                         };
                         let op = &o.op;
-                        let val = if let Some(val) = &o.op_val {
-                            format!("{val}")
-                        } else {
-                            String::new()
-                        };
+                        let val: String;
+                        // SAFETY: we already know this has a value
+                        unsafe {
+                            val = format!("{}", o.op_val.as_ref().unwrap_unchecked());
+                        }
 
                         // TODO(jchacon): Can we use disassemble here instead
                         //                of duplicating this logic?
