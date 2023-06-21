@@ -37,7 +37,7 @@ ORG $C000
 	        AND #$F0  	; [4] see text
 	        STA N1H
        		JSR ADD
-    	    JSR A6502
+		JSR A6502
 	        JSR COMPARE
 	        BNE DONE
 	        JSR SUB
@@ -149,9 +149,9 @@ ORG $C000
 	;;  if N1L - N2L >= 0, then subtract N2 & $F0
 	;;  if N1L - N2L <  0, then subtract (N2 & $F0) + $0F + 1 (carry is clear)
 	;;
-        SBC N2H,X
-        BCS S12
-        SBC #$5F  	; subtract $60 (carry is clear)
+        	SBC N2H,X
+       		BCS S12
+	        SBC #$5F  	; subtract $60 (carry is clear)
 	S12     STA AR
 	        RTS
 
