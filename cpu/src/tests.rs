@@ -1,6 +1,7 @@
 use crate::{
-    CPUError, CPUState, ChipDef, Cpu, Flags, FlatRAM, InterruptState, InterruptStyle, OpState,
-    Tick, Type, Vectors, P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
+    disassemble, CPUError, CPUState, ChipDef, Cpu, Flags, FlatRAM, InterruptState, InterruptStyle,
+    OpState, Tick, Type, Vectors, P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO,
+    STACK_START,
 };
 use chip::Chip;
 use color_eyre::eyre::{eyre, Result};
@@ -1089,6 +1090,8 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram);
+            println!("{s}");
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1304,6 +1307,8 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram);
+            println!("{s}");
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1353,6 +1358,8 @@ rom_test!(
         Ok(ret)
       }),
       end_check: |old, cpu| {
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram);
+            println!("{s}");
             old == 0xC66E || cpu.ram.read(0x0002) != 0x00 || cpu.ram.read(0x0003) != 0x00
       },
       success_check: |old, cpu| {

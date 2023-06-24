@@ -749,11 +749,13 @@ pub struct Cpu<'a> {
     // If set `debug_string` will be passed a CPU state in string form on each instruction.
     // NOTE: This is very expensive to do on every instruction so only turn this on
     //       for short durations or be prepared for an order of magnitude slowdown.
-    //       At the expense of memory using debug will be faster as resolution on happens
+    //       At the expense of memory using debug will be faster as resolution there happens
     //       on-demand.
     debug_string: Option<&'a dyn Fn(String)>,
 
-    // If set `debug` will be passed a raw `CpuState` on each instruction.
+    // If set `debug` will be passed a raw `CpuState` on each instruction. The RAM
+    // dump only sets the 3 bytes needed for the current PC value. Otherwise this
+    // is very slow.
     // NOTE: This includes a memory dump which will add up if these are stored.
     debug: Option<&'a dyn Fn() -> Rc<RefCell<CPUState>>>,
 
