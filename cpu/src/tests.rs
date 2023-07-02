@@ -120,15 +120,16 @@ fn setup(
     let mut r = Box::new(r);
     r.power_on();
 
-    let def = Box::new(ChipDef {
+    let def = ChipDef {
         cpu_type: t,
-        ram: Box::leak(r),
+        ram: r,
         irq,
         nmi,
         rdy: None,
-    });
+        io_ports_input: None,
+    };
 
-    let mut cpu = Cpu::new(Box::leak(def));
+    let mut cpu = Cpu::new(def);
     cpu.set_debug_string(debug_string);
     cpu.set_debug(debug);
     cpu
@@ -1090,7 +1091,7 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
-            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram);
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
             println!("{s}");
             old == cpu.pc.0
         },
@@ -1307,7 +1308,7 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
-            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram);
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
             println!("{s}");
             old == cpu.pc.0
         },
@@ -1358,7 +1359,7 @@ rom_test!(
         Ok(ret)
       }),
       end_check: |old, cpu| {
-            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram);
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
             println!("{s}");
             old == 0xC66E || cpu.ram.read(0x0002) != 0x00 || cpu.ram.read(0x0003) != 0x00
       },

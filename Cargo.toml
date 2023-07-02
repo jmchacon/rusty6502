@@ -8,6 +8,7 @@ members = [
     "./cpu",
     "./disassembler",
     "./handasm",
+    "./io",
     "./irq",
     "./memory",
 ]
@@ -20,6 +21,7 @@ default-members = [
     "./cpu",
     "./disassembler",
     "./handasm",
+    "./io",
     "./irq",
     "./memory",
 ]
