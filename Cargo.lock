@@ -31,7 +31,7 @@ name = "assemble"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
- "lazy_static",
+ "once_cell",
  "regex",
  "rusty6502",
 ]
@@ -71,7 +71,7 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 name = "c64basic"
 version = "0.1.0"
 dependencies = [
- "lazy_static",
+ "once_cell",
  "rusty6502",
  "strum",
  "strum_macros",
@@ -163,8 +163,8 @@ dependencies = [
  "color-eyre",
  "io",
  "irq",
- "lazy_static",
  "memory",
+ "once_cell",
  "rand",
  "strum",
  "strum_macros",
@@ -287,12 +287,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lazy_static"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
-
-[[package]]
 name = "libc"
 version = "0.2.144"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -334,9 +328,9 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.17.1"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7e5500299e16ebb147ae15a00a942af264cf3688f47923b8fc2cd5858f23ad3"
+checksum = "dd8b5dd2ae5ed71462c540258bedcb51965123ad7e7ccf4b9a8cafaa4a63576d"
 
 [[package]]
 name = "os_str_bytes"

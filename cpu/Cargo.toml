@@ -11,7 +11,7 @@ io  = { path = "../io", version = "~0.1" }
 irq  = { path = "../irq", version = "~0.1" }
 memory  = { path = "../memory", version = "~0.1" }
 color-eyre = { workspace = true }
-lazy_static = { workspace = true }
+once_cell = { workspace = true }
 rand = { workspace = true }
 strum_macros = { workspace = true }
 strum = { workspace = true }

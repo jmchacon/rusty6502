@@ -1,6 +1,5 @@
 //! c64basic provides support for decoding c64 basic programs.
-
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use rusty6502::prelude::*;
 use std::collections::HashMap;
 use std::fmt::{self, Write};
@@ -812,8 +811,8 @@ const KEYWORD_HIGH: u8 = 0xCB;
 const KEYWORD_INVALID_LOW: u8 = KEYWORD_HIGH + 1;
 const KEYWORD_INVALID_HIGH: u8 = 0xFF;
 
-lazy_static! {
-    static ref KEYWORDS: HashMap<u8, Keyword> = HashMap::from([
+static KEYWORDS: Lazy<HashMap<u8, Keyword>> = Lazy::new(|| {
+    HashMap::from([
         (0x80, Keyword::END),
         (0x81, Keyword::FOR),
         (0x82, Keyword::NEXT),
@@ -890,5 +889,5 @@ lazy_static! {
         (0xC9, Keyword::RIGHT),
         (0xCA, Keyword::MID),
         (0xCB, Keyword::GO),
-    ]);
-}
+    ])
+});

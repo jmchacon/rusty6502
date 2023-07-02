@@ -3,7 +3,7 @@
 //! system.
 
 use color_eyre::eyre::{eyre, Result};
-use lazy_static::lazy_static;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use rusty6502::prelude::*;
 use std::collections::HashMap;
@@ -891,16 +891,12 @@ fn parse_label(label: &str) -> Result<String> {
 
 const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-]+$";
 
-lazy_static! {
-    static ref RE: Regex = {
-        match Regex::new(LABEL) {
-            Ok(re) => re,
-            Err(err) => {
-                panic!("Error parsing regex {LABEL} - {err}");
-            }
-        }
-    };
-}
+static RE: Lazy<Regex> = Lazy::new(|| match Regex::new(LABEL) {
+    Ok(re) => re,
+    Err(err) => {
+        panic!("Error parsing regex {LABEL} - {err}");
+    }
+});
 
 fn find_mode(v: TokenVal, operation: &Operation) -> AddressMode {
     match v {

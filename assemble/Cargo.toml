@@ -8,5 +8,5 @@ rust-version.workspace = true
 [dependencies]
 rusty6502  = { path = "../", version = "~0.1" }
 color-eyre = { workspace = true }
+once_cell = { workspace = true }
 regex = { workspace = true }
-lazy_static = { workspace = true }

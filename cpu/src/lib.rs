@@ -853,7 +853,7 @@ impl PartialEq for Cpu<'_> {
 }
 
 /// Define the characteristics of the 6502 wanted.
-pub struct ChipDef {
+pub struct ChipDef<'a> {
     /// The CPU type.
     pub cpu_type: Type,
 
@@ -861,14 +861,14 @@ pub struct ChipDef {
     pub ram: Box<dyn Memory>,
 
     /// irq is an optional IRQ source to trigger the IRQ line.
-    pub irq: Option<&'static dyn irq::Sender>,
+    pub irq: Option<&'a dyn irq::Sender>,
 
     /// nmi is an optional IRQ source to trigger the NMI line.
-    pub nmi: Option<&'static dyn irq::Sender>,
+    pub nmi: Option<&'a dyn irq::Sender>,
 
     /// rdy is an optional IRQ source to trigger the RDY line (which halts the CPU).
     /// This is not technically an IRQ but acts the same.
-    pub rdy: Option<&'static dyn irq::Sender>,
+    pub rdy: Option<&'a dyn irq::Sender>,
 
     /// io_ports_input is an optional set of i/o definitions. Will only be used in 6510
     /// cases and is invalid otherwise. If a 6510 is defined without this filled in
@@ -1074,7 +1074,7 @@ impl<'a> Cpu<'a> {
     /// # Panics
     /// Passing `io_ports_input` on anything except a 6510 is invalid.
     #[must_use]
-    pub fn new(def: ChipDef) -> Self {
+    pub fn new(def: ChipDef<'a>) -> Self {
         let ram: Box<dyn Memory>;
         let io: Option<Rc<RefCell<[io::Style; 6]>>>;
         match def.cpu_type {
