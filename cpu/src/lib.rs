@@ -747,18 +747,10 @@ pub struct Cpu<'a> {
     // Program counter
     pc: Wrapping<u16>,
 
-    // If set `debug_string` will be passed a CPU state in string form on each instruction.
-    // NOTE: This is very expensive to do on every instruction so only turn this on
-    //       for short durations or be prepared for an order of magnitude slowdown.
-    //       At the expense of memory using debug will be faster as resolution there happens
-    //       on-demand.
-    debug_string: Option<&'a dyn Fn(String)>,
-
-    // If set `debug` will be passed a raw `CpuState` on each instruction. The RAM
-    // dump only sets the 3 bytes needed for the current PC value. Otherwise this
-    // is very slow.
-    // NOTE: This includes a memory dump which will add up if these are stored.
-    debug: Option<&'a dyn Fn() -> Rc<RefCell<CPUState>>>,
+    // If set `debug` will be passed a raw `CpuState` on each instruction.
+    // The boolean returns indicates whether to include a full memory dump (slow)
+    // or just to fill in the current PC values so dissembly can function.
+    debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
 
     // Initialized or not.
     state: State,
@@ -1083,82 +1075,55 @@ impl<'a> Cpu<'a> {
     /// Passing `io_ports_input` on anything except a 6510 is invalid.
     #[must_use]
     pub fn new(def: ChipDef) -> Self {
+        let ram: Box<dyn Memory>;
+        let io: Option<Rc<RefCell<[io::Style; 6]>>>;
         match def.cpu_type {
             Type::NMOS | Type::Ricoh | Type::CMOS => {
                 assert!(
                     def.io_ports_input.is_none(),
                     "I/O ports can only be defined on a 6510"
                 );
-                Cpu {
-                    cpu_type: def.cpu_type,
-                    a: Wrapping(0x00),
-                    x: Wrapping(0x00),
-                    y: Wrapping(0x00),
-                    s: Wrapping(0x00),
-                    p: Flags(0x00),
-                    pc: Wrapping(0x0000),
-                    debug: None,
-                    debug_string: None,
-                    state: State::Off,
-                    irq_raised: InterruptStyle::default(),
-                    irq: def.irq,
-                    nmi: def.nmi,
-                    rdy: def.rdy,
-                    interrupt_state: InterruptState::default(),
-                    skip_interrupt: SkipInterrupt::default(),
-                    clocks: 0,
-                    ram: def.ram,
-                    op: Operation::default(),
-                    op_raw: 0x00,
-                    op_val: 0x00,
-                    op_tick: Tick::Reset,
-                    reset_tick: Tick::Reset,
-                    op_addr: 0x0000,
-                    addr_done: OpState::Done,
-                    halt_opcode: 0x00,
-                    halt_pc: 0x0000,
-                    io_pins: None,
-                }
+                ram = def.ram;
+                io = None;
             }
             Type::NMOS6510 => {
                 let input = match def.io_ports_input {
                     Some(io) => io,
                     None => [io::Style::In(&io::PullDown {}); 6],
                 };
-                let ram = Box::new(C6510ram::new(def.ram, input));
-                let io = ram.io_state.clone();
-                Cpu {
-                    cpu_type: def.cpu_type,
-                    a: Wrapping(0x00),
-                    x: Wrapping(0x00),
-                    y: Wrapping(0x00),
-                    s: Wrapping(0x00),
-                    p: Flags(0x00),
-                    pc: Wrapping(0x0000),
-                    debug: None,
-                    debug_string: None,
-                    state: State::Off,
-                    irq_raised: InterruptStyle::default(),
-                    irq: def.irq,
-                    nmi: def.nmi,
-                    rdy: def.rdy,
-                    interrupt_state: InterruptState::default(),
-                    skip_interrupt: SkipInterrupt::default(),
-                    clocks: 0,
-                    // TODO(jchacon): Add a Drop impl for this which unleaks the box so we can drop it cleanly.
-                    ram,
-                    op: Operation::default(),
-                    op_raw: 0x00,
-                    op_val: 0x00,
-                    op_tick: Tick::Reset,
-                    reset_tick: Tick::Reset,
-                    op_addr: 0x0000,
-                    addr_done: OpState::Done,
-                    halt_opcode: 0x00,
-                    halt_pc: 0x0000,
-                    io_pins: Some(io),
-                }
+                let r = Box::new(C6510ram::new(def.ram, input));
+                io = Some(r.io_state.clone());
+                ram = r;
             }
+        }
+        Cpu {
+            cpu_type: def.cpu_type,
+            a: Wrapping(0x00),
+            x: Wrapping(0x00),
+            y: Wrapping(0x00),
+            s: Wrapping(0x00),
+            p: Flags(0x00),
+            pc: Wrapping(0x0000),
+            debug: None,
+            state: State::Off,
+            irq_raised: InterruptStyle::default(),
+            irq: def.irq,
+            nmi: def.nmi,
+            rdy: def.rdy,
+            interrupt_state: InterruptState::default(),
+            skip_interrupt: SkipInterrupt::default(),
+            clocks: 0,
+            ram,
+            op: Operation::default(),
+            op_raw: 0x00,
+            op_val: 0x00,
+            op_tick: Tick::Reset,
+            reset_tick: Tick::Reset,
+            op_addr: 0x0000,
+            addr_done: OpState::Done,
+            halt_opcode: 0x00,
+            halt_pc: 0x0000,
+            io_pins: io,
         }
     }
 
@@ -1177,13 +1142,8 @@ impl<'a> Cpu<'a> {
         Ok(io.borrow()[pin])
     }
 
-    /// Use this to enable or disable string based debugging dynamically.
-    pub fn set_debug_string(&mut self, d: Option<&'a dyn Fn(String)>) {
-        self.debug_string = d;
-    }
-
     /// Use this to enable or disable state based debugging dynamically.
-    pub fn set_debug(&mut self, d: Option<&'a dyn Fn() -> Rc<RefCell<CPUState>>>) {
+    pub fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
         self.debug = d;
     }
 
@@ -1195,19 +1155,11 @@ impl<'a> Cpu<'a> {
                 return;
             }
         }
-        if (self.debug_string.is_none() && self.debug.is_none()) || self.op_tick != Tick::Tick1 {
+        if self.debug.is_none() || self.op_tick != Tick::Tick1 {
             return;
         }
-        if let Some(d) = self.debug_string {
-            let mut pre = "";
-            if self.state == State::Reset {
-                pre = "reset ";
-            }
-            let out = format!("{pre}{self}");
-            d(out);
-        }
         if let Some(d) = self.debug {
-            let ref_state = d();
+            let (ref_state, full) = d();
             let mut state = ref_state.borrow_mut();
             state.cpu_type = self.cpu_type;
             state.state = self.state;
@@ -1221,13 +1173,18 @@ impl<'a> Cpu<'a> {
             state.op_val = self.op_val;
             state.op_addr = self.op_addr;
 
-            // We don't need to memcpy 64k. We just need
-            // the 3 possible instructions bytes at PC.
-            let ram = self.ram.ram();
-            let pc = usize::from(self.pc.0);
-            state.ram[pc] = ram[pc];
-            state.ram[pc + 1] = ram[pc + 1];
-            state.ram[pc + 2] = ram[pc + 2];
+            if full {
+                // Do a full copy. This is expensive for every instruction.
+                state.ram = *self.ram.ram();
+            } else {
+                // We don't need to memcpy 64k. We just need
+                // the 3 possible instructions bytes at PC.
+                let ram = self.ram.ram();
+                let pc = usize::from(self.pc.0);
+                state.ram[pc] = ram[pc];
+                state.ram[pc + 1] = ram[pc + 1];
+                state.ram[pc + 2] = ram[pc + 2];
+            }
         }
     }
 

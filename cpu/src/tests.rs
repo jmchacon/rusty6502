@@ -21,18 +21,25 @@ use std::rc::Rc;
 // instructions is all one needs. The functional test below for
 // instance runs millions of instructions which can lead to very
 // large buffering during a test run.
+//
+// As grabbing a memory footprint can be expensive optionally
+// define how often to do this.
 struct Debug<T> {
     state: Vec<Rc<RefCell<T>>>,
     cur: RefCell<usize>,
     wrapped: RefCell<bool>,
+    full_dump_every_n: usize,
+    count: RefCell<usize>,
 }
 
 impl<T: Display + std::default::Default> Debug<T> {
-    fn new(cap: usize) -> Self {
+    fn new(cap: usize, full_dump_every_n: usize) -> Self {
         let mut d = Self {
             state: Vec::with_capacity(cap),
             cur: RefCell::new(0),
             wrapped: RefCell::new(false),
+            full_dump_every_n,
+            count: RefCell::new(0),
         };
         for _ in 0..cap {
             d.state.push(Rc::new(RefCell::new(T::default())));
@@ -65,22 +72,20 @@ impl<T: Display + std::default::Default> Debug<T> {
     }
 }
 
-impl Debug<String> {
-    fn debug(&self, s: String) {
-        let r = &*self.state[*self.cur.borrow()];
-        let _ = &*r.replace(s);
-        // Now roll the circular buffer portion of this.
-        self.roll_buffer();
-    }
-}
-
 impl Debug<CPUState> {
-    fn debug(&self) -> Rc<RefCell<CPUState>> {
+    fn debug(&self) -> (Rc<RefCell<CPUState>>, bool) {
         let ret = Rc::clone(&self.state[*self.cur.borrow()]);
 
         // Now roll the circular buffer portion of this.
         self.roll_buffer();
-        ret
+        let mut mem = false;
+        if self.full_dump_every_n != usize::MAX {
+            *self.count.borrow_mut() += 1;
+            if (*self.count.borrow() % self.full_dump_every_n) == 0 {
+                mem = true;
+            }
+        }
+        (ret, mem)
     }
 }
 
@@ -101,8 +106,7 @@ fn setup(
     fill: u8,
     irq: Option<&'static dyn Sender>,
     nmi: Option<&'static dyn Sender>,
-    debug_string: Option<&'static dyn Fn(String)>,
-    debug: Option<&'static dyn Fn() -> Rc<RefCell<CPUState>>>,
+    debug: Option<&'static dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
 ) -> Cpu<'static> {
     // NOTE: For tests only we simply put all this on the heap and then
     //       leak things with leak so we can handle all the setup pieces.
@@ -130,7 +134,6 @@ fn setup(
     };
 
     let mut cpu = Cpu::new(def);
-    cpu.set_debug_string(debug_string);
     cpu.set_debug(debug);
     cpu
 }
@@ -183,7 +186,7 @@ macro_rules! init_test {
                             iter = 100;
                         }
                         for _ in 0..=iter {
-                           let mut cpu = setup($type, 0x1212, 0xEA, None, None, None, None);
+                           let mut cpu = setup($type, 0x1212, 0xEA, None, None, None);
 
                             // This should fail
                             assert!(cpu.reset().is_err(), "reset worked before power_on");
@@ -229,7 +232,7 @@ macro_rules! tick_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let mut cpu = setup($type, 0x1212, 0xAA, None, None, None, None);
+                        let mut cpu = setup($type, 0x1212, 0xAA, None, None, None);
 
                         // This should fail as we haven't powered on/reset.
                         {
@@ -303,11 +306,11 @@ macro_rules! nop_hlt_test {
                     fn $name() -> Result<()> {
                         let test = $test;
                         let addr = u16::from(test.halt) << 8 | u16::from(test.halt);
-                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(debug), None);
+                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128, 1)));
+                        let debug = Box::leak(Box::new(|| d.debug()));
+                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(debug));
                         // Make a copy so we can compare if RAM changed.
-                        let mut canonical = setup(Type::NMOS, addr, test.fill, None, None, None, None);
+                        let mut canonical = setup(Type::NMOS, addr, test.fill, None, None, None);
                         cpu.power_on()?;
                         canonical.a = cpu.a;
                         canonical.x = cpu.x;
@@ -453,9 +456,9 @@ macro_rules! load_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug), None);
+                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128, 1)));
+                        let debug = Box::leak(Box::new(|| d.debug()));
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0xA1); // LDA ($EA,x)
@@ -542,9 +545,9 @@ macro_rules! store_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug), None);
+                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128, 1)));
+                        let debug = Box::leak(Box::new(|| d.debug()));
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0x81); // STA ($EA,x)
@@ -641,9 +644,9 @@ fn irq_and_nmi() -> Result<()> {
     }));
 
     // TODO(jchacon): Make this a macro so we can test for CMOS too and the D bit flips.
-    let d = Box::leak(Box::new(Debug::<String>::new(128)));
-    let debug = Box::leak(Box::new(|s| d.debug(s)));
-    let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(i), Some(n), Some(debug), None);
+    let d = Box::leak(Box::new(Debug::<CPUState>::new(128, 1)));
+    let debug = Box::leak(Box::new(|| d.debug()));
+    let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(i), Some(n), Some(debug));
     cpu.power_on()?;
 
     cpu.ram.write(IRQ_ADDR, 0x69); // ADC #AB
@@ -979,9 +982,9 @@ macro_rules! rom_test {
                         let r = $rom_test;
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			                  // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128)));
+                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128, usize::MAX)));
                         let debug = Box::leak(Box::new(|| d.debug()));
-                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None, Some(debug));
+                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, Some(debug));
                         cpu.power_on()?;
 
                         // Get the input ROM and poke it into place.
