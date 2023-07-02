@@ -1,3 +1,5 @@
+#![feature(lazy_cell)]
+
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
 use std::cell::RefCell;
 use std::num::Wrapping;

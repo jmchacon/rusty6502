@@ -1,10 +1,12 @@
+#![feature(lazy_cell)]
+
 //! c64basic provides support for decoding c64 basic programs.
-use once_cell::sync::Lazy;
 use rusty6502::prelude::*;
 use std::collections::HashMap;
 use std::fmt::{self, Write};
 use std::num::Wrapping;
 use std::str;
+use std::sync::LazyLock;
 use strum_macros::{Display, EnumIter, EnumString};
 
 #[cfg(test)]
@@ -811,7 +813,7 @@ const KEYWORD_HIGH: u8 = 0xCB;
 const KEYWORD_INVALID_LOW: u8 = KEYWORD_HIGH + 1;
 const KEYWORD_INVALID_HIGH: u8 = 0xFF;
 
-static KEYWORDS: Lazy<HashMap<u8, Keyword>> = Lazy::new(|| {
+static KEYWORDS: LazyLock<HashMap<u8, Keyword>> = LazyLock::new(|| {
     HashMap::from([
         (0x80, Keyword::END),
         (0x81, Keyword::FOR),

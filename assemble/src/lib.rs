@@ -1,9 +1,10 @@
+#![feature(lazy_cell)]
+
 //! `assemble` provides methods for processing a list of input
 //! lines into a binary 64k image file suitable for a 6502
 //! system.
 
 use color_eyre::eyre::{eyre, Result};
-use once_cell::sync::Lazy;
 use regex::Regex;
 use rusty6502::prelude::*;
 use std::collections::HashMap;
@@ -11,6 +12,7 @@ use std::fmt::{self, Write};
 use std::io::BufReader;
 use std::num::Wrapping;
 use std::str::FromStr;
+use std::sync::LazyLock;
 use std::{fs::File, io::Lines};
 
 #[cfg(test)]
@@ -891,7 +893,7 @@ fn parse_label(label: &str) -> Result<String> {
 
 const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-]+$";
 
-static RE: Lazy<Regex> = Lazy::new(|| match Regex::new(LABEL) {
+static RE: LazyLock<Regex> = LazyLock::new(|| match Regex::new(LABEL) {
     Ok(re) => re,
     Err(err) => {
         panic!("Error parsing regex {LABEL} - {err}");
