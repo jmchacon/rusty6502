@@ -10,7 +10,9 @@ chip  = { path = "../chip", version = "~0.1" }
 io  = { path = "../io", version = "~0.1" }
 irq  = { path = "../irq", version = "~0.1" }
 memory  = { path = "../memory", version = "~0.1" }
+
 color-eyre = { workspace = true }
+proc-macro2 = { workspace = true }
 rand = { workspace = true }
 strum_macros = { workspace = true }
 strum = { workspace = true }

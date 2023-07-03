@@ -31,6 +31,7 @@ name = "assemble"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+ "proc-macro2",
  "regex",
  "rusty6502",
 ]
@@ -42,6 +43,7 @@ dependencies = [
  "assemble",
  "clap",
  "color-eyre",
+ "proc-macro2",
  "rusty6502",
 ]
 
@@ -70,6 +72,7 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 name = "c64basic"
 version = "0.1.0"
 dependencies = [
+ "proc-macro2",
  "rusty6502",
  "strum",
  "strum_macros",
@@ -92,6 +95,7 @@ name = "chip"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+ "proc-macro2",
 ]
 
 [[package]]
@@ -151,6 +155,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "color-eyre",
+ "proc-macro2",
 ]
 
 [[package]]
@@ -162,6 +167,7 @@ dependencies = [
  "io",
  "irq",
  "memory",
+ "proc-macro2",
  "rand",
  "strum",
  "strum_macros",
@@ -175,6 +181,7 @@ dependencies = [
  "c64basic",
  "clap",
  "color-eyre",
+ "proc-macro2",
  "rusty6502",
 ]
 
@@ -232,6 +239,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "color-eyre",
+ "proc-macro2",
 ]
 
 [[package]]
@@ -255,6 +263,9 @@ checksum = "ce23b50ad8242c51a442f3ff322d56b02f08852c77e4c0b4d3fd684abc89c683"
 [[package]]
 name = "io"
 version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+]
 
 [[package]]
 name = "io-lifetimes"
@@ -270,6 +281,9 @@ dependencies = [
 [[package]]
 name = "irq"
 version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+]
 
 [[package]]
 name = "is-terminal"
@@ -304,6 +318,9 @@ checksum = "2dffe52ecf27772e601905b7522cb4ef790d2cc203488bbd0e2fe85fcb74566d"
 [[package]]
 name = "memory"
 version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -373,9 +390,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.58"
+version = "1.0.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa1fb82fc0c281dd9671101b66b771ebbe1eaf967b96ac8740dcba4b70005ca8"
+checksum = "dec2b086b7a862cf4de201096214fa870344cf922b2b30c167badb3af3195406"
 dependencies = [
  "unicode-ident",
 ]
