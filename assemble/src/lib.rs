@@ -1,5 +1,3 @@
-#![feature(lazy_cell)]
-
 //! `assemble` provides methods for processing a list of input
 //! lines into a binary 64k image file suitable for a 6502
 //! system.
@@ -12,7 +10,7 @@ use std::fmt::{self, Write};
 use std::io::BufReader;
 use std::num::Wrapping;
 use std::str::FromStr;
-use std::sync::LazyLock;
+use std::sync::OnceLock;
 use std::{fs::File, io::Lines};
 
 #[cfg(test)]
@@ -882,7 +880,7 @@ fn parse_label(label: &str) -> Result<String> {
         return Ok(String::from(label));
     }
 
-    if RE.is_match(label) {
+    if re().is_match(label) {
         Ok(String::from(label))
     } else {
         Err(eyre!(
@@ -893,12 +891,15 @@ fn parse_label(label: &str) -> Result<String> {
 
 const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-]+$";
 
-static RE: LazyLock<Regex> = LazyLock::new(|| match Regex::new(LABEL) {
-    Ok(re) => re,
-    Err(err) => {
-        panic!("Error parsing regex {LABEL} - {err}");
-    }
-});
+fn re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| match Regex::new(LABEL) {
+        Ok(re) => re,
+        Err(err) => {
+            panic!("Error parsing regex {LABEL} - {err}");
+        }
+    })
+}
 
 fn find_mode(v: TokenVal, operation: &Operation) -> AddressMode {
     match v {

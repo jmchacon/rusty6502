@@ -1,7 +1,6 @@
-#![feature(lazy_cell)]
-
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
 use std::cell::RefCell;
+use std::fmt;
 use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 use std::rc::Rc;
@@ -13,7 +12,6 @@ use thiserror::Error;
 
 use color_eyre::eyre::{eyre, ErrReport, Result};
 use rand::Rng;
-use std::fmt;
 use strum_macros::{Display, EnumIter, EnumString};
 
 mod lookup;
