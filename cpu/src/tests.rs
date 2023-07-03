@@ -398,6 +398,8 @@ macro_rules! nop_hlt_test {
                                   tester!(true, d, "Error isn't a CPUError::Halted. Is '{err}'");
                             }
                         }
+                        println!("CPU - {cpu}");
+                        println!("CPU debug - {cpu:?}");
                         d.dump("nop dump");
                         Ok(())
                     }
