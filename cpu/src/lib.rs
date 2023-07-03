@@ -889,7 +889,6 @@ pub enum CPUError {
     },
 }
 
-#[derive(Copy, Clone)]
 enum Register {
     A,
     X,
