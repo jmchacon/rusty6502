@@ -889,6 +889,7 @@ pub enum CPUError {
     },
 }
 
+#[derive(Clone, Copy)]
 enum Register {
     A,
     X,
@@ -1133,7 +1134,7 @@ impl<'a> Cpu<'a> {
     /// will result in an error.
     pub fn io_pin(&self, pin: usize) -> Result<io::Style> {
         let Some(io) = &self.io_pins else {
-            return  Err(eyre!("I/O only defined for 6510"));
+            return Err(eyre!("I/O only defined for 6510"));
         };
         if pin > 5 {
             return Err(eyre!("I/O pin {pin} out of range"));
@@ -1146,14 +1147,9 @@ impl<'a> Cpu<'a> {
         self.debug = d;
     }
 
-    /// debug will emit a filled in value on the start of new instructions (assuming not frozen due to RDY)
+    /// debug will emit a filled in value on the start of new instructions.
+    /// If RDY is asserted it will simply repeat the previous state if at Tick1.
     pub fn debug(&self) {
-        // Only emit when we're going to run a new instruction and aren't frozen.
-        if let Some(rdy) = self.rdy {
-            if rdy.raised() {
-                return;
-            }
-        }
         if self.debug.is_none() || self.op_tick != Tick::Tick1 {
             return;
         }
@@ -1174,15 +1170,16 @@ impl<'a> Cpu<'a> {
 
             if full {
                 // Do a full copy. This is expensive for every instruction.
-                state.ram = *self.ram.ram();
+                self.ram.ram(&mut state.ram);
             } else {
                 // We don't need to memcpy 64k. We just need
                 // the 3 possible instructions bytes at PC.
-                let ram = self.ram.ram();
-                let pc = usize::from(self.pc.0);
-                state.ram[pc] = ram[pc];
-                state.ram[pc + 1] = ram[pc + 1];
-                state.ram[pc + 2] = ram[pc + 2];
+                state.ram[usize::from(self.pc.0)] = self.ram.read(self.pc.0);
+                // These could wrap around so make sure we don't go out of range.
+                let pc1 = (self.pc + Wrapping(1)).0;
+                state.ram[usize::from(pc1)] = self.ram.read(pc1);
+                let pc2 = (self.pc + Wrapping(2)).0;
+                state.ram[usize::from(pc2)] = self.ram.read(pc2);
             }
         }
     }
@@ -3847,7 +3844,7 @@ struct C6510ram {
     // allocating a new one each time but `ram` is not a mut function so
     // to build this requires mutating there by combining our 2 bytes plus
     // the underlying RAM together.
-    memory: Rc<RefCell<[u8; MAX_SIZE]>>,
+    memory: RefCell<[u8; MAX_SIZE]>,
 }
 
 impl C6510ram {
@@ -3859,7 +3856,7 @@ impl C6510ram {
             io_state: Rc::new(RefCell::new(input_dest)),
             input_io: input_dest,
             ram,
-            memory: Rc::new(RefCell::new([0; MAX_SIZE])), // Only here to provide a copy for ram()
+            memory: RefCell::new([0; MAX_SIZE]), // Only here to provide a copy for ram()
         }
     }
 }
@@ -3931,13 +3928,11 @@ impl Memory for C6510ram {
     }
 
     /// `ram` gives a copy of `FlatRAM` back out as an array.
-    fn ram(&self) -> &[u8; MAX_SIZE] {
-        *self.memory.borrow_mut() = *self.ram.ram();
+    fn ram(&self, dest: &mut [u8; MAX_SIZE]) {
+        self.ram.ram(&mut self.memory.borrow_mut());
         self.memory.borrow_mut()[0x00] = self.output_0x00;
         self.memory.borrow_mut()[0x01] = self.output_0x01;
-        // SAFETY: memory is only ever modified above and all mutable
-        //         borrows are done when we return.
-        unsafe { self.memory.try_borrow_unguarded().unwrap_unchecked() }
+        *dest = *self.memory.borrow();
     }
 }
 
@@ -3999,8 +3994,8 @@ impl Memory for FlatRAM {
     }
 
     /// `ram` gives a copy of `FlatRAM` back out as an array.
-    fn ram(&self) -> &[u8; MAX_SIZE] {
-        &self.memory
+    fn ram(&self, dest: &mut [u8; MAX_SIZE]) {
+        *dest = self.memory;
     }
 }
 

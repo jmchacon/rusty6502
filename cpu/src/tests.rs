@@ -100,17 +100,14 @@ macro_rules! tester {
 const RESET: u16 = 0x1FFE;
 const IRQ_ADDR: u16 = 0xD001;
 
-fn setup(
+fn setup<'a>(
     t: Type,
     hlt: u16,
     fill: u8,
-    irq: Option<&'static dyn Sender>,
-    nmi: Option<&'static dyn Sender>,
-    debug: Option<&'static dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
-) -> Cpu<'static> {
-    // NOTE: For tests only we simply put all this on the heap and then
-    //       leak things with leak so we can handle all the setup pieces.
-
+    irq: Option<&'a dyn Sender>,
+    nmi: Option<&'a dyn Sender>,
+    debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
+) -> Cpu<'a> {
     // This should halt the cpu if a test goes off the rails since
     // endless execution will eventually end up at the NMI vector (it's the first
     // one) which contains HLT instructions.
@@ -306,9 +303,9 @@ macro_rules! nop_hlt_test {
                     fn $name() -> Result<()> {
                         let test = $test;
                         let addr = u16::from(test.halt) << 8 | u16::from(test.halt);
-                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128, 1)));
-                        let debug = Box::leak(Box::new(|| d.debug()));
-                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(debug));
+                        let d = Debug::<CPUState>::new(128, 1);
+                        let debug = {|| d.debug()};
+                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(&debug));
                         // Make a copy so we can compare if RAM changed.
                         let mut canonical = setup(Type::NMOS, addr, test.fill, None, None, None);
                         cpu.power_on()?;
@@ -459,9 +456,9 @@ macro_rules! load_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128, 1)));
-                        let debug = Box::leak(Box::new(|| d.debug()));
-                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
+                        let d = Debug::<CPUState>::new(128, 1);
+                        let debug = {|| d.debug()};
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(&debug));
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0xA1); // LDA ($EA,x)
@@ -548,9 +545,9 @@ macro_rules! store_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128, 1)));
-                        let debug = Box::leak(Box::new(|| d.debug()));
-                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug));
+                        let d = Debug::<CPUState>::new(128, 1);
+                        let debug = {|| d.debug()};
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(&debug));
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0x81); // STA ($EA,x)
@@ -639,17 +636,17 @@ fn irq_and_nmi() -> Result<()> {
     // So this has to be done clock by clock and conditions checked at each.
 
     let nmi: u16 = 0x0202; // If executed should halt the processor but we'll put code at this PC.
-    let i = Box::leak(Box::new(Irq {
+    let i = Irq {
         raised: RefCell::new(false),
-    }));
-    let n = Box::leak(Box::new(Irq {
+    };
+    let n = Irq {
         raised: RefCell::new(false),
-    }));
+    };
 
     // TODO(jchacon): Make this a macro so we can test for CMOS too and the D bit flips.
-    let d = Box::leak(Box::new(Debug::<CPUState>::new(128, 1)));
-    let debug = Box::leak(Box::new(|| d.debug()));
-    let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(i), Some(n), Some(debug));
+    let d = Debug::<CPUState>::new(128, 1);
+    let debug = { || d.debug() };
+    let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(&i), Some(&n), Some(&debug));
     cpu.power_on()?;
 
     cpu.ram.write(IRQ_ADDR, 0x69); // ADC #AB
@@ -985,9 +982,9 @@ macro_rules! rom_test {
                         let r = $rom_test;
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			                  // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128, usize::MAX)));
-                        let debug = Box::leak(Box::new(|| d.debug()));
-                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, Some(debug));
+                        let d = Debug::<CPUState>::new(128, usize::MAX);
+                        let debug = {|| d.debug()};
+                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, Some(&debug));
                         cpu.power_on()?;
 
                         // Get the input ROM and poke it into place.
