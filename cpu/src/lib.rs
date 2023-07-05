@@ -486,8 +486,16 @@ impl Tick {
 /// Flags defines a type to represent the processor flags.
 /// It will print out with all of the flag values but otherwise
 /// can be treated as a u8 when needed.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+/// NOTE: S1 is always on so a default will create as such.
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Flags(u8);
+
+impl Default for Flags {
+    fn default() -> Self {
+        // S1 is always set.
+        Self(P_S1)
+    }
+}
 
 impl BitOr for Flags {
     type Output = Self;
@@ -567,6 +575,7 @@ impl BitAnd<Flags> for u8 {
     type Output = Flags;
 
     fn bitand(self, rhs: Flags) -> Self::Output {
+        // P_S1 always stays on
         Flags(self & rhs.0)
     }
 }
@@ -922,10 +931,10 @@ impl<'a> Chip for Cpu<'a> {
         self.state = State::Tick;
 
         // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
-        //                Ok, this technically only works like this in combination with SYNC being held high as well.
-        //                Otherwise it acts like a single step and continues after the next clock.
-        //                But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
-        //                time so "good enough".
+        // Ok, this technically only works like this in combination with SYNC being held high as well.
+        // Otherwise it acts like a single step and continues after the next clock.
+        // But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
+        // time so "good enough".
         if let Some(rdy) = self.rdy {
             if rdy.raised() {
                 return Ok(());
@@ -1091,7 +1100,8 @@ impl<'a> Cpu<'a> {
                     Some(io) => io,
                     None => [io::Style::In(&io::PullDown {}); 6],
                 };
-                let r = Box::new(C6510ram::new(def.ram, input));
+                let mut r = Box::new(C6510ram::new(def.ram, input));
+                r.power_on();
                 io = Some(r.io_state.clone());
                 ram = r;
             }
