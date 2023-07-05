@@ -29,8 +29,8 @@ impl InputSink for Pullup {
 
 /// `PullDown` represents a grounded input pin
 /// and is the default for `In` implementations.
-pub struct PullDown {}
-impl InputSink for PullDown {
+pub struct Pulldown {}
+impl InputSink for Pulldown {
     fn input(&self) -> bool {
         false
     }

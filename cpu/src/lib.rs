@@ -1098,7 +1098,7 @@ impl<'a> Cpu<'a> {
             Type::NMOS6510 => {
                 let input = match def.io_ports_input {
                     Some(io) => io,
-                    None => [io::Style::In(&io::PullDown {}); 6],
+                    None => [io::Style::In(&io::Pulldown {}); 6],
                 };
                 let mut r = Box::new(C6510ram::new(def.ram, input));
                 r.power_on();

@@ -250,6 +250,7 @@ fn c6510_io_def() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn c6510_io_tests() {
     // Mostly a copy from setup() but we want to define I/O here which we generally
     // never need.
@@ -274,7 +275,14 @@ fn c6510_io_tests() {
         irq: None,
         nmi: None,
         rdy: None,
-        io_ports_input: Some([io::Style::In(&io::Pullup {}); 6]),
+        io_ports_input: Some([
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pulldown {}),
+        ]),
     };
 
     let mut cpu = Cpu::new(def);
@@ -287,11 +295,17 @@ fn c6510_io_tests() {
         "C6510 RAM not working. Expected 0x56 at 0x1234 and got {ret}"
     );
 
-    // Verify we start as all pullups and as inputs.
+    // Verify we start as all pullups on 0-4, pulldown on 5 and as inputs.
     for i in 0..6 {
         match cpu.io_pin(i) {
             Ok(io) => match io {
-                io::Style::In(p) => assert!(p.input(), "i/o input not high?"),
+                io::Style::In(p) => {
+                    if i < 5 {
+                        assert!(p.input(), "i/o input {i} not high");
+                    } else {
+                        assert!(!p.input(), "i/o input 5 not low");
+                    }
+                }
                 io::Style::Out(_) => panic!("pin set to output?"),
             },
             Err(e) => panic!("io_pin returned error: {e:?}"),
