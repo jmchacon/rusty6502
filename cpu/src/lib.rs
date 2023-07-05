@@ -1,16 +1,17 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
 use std::cell::RefCell;
+use std::fmt;
 use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
 use std::rc::Rc;
 
 use chip::Chip;
+
 use memory::{Memory, MAX_SIZE};
 use thiserror::Error;
 
 use color_eyre::eyre::{eyre, ErrReport, Result};
 use rand::Rng;
-use std::fmt;
 use strum_macros::{Display, EnumIter, EnumString};
 
 mod lookup;
@@ -485,8 +486,16 @@ impl Tick {
 /// Flags defines a type to represent the processor flags.
 /// It will print out with all of the flag values but otherwise
 /// can be treated as a u8 when needed.
-#[derive(Copy, Clone, Debug, Default, PartialEq)]
+/// NOTE: S1 is always on so a default will create as such.
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Flags(u8);
+
+impl Default for Flags {
+    fn default() -> Self {
+        // S1 is always set.
+        Self(P_S1)
+    }
+}
 
 impl BitOr for Flags {
     type Output = Self;
@@ -566,6 +575,7 @@ impl BitAnd<Flags> for u8 {
     type Output = Flags;
 
     fn bitand(self, rhs: Flags) -> Self::Output {
+        // P_S1 always stays on
         Flags(self & rhs.0)
     }
 }
@@ -746,16 +756,10 @@ pub struct Cpu<'a> {
     // Program counter
     pc: Wrapping<u16>,
 
-    // If set `debug_string` will be passed a CPU state in string form on each instruction.
-    // NOTE: This is very expensive to do on every instruction so only turn this on
-    //       for short durations or be prepared for an order of magnitude slowdown.
-    //       At the expense of memory using debug will be faster as resolution on happens
-    //       on-demand.
-    debug_string: Option<&'a dyn Fn(String)>,
-
     // If set `debug` will be passed a raw `CpuState` on each instruction.
-    // NOTE: This includes a memory dump which will add up if these are stored.
-    debug: Option<&'a dyn Fn() -> Rc<RefCell<CPUState>>>,
+    // The boolean returns indicates whether to include a full memory dump (slow)
+    // or just to fill in the current PC values so dissembly can function.
+    debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
 
     // Initialized or not.
     state: State,
@@ -786,8 +790,8 @@ pub struct Cpu<'a> {
     // Total number of clock cycles since start.
     clocks: usize,
 
-    // Memory implementation
-    ram: &'a mut dyn Memory,
+    // Memory implementation used for all RAM access
+    ram: Box<dyn Memory>,
 
     // The current working opcode
     op: Operation,
@@ -815,6 +819,9 @@ pub struct Cpu<'a> {
 
     // The PC value of the halt instruction
     halt_pc: u16,
+
+    // I/O pins on a 6510. Only valid for that CPU type.
+    io_pins: Option<Rc<RefCell<[io::Style; 6]>>>,
 }
 
 impl fmt::Debug for Cpu<'_> {
@@ -833,7 +840,7 @@ impl fmt::Debug for Cpu<'_> {
 
 impl fmt::Display for Cpu<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (dis, _) = disassemble::step(self.cpu_type, self.pc, self.ram);
+        let (dis, _) = disassemble::step(self.cpu_type, self.pc, self.ram.as_ref());
 
         write!(
             f,
@@ -860,7 +867,7 @@ pub struct ChipDef<'a> {
     pub cpu_type: Type,
 
     /// Memory implementation.
-    pub ram: &'a mut dyn Memory,
+    pub ram: Box<dyn Memory>,
 
     /// irq is an optional IRQ source to trigger the IRQ line.
     pub irq: Option<&'a dyn irq::Sender>,
@@ -871,6 +878,11 @@ pub struct ChipDef<'a> {
     /// rdy is an optional IRQ source to trigger the RDY line (which halts the CPU).
     /// This is not technically an IRQ but acts the same.
     pub rdy: Option<&'a dyn irq::Sender>,
+
+    /// io_ports_input is an optional set of i/o definitions. Will only be used in 6510
+    /// cases and is invalid otherwise. If a 6510 is defined without this filled in
+    /// the ports will all be tied to ground anytime input is set for direction.
+    pub io_ports_input: Option<[io::Style; 6]>,
 }
 
 /// `CPUError` defines specific conditions where `tick` may return
@@ -886,7 +898,7 @@ pub enum CPUError {
     },
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone, Copy)]
 enum Register {
     A,
     X,
@@ -919,10 +931,10 @@ impl<'a> Chip for Cpu<'a> {
         self.state = State::Tick;
 
         // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
-        //                Ok, this technically only works like this in combination with SYNC being held high as well.
-        //                Otherwise it acts like a single step and continues after the next clock.
-        //                But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
-        //                time so "good enough".
+        // Ok, this technically only works like this in combination with SYNC being held high as well.
+        // Otherwise it acts like a single step and continues after the next clock.
+        // But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
+        // time so "good enough".
         if let Some(rdy) = self.rdy {
             if rdy.raised() {
                 return Ok(());
@@ -1067,8 +1079,33 @@ impl<'a> Cpu<'a> {
     /// Build a new Cpu.
     /// NOTE: This is not usable at this point. Call `power_on` to begin
     /// operation. Anything else will return errors.
+    ///
+    /// # Panics
+    /// Passing `io_ports_input` on anything except a 6510 is invalid.
     #[must_use]
-    pub fn new(def: &'a mut ChipDef<'a>) -> Self {
+    pub fn new(def: ChipDef<'a>) -> Self {
+        let ram: Box<dyn Memory>;
+        let io: Option<Rc<RefCell<[io::Style; 6]>>>;
+        match def.cpu_type {
+            Type::NMOS | Type::Ricoh | Type::CMOS => {
+                assert!(
+                    def.io_ports_input.is_none(),
+                    "I/O ports can only be defined on a 6510"
+                );
+                ram = def.ram;
+                io = None;
+            }
+            Type::NMOS6510 => {
+                let input = match def.io_ports_input {
+                    Some(io) => io,
+                    None => [io::Style::In(&io::Pulldown {}); 6],
+                };
+                let mut r = Box::new(C6510ram::new(def.ram, input));
+                r.power_on();
+                io = Some(r.io_state.clone());
+                ram = r;
+            }
+        }
         Cpu {
             cpu_type: def.cpu_type,
             a: Wrapping(0x00),
@@ -1078,7 +1115,6 @@ impl<'a> Cpu<'a> {
             p: Flags(0x00),
             pc: Wrapping(0x0000),
             debug: None,
-            debug_string: None,
             state: State::Off,
             irq_raised: InterruptStyle::default(),
             irq: def.irq,
@@ -1087,7 +1123,7 @@ impl<'a> Cpu<'a> {
             interrupt_state: InterruptState::default(),
             skip_interrupt: SkipInterrupt::default(),
             clocks: 0,
-            ram: def.ram,
+            ram,
             op: Operation::default(),
             op_raw: 0x00,
             op_val: 0x00,
@@ -1097,40 +1133,38 @@ impl<'a> Cpu<'a> {
             addr_done: OpState::Done,
             halt_opcode: 0x00,
             halt_pc: 0x0000,
+            io_pins: io,
         }
     }
 
-    /// Use this to enable or disable string based debugging dynamically.
-    pub fn set_debug_string(&mut self, d: Option<&'a dyn Fn(String)>) {
-        self.debug_string = d;
+    /// Return the state of I/O pin 0-5 for a 6510.
+    ///
+    /// # Errors
+    /// Any usage outside of a 6510 or outside 0-5 for pin
+    /// will result in an error.
+    pub fn io_pin(&self, pin: usize) -> Result<io::Style> {
+        let Some(io) = &self.io_pins else {
+            return Err(eyre!("I/O only defined for 6510"));
+        };
+        if pin > 5 {
+            return Err(eyre!("I/O pin {pin} out of range"));
+        }
+        Ok(io.borrow()[pin])
     }
 
     /// Use this to enable or disable state based debugging dynamically.
-    pub fn set_debug(&mut self, d: Option<&'a dyn Fn() -> Rc<RefCell<CPUState>>>) {
+    pub fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
         self.debug = d;
     }
 
-    /// debug will emit a filled in value on the start of new instructions (assuming not frozen due to RDY)
+    /// debug will emit a filled in value on the start of new instructions.
+    /// If RDY is asserted it will simply repeat the previous state if at Tick1.
     pub fn debug(&self) {
-        // Only emit when we're going to run a new instruction and aren't frozen.
-        if let Some(rdy) = self.rdy {
-            if rdy.raised() {
-                return;
-            }
-        }
-        if (self.debug_string.is_none() && self.debug.is_none()) || self.op_tick != Tick::Tick1 {
+        if self.debug.is_none() || self.op_tick != Tick::Tick1 {
             return;
         }
-        if let Some(d) = self.debug_string {
-            let mut pre = "";
-            if self.state == State::Reset {
-                pre = "reset ";
-            }
-            let out = format!("{pre}{self}");
-            d(out);
-        }
         if let Some(d) = self.debug {
-            let ref_state = d();
+            let (ref_state, full) = d();
             let mut state = ref_state.borrow_mut();
             state.cpu_type = self.cpu_type;
             state.state = self.state;
@@ -1144,13 +1178,19 @@ impl<'a> Cpu<'a> {
             state.op_val = self.op_val;
             state.op_addr = self.op_addr;
 
-            // We don't need to memcpy 64k. We just need
-            // the 3 possible instructions bytes at PC.
-            let ram = self.ram.ram();
-            let pc = usize::from(self.pc.0);
-            state.ram[pc] = ram[pc];
-            state.ram[pc + 1] = ram[pc + 1];
-            state.ram[pc + 2] = ram[pc + 2];
+            if full {
+                // Do a full copy. This is expensive for every instruction.
+                self.ram.ram(&mut state.ram);
+            } else {
+                // We don't need to memcpy 64k. We just need
+                // the 3 possible instructions bytes at PC.
+                state.ram[usize::from(self.pc.0)] = self.ram.read(self.pc.0);
+                // These could wrap around so make sure we don't go out of range.
+                let pc1 = (self.pc + Wrapping(1)).0;
+                state.ram[usize::from(pc1)] = self.ram.read(pc1);
+                let pc2 = (self.pc + Wrapping(2)).0;
+                state.ram[usize::from(pc2)] = self.ram.read(pc2);
+            }
         }
     }
 
@@ -3800,6 +3840,112 @@ impl<'a> Cpu<'a> {
     }
 }
 
+struct C6510ram {
+    output_0x00: u8,
+    output_0x01: u8,
+    // Use interior mutability so the caller can get a reference
+    // to this to return state but we can also update from the port addresses
+    // get updated.
+    io_state: Rc<RefCell<[io::Style; 6]>>,
+    input_io: [io::Style; 6],
+    // The underlying RAM implementation.
+    ram: Box<dyn Memory>,
+    // A memory block we can return. Need interior mutability to avoid
+    // allocating a new one each time but `ram` is not a mut function so
+    // to build this requires mutating there by combining our 2 bytes plus
+    // the underlying RAM together.
+    memory: RefCell<[u8; MAX_SIZE]>,
+}
+
+impl C6510ram {
+    fn new(ram: Box<dyn Memory>, input_dest: [io::Style; 6]) -> Self {
+        Self {
+            // Defaults to ports set to input.
+            output_0x00: 0x00,
+            output_0x01: 0x00,
+            io_state: Rc::new(RefCell::new(input_dest)),
+            input_io: input_dest,
+            ram,
+            memory: RefCell::new([0; MAX_SIZE]), // Only here to provide a copy for ram()
+        }
+    }
+}
+
+impl Memory for C6510ram {
+    fn read(&self, addr: u16) -> u8 {
+        match addr {
+            // This means by default both of these locations are not accessible
+            // in the underlying RAM.
+            0x0000 => self.output_0x00,
+            0x0001 => self.output_0x01,
+            _ => self.ram.read(addr),
+        }
+    }
+
+    fn write(&mut self, addr: u16, val: u8) {
+        match addr {
+            // This means by default both of these locations are not accessible
+            // in the underlying RAM.
+            0x0000 => {
+                self.output_0x00 = val;
+                // Since direction possibly changed run through all the relevant
+                // bits and determine direction. Either point at the previously
+                // wired up input sink or depending on output bit state pull
+                // high or low directly.
+                for i in 0..6 {
+                    // If it's not set this is an input.
+                    if val & (1 << i) == 0x00 {
+                        self.io_state.borrow_mut()[i] = self.input_io[i];
+                    } else {
+                        // If the output bit is set reflect in io_state
+                        if self.output_0x01 & (1 << i) == 0x00 {
+                            self.io_state.borrow_mut()[i] = io::Style::Out(&io::OutputLow {});
+                        } else {
+                            self.io_state.borrow_mut()[i] = io::Style::Out(&io::OutputHigh {});
+                        }
+                    }
+                }
+            }
+            0x0001 => {
+                self.output_0x01 = val;
+                // Output state may have changed and if the direction is output
+                // as well need to reflect that.
+                for i in 0..6 {
+                    // If it's an input we don't care and skip.
+                    if self.output_0x00 & (1 << i) == 0x00 {
+                        continue;
+                    }
+                    // If the output is low set the correspondning pin to low.
+                    if val & (1 << i) == 0x00 {
+                        self.io_state.borrow_mut()[i] = io::Style::Out(&io::OutputLow {});
+                    } else {
+                        self.io_state.borrow_mut()[i] = io::Style::Out(&io::OutputHigh {});
+                    }
+                }
+            }
+            _ => {
+                self.ram.write(addr, val);
+            }
+        }
+    }
+
+    /// `power_on` will perform power on behavior. For `c6510RAM` this will
+    /// reset the i/o port to input only and then reset the underlying ram.
+    fn power_on(&mut self) {
+        self.output_0x00 = 0x00;
+        self.output_0x01 = 0x00;
+        self.ram.power_on();
+    }
+
+    /// `ram` gives a copy of `FlatRAM` back out as an array.
+    fn ram(&self, dest: &mut [u8; MAX_SIZE]) {
+        self.ram.ram(&mut self.memory.borrow_mut());
+        self.memory.borrow_mut()[0x00] = self.output_0x00;
+        self.memory.borrow_mut()[0x01] = self.output_0x01;
+        *dest = *self.memory.borrow();
+    }
+}
+
 /// `FlatRAM` gives a flat 64k RAM block to use.
 /// It will be initialized to all zeros and `power_on`
 /// can use a different value if `fill_value` is set.
@@ -3858,8 +4004,8 @@ impl Memory for FlatRAM {
     }
 
     /// `ram` gives a copy of `FlatRAM` back out as an array.
-    fn ram(&self) -> &[u8; MAX_SIZE] {
-        &self.memory
+    fn ram(&self, dest: &mut [u8; MAX_SIZE]) {
+        *dest = self.memory;
     }
 }
 

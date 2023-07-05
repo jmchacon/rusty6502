@@ -1,16 +1,17 @@
 use crate::{
-    CPUError, CPUState, ChipDef, Cpu, Flags, FlatRAM, InterruptState, InterruptStyle, OpState,
-    Tick, Type, Vectors, P_B, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_S1, P_ZERO, STACK_START,
+    disassemble, CPUError, CPUState, ChipDef, Cpu, Flags, FlatRAM, InterruptState, InterruptStyle,
+    OpState, State, Tick, Type, Vectors, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT, P_NEGATIVE,
+    P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
 use chip::Chip;
 use color_eyre::eyre::{eyre, Result};
 use irq::Sender;
-use memory::Memory;
+use memory::{Memory, MAX_SIZE};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{self, Display, Write};
 use std::fs::{read, File};
-use std::io::{self, BufRead};
+use std::io::{BufRead, BufReader};
 use std::num::Wrapping;
 use std::path::Path;
 use std::rc::Rc;
@@ -20,18 +21,25 @@ use std::rc::Rc;
 // instructions is all one needs. The functional test below for
 // instance runs millions of instructions which can lead to very
 // large buffering during a test run.
+//
+// As grabbing a memory footprint can be expensive optionally
+// define how often to do this.
 struct Debug<T> {
     state: Vec<Rc<RefCell<T>>>,
     cur: RefCell<usize>,
     wrapped: RefCell<bool>,
+    full_dump_every_n: usize,
+    count: RefCell<usize>,
 }
 
 impl<T: Display + std::default::Default> Debug<T> {
-    fn new(cap: usize) -> Self {
+    fn new(cap: usize, full_dump_every_n: usize) -> Self {
         let mut d = Self {
             state: Vec::with_capacity(cap),
             cur: RefCell::new(0),
             wrapped: RefCell::new(false),
+            full_dump_every_n,
+            count: RefCell::new(0),
         };
         for _ in 0..cap {
             d.state.push(Rc::new(RefCell::new(T::default())));
@@ -64,22 +72,20 @@ impl<T: Display + std::default::Default> Debug<T> {
     }
 }
 
-impl Debug<String> {
-    fn debug(&self, s: String) {
-        let r = &*self.state[*self.cur.borrow()];
-        let _ = &*r.replace(s);
-        // Now roll the circular buffer portion of this.
-        self.roll_buffer();
-    }
-}
-
 impl Debug<CPUState> {
-    fn debug(&self) -> Rc<RefCell<CPUState>> {
+    fn debug(&self) -> (Rc<RefCell<CPUState>>, bool) {
         let ret = Rc::clone(&self.state[*self.cur.borrow()]);
 
         // Now roll the circular buffer portion of this.
         self.roll_buffer();
-        ret
+        let mut mem = false;
+        if self.full_dump_every_n != usize::MAX {
+            *self.count.borrow_mut() += 1;
+            if (*self.count.borrow() % self.full_dump_every_n) == 0 {
+                mem = true;
+            }
+        }
+        (ret, mem)
     }
 }
 
@@ -94,18 +100,15 @@ macro_rules! tester {
 const RESET: u16 = 0x1FFE;
 const IRQ_ADDR: u16 = 0xD001;
 
-fn setup(
+fn setup<'a>(
     t: Type,
     hlt: u16,
     fill: u8,
-    irq: Option<&'static dyn Sender>,
-    nmi: Option<&'static dyn Sender>,
-    debug_string: Option<&'static dyn Fn(String)>,
-    debug: Option<&'static dyn Fn() -> Rc<RefCell<CPUState>>>,
-) -> Cpu<'static> {
-    // NOTE: For tests only we simply put all this on the heap and then
-    //       leak things with leak so we can handle all the setup pieces.
-
+    irq: Option<&'a dyn Sender>,
+    nmi: Option<&'a dyn Sender>,
+    rdy: Option<&'a dyn Sender>,
+    debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
+) -> Cpu<'a> {
     // This should halt the cpu if a test goes off the rails since
     // endless execution will eventually end up at the NMI vector (it's the first
     // one) which contains HLT instructions.
@@ -119,16 +122,16 @@ fn setup(
     let mut r = Box::new(r);
     r.power_on();
 
-    let def = Box::new(ChipDef {
+    let def = ChipDef {
         cpu_type: t,
-        ram: Box::leak(r),
+        ram: r,
         irq,
         nmi,
-        rdy: None,
-    });
+        rdy,
+        io_ports_input: None,
+    };
 
-    let mut cpu = Cpu::new(Box::leak(def));
-    cpu.set_debug_string(debug_string);
+    let mut cpu = Cpu::new(def);
     cpu.set_debug(debug);
     cpu
 }
@@ -164,6 +167,218 @@ fn tick_next() {
     assert!(ticker == Tick::Tick8, "didn't continue to stay in tick8");
 }
 
+#[test]
+fn flags_test() {
+    let mut f = Flags::default();
+    assert!(f == Flags(P_S1), "Flags default not S1");
+
+    let b = P_B;
+    let flags_b = Flags(P_B);
+
+    assert!(f | flags_b == Flags(P_S1 | P_B), "Flags not BitOr Self");
+    #[allow(clippy::op_ref)]
+    let x = f | &b;
+    assert!(x == Flags(P_S1 | P_B), "Flags not BitOr &u8");
+    assert!(f | b == Flags(P_S1 | P_B), "Flags not BitOr u8");
+    assert!(b | f == Flags(P_S1 | P_B), "u8 not BitOr Flags");
+
+    f |= flags_b;
+    assert!(f == Flags(P_S1 | P_B), "Flags BitOrAssign Self");
+    f = Flags::default();
+
+    f |= &b;
+    assert!(f == Flags(P_S1 | P_B), "Flags BitOrAssign &u8");
+    f = Flags::default();
+
+    f |= b;
+    assert!(f == Flags(P_S1 | P_B), "Flags BitOrAssign u8");
+    f = Flags::default();
+
+    let carry = P_CARRY;
+    let flags_carry = Flags(P_CARRY);
+
+    f |= b | carry;
+    assert!(f & flags_carry == Flags(P_CARRY), "Flags not BitAnd Self");
+    #[allow(clippy::op_ref)]
+    let x = f & &carry;
+    assert!(x == Flags(P_CARRY), "Flags not BitAnd &u8");
+    assert!(f & carry == Flags(P_CARRY), "Flags not BitAnd u8");
+    assert!(carry & f == Flags(P_CARRY), "u8 not BitAnd Flags");
+
+    f &= flags_carry;
+    assert!(f == Flags(P_CARRY), "Flags BitAndAssign Self");
+    f = Flags::default();
+
+    f |= b | carry;
+    f &= &carry;
+    assert!(f == Flags(P_CARRY), "Flags BitAndAssign &u8");
+    f = Flags::default();
+
+    f |= b | carry;
+    f &= carry;
+    assert!(f == Flags(P_CARRY), "Flags BitAndAssign u8");
+    f = Flags::default();
+
+    f |= b | carry;
+    assert!(!f == Flags(P_NEGATIVE | P_OVERFLOW | P_DECIMAL | P_INTERRUPT | P_ZERO));
+
+    f = Flags::default();
+    println!("Flags: {f} - debug - {f:?}");
+    f = !f;
+    println!("Flags: {f} - debug - {f:?}");
+}
+
+#[test]
+#[should_panic]
+fn c6510_io_def() {
+    // Mostly a copy from setup() except we need to get it to panic for I/O ports
+    // on a non-6510
+    let r = FlatRAM::default();
+    let mut r = Box::new(r);
+    r.power_on();
+
+    let def = ChipDef {
+        cpu_type: Type::NMOS,
+        ram: r,
+        irq: None,
+        nmi: None,
+        rdy: None,
+        io_ports_input: Some([io::Style::In(&io::Pullup {}); 6]),
+    };
+
+    let _cpu = Cpu::new(def);
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn c6510_io_tests() {
+    // Mostly a copy from setup() but we want to define I/O here which we generally
+    // never need.
+    let r = FlatRAM::new()
+        .vectors(Vectors {
+            nmi: 0x1212,
+            reset: 0x1212,
+            irq: 0x1212,
+        })
+        .fill_value(0x12)
+        .debug();
+    let mut r = Box::new(r);
+    r.power_on();
+
+    r.write(0x00, 0x12);
+    r.write(0x01, 0x34);
+    println!("mem: {r:?}");
+
+    let def = ChipDef {
+        cpu_type: Type::NMOS6510,
+        ram: r,
+        irq: None,
+        nmi: None,
+        rdy: None,
+        io_ports_input: Some([
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pulldown {}),
+        ]),
+    };
+
+    let mut cpu = Cpu::new(def);
+    assert!(cpu.power_on().is_ok(), "CPU can't power on");
+
+    cpu.ram.write(0x1234, 0x56);
+    let ret = cpu.ram.read(0x1234);
+    assert!(
+        ret == 0x56,
+        "C6510 RAM not working. Expected 0x56 at 0x1234 and got {ret}"
+    );
+
+    // Verify we start as all pullups on 0-4, pulldown on 5 and as inputs.
+    for i in 0..6 {
+        match cpu.io_pin(i) {
+            Ok(io) => match io {
+                io::Style::In(p) => {
+                    if i < 5 {
+                        assert!(p.input(), "i/o input {i} not high");
+                    } else {
+                        assert!(!p.input(), "i/o input 5 not low");
+                    }
+                }
+                io::Style::Out(_) => panic!("pin set to output?"),
+            },
+            Err(e) => panic!("io_pin returned error: {e:?}"),
+        }
+    }
+
+    // Validate out of range i/o pin
+    assert!(cpu.io_pin(6).is_err(), "I/O pin for 6 didn't error");
+
+    // Now set the data direction register to all output and validate it changed
+    // type and that they are all low (since they default to 0 in the reg)
+    cpu.ram.write(0x00, 0xFF);
+    for i in 0..6 {
+        match cpu.io_pin(i) {
+            Ok(io) => match io {
+                io::Style::Out(p) => assert!(!p.output(), "i/o output not low?"),
+                io::Style::In(_) => panic!("pin set to output?"),
+            },
+            Err(e) => panic!("io_pin returned error: {e:?}"),
+        }
+    }
+
+    // Now set the output bits all high and verify type and state confirm
+    cpu.ram.write(0x01, 0xFF);
+    for i in 0..6 {
+        match cpu.io_pin(i) {
+            Ok(io) => match io {
+                io::Style::Out(p) => assert!(p.output(), "i/o output not high?"),
+                io::Style::In(_) => panic!("pin set to output?"),
+            },
+            Err(e) => panic!("io_pin returned error: {e:?}"),
+        }
+    }
+
+    // Make all pins high except the last one
+    cpu.ram.write(0x01, 0xFF - 0x20);
+    // Set direction back to input for first 3 bits
+    cpu.ram.write(0x00, 0xF8);
+    // Write it a 2nd time for coverage to make sure we skip inputs.
+    cpu.ram.write(0x01, 0xDF);
+    // Should be high on the first 3 pins as input.
+    // Then high on next 2 pins as outputs and finally last pin as low as output.
+    for i in 0..6 {
+        match cpu.io_pin(i) {
+            Ok(io) => match io {
+                io::Style::In(p) => {
+                    if i < 3 {
+                        assert!(p.input(), "i/o input dual/mode not high?");
+                    } else {
+                        panic!("Pin {i} not an input");
+                    }
+                }
+                io::Style::Out(p) => match i {
+                    0 | 1 | 2 => panic!("Pin {i} not an output"),
+                    3 | 4 => assert!(p.output(), "i/o output dual/mode 3/4 not high?"),
+                    5 => assert!(!p.output(), "i/o output dual/mode 5 not low?"),
+                    _ => {}
+                },
+            },
+            Err(e) => panic!("io_pin returned error: {e:?}"),
+        }
+    }
+
+    let mut ram = [0; MAX_SIZE];
+    cpu.ram.ram(&mut ram);
+    let io0 = ram[0x0000];
+    assert!(io0 == 0xF8, "I/O register 0 not 0xF8 - is {io0:2X}");
+    let io1 = ram[0x0001];
+    assert!(io1 == 0xDF, "I/O register 0 not 0xDF - is {io1:2X}");
+    let loc = ram[0x1234];
+    assert!(loc == 0x56, "0x1234 not 0x56 - is {loc:2X}");
+}
+
 macro_rules! init_test {
         ($suite:ident, $($name:ident: $type:expr, $rand:expr,)*) => {
             mod $suite {
@@ -181,7 +396,10 @@ macro_rules! init_test {
                             iter = 100;
                         }
                         for _ in 0..=iter {
-                           let mut cpu = setup($type, 0x1212, 0xEA, None, None, None, None);
+                            let r = Irq {
+                                raised: RefCell::new(false),
+                            };
+                            let mut cpu = setup($type, 0x1212, 0x12, None, None, Some(&r), None);
 
                             // This should fail
                             assert!(cpu.reset().is_err(), "reset worked before power_on");
@@ -194,8 +412,52 @@ macro_rules! init_test {
                                 track.insert(false);
                             }
 
-                            // This should fail now.
-                            assert!(cpu.power_on().is_err(), "power_on passes twice");
+                            // Pull RDY high and tick should return true but not advance.
+                            let tick = cpu.op_tick;
+                            let clocks = cpu.clocks;
+                            *r.raised.borrow_mut() = true;
+                            assert!(cpu.tick().is_ok(), "Tick didn't return true - RDY high");
+                            assert!(cpu.tick_done().is_ok(), "Tick done didn't return true - RDY high");
+                            assert!(tick == cpu.op_tick, "op_tick advanced with RDY high?");
+                            assert!(clocks == cpu.clocks, "clocks advanced with RDY high?");
+                            *r.raised.borrow_mut() = false;
+
+                            let res = cpu.io_pin(0);
+                            if cpu.cpu_type == Type::NMOS6510 {
+                                assert!(res.is_ok(), "6510 should report valid i/o pin");
+                            } else {
+                                assert!(res.is_err(), "Non 6510 should error on i/o pin");
+                            }
+
+                            // TODO(jchacon): Fix for CMOS. This will just panic today.
+                            if cpu.cpu_type != Type::CMOS {
+                                // This should fail now.
+                                assert!(cpu.power_on().is_err(), "power_on passes twice");
+
+                                // First tick should pass
+                                assert!(cpu.tick().is_ok(), "Tick didn't pass");
+                                assert!(cpu.tick_done().is_ok(), "Tick done didn't pass");
+
+                                // Now we should get an error but it's from HLT itself.
+                                let res = cpu.tick();
+                                assert!(res.is_err(), "Tick didn't produce a halted error? {cpu}");
+                                assert!(cpu.state == State::Halted, "Cpu isn't halted?");
+
+                                // This next error should be a halt error from tick itself since state
+                                // is halted now.
+                                let res = cpu.tick();
+                                assert!(res.is_err(), "Tick didn't produce a halted error? {cpu}");
+
+                                // SAFETY: We know it's an error so unwrap_err is fine.
+                                let err = res.unwrap_err();
+                                println!("Got err: {err:?}");
+                                match err.root_cause().downcast_ref::<CPUError>() {
+                                  Some(CPUError::Halted{op: _}) => {},
+                                      _ => {
+                                          assert!(false, "Error isn't a CPUError::Halted. Is '{err}'");
+                                      }
+                                }
+                            }
                         }
                         if $rand {
                             assert!(track.len() == 2, "didn't get both decimal states");
@@ -301,9 +563,9 @@ macro_rules! nop_hlt_test {
                     fn $name() -> Result<()> {
                         let test = $test;
                         let addr = u16::from(test.halt) << 8 | u16::from(test.halt);
-                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, Some(debug), None);
+                        let d = Debug::<CPUState>::new(128, 1);
+                        let debug = {|| d.debug()};
+                        let mut cpu = setup(Type::NMOS, addr, $test.fill, None, None, None, Some(&debug));
                         // Make a copy so we can compare if RAM changed.
                         let mut canonical = setup(Type::NMOS, addr, test.fill, None, None, None, None);
                         cpu.power_on()?;
@@ -393,6 +655,9 @@ macro_rules! nop_hlt_test {
                                   tester!(true, d, "Error isn't a CPUError::Halted. Is '{err}'");
                             }
                         }
+                        println!("CPU - {cpu}");
+                        println!("CPU debug - {cpu:?}");
+                        d.dump("nop dump");
                         Ok(())
                     }
                 )*
@@ -451,9 +716,9 @@ macro_rules! load_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug), None);
+                        let d = Debug::<CPUState>::new(128, 1);
+                        let debug = {|| d.debug()};
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, None, Some(&debug));
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0xA1); // LDA ($EA,x)
@@ -540,9 +805,9 @@ macro_rules! store_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Box::leak(Box::new(Debug::<String>::new(128)));
-                        let debug = Box::leak(Box::new(|s| d.debug(s)));
-                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, Some(debug), None);
+                        let d = Debug::<CPUState>::new(128, 1);
+                        let debug = {|| d.debug()};
+                        let mut cpu = setup(Type::NMOS, 0x1212, 0xEA, None, None, None, Some(&debug));
                         cpu.power_on()?;
 
                         cpu.ram.write(0x1FFE, 0x81); // STA ($EA,x)
@@ -631,17 +896,25 @@ fn irq_and_nmi() -> Result<()> {
     // So this has to be done clock by clock and conditions checked at each.
 
     let nmi: u16 = 0x0202; // If executed should halt the processor but we'll put code at this PC.
-    let i = Box::leak(Box::new(Irq {
+    let i = Irq {
         raised: RefCell::new(false),
-    }));
-    let n = Box::leak(Box::new(Irq {
+    };
+    let n = Irq {
         raised: RefCell::new(false),
-    }));
+    };
 
     // TODO(jchacon): Make this a macro so we can test for CMOS too and the D bit flips.
-    let d = Box::leak(Box::new(Debug::<String>::new(128)));
-    let debug = Box::leak(Box::new(|s| d.debug(s)));
-    let mut cpu = setup(Type::NMOS, nmi, 0xEA, Some(i), Some(n), Some(debug), None);
+    let d = Debug::<CPUState>::new(128, 1);
+    let debug = { || d.debug() };
+    let mut cpu = setup(
+        Type::NMOS,
+        nmi,
+        0xEA,
+        Some(&i),
+        Some(&n),
+        None,
+        Some(&debug),
+    );
     cpu.power_on()?;
 
     cpu.ram.write(IRQ_ADDR, 0x69); // ADC #AB
@@ -977,9 +1250,9 @@ macro_rules! rom_test {
                         let r = $rom_test;
                         // Initialize as always but then we'll overwrite it with a ROM image.
 			                  // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let d = Box::leak(Box::new(Debug::<CPUState>::new(128)));
-                        let debug = Box::leak(Box::new(|| d.debug()));
-                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None, Some(debug));
+                        let d = Debug::<CPUState>::new(128, usize::MAX);
+                        let debug = {|| d.debug()};
+                        let mut cpu = setup(r.cpu, 0x0202, 0x00, None, None, None, Some(&debug));
                         cpu.power_on()?;
 
                         // Get the input ROM and poke it into place.
@@ -1089,6 +1362,8 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
+            println!("{s}");
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1304,6 +1579,8 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
+            println!("{s}");
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1333,7 +1610,7 @@ rom_test!(
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/nestest.log");
         println!("trace path: {}", path.display());
         let file = File::open(path)?;
-        let lines = io::BufReader::new(file).lines();
+        let lines = BufReader::new(file).lines();
 
         let mut ret = Vec::new();
 
@@ -1353,6 +1630,8 @@ rom_test!(
         Ok(ret)
       }),
       end_check: |old, cpu| {
+            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
+            println!("{s}");
             old == 0xC66E || cpu.ram.read(0x0002) != 0x00 || cpu.ram.read(0x0003) != 0x00
       },
       success_check: |old, cpu| {

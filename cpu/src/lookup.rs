@@ -1,14 +1,19 @@
 use crate::{AddressMode, Opcode, Operation, Type};
 use color_eyre::eyre::{eyre, Result};
-use lazy_static::lazy_static;
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
 use strum::IntoEnumIterator;
 
-lazy_static! {
-    // OPCODES is a hashmap of the Opcode -> Hashmap of valid addressing modes and their u8 opcode values.
-    // This is a vector since NOP, HLT and a few others duplicate address mode and can do the same thing from N values.
-    // An assembler should simply use the first value of each Vec unless they want to randomly chose.
-    static ref NMOS_OPCODES: HashMap<Opcode, HashMap<AddressMode, Vec<u8>>> = {
+// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
+//                once LazyLock stablizes.
+
+// OPCODES is a hashmap of the Opcode -> Hashmap of valid addressing modes and their u8 opcode values.
+// This is a vector since NOP, HLT and a few others duplicate address mode and can do the same thing from N values.
+// An assembler should simply use the first value of each Vec unless they want to randomly chose.
+#[allow(clippy::too_many_lines)]
+fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Vec<u8>>> {
+    static NMOS_OPCODES: OnceLock<HashMap<Opcode, HashMap<AddressMode, Vec<u8>>>> = OnceLock::new();
+    NMOS_OPCODES.get_or_init(|| {
         let m = HashMap::from([
             (
                 Opcode::ADC,
@@ -528,19 +533,21 @@ lazy_static! {
             ),
         ]);
 
-        for op in Opcode::iter() {
-            match m.get(&op) {
-                Some(_) => {}
-                None => panic!("Not all opcodes covered!. Missing {op}"),
-            };
-        }
+        // Make sure each opcode in the enum has a map entry.
+        assert!(
+            !Opcode::iter().any(|op| m.get(&op).is_none()),
+            "Not all opcodes covered! - {m:?}"
+        );
         m
-    };
+    })
+}
 
-    // OPCODES_VALUES is the inverse of OPCODES where the keys are the u8 byte codes and values Operation defining
-    // the Opcode and AddressMode. Used in processing the CPU tick() or in disassembly for mapping a byte code back
-    // to an Opcode.
-    static ref NMOS_OPCODES_VALUES: Vec<Operation> = {
+// OPCODES_VALUES is the inverse of OPCODES where the keys are the u8 byte codes and values Operation defining
+// the Opcode and AddressMode. Used in processing the CPU tick() or in disassembly for mapping a byte code back
+// to an Opcode.
+fn nmos_opcodes_values() -> &'static Vec<Operation> {
+    static NMOS_OPCODES_VALUES: OnceLock<Vec<Operation>> = OnceLock::new();
+    NMOS_OPCODES_VALUES.get_or_init(|| {
         // We know this much be a vector of all u8 values since the 6502
         // has behavior at each so we'll have some combo of opcode/addressmode.
         //
@@ -548,29 +555,34 @@ lazy_static! {
         // Then track in the hashset which indexes we've seen (panic on dups)
         // and insert directly to each index.
         let mut m = Vec::new();
-        m.resize(1 << 8, Operation{
-            op: Opcode::BRK,
-            mode: AddressMode::Implied,
-        });
+        m.resize(
+            1 << 8,
+            Operation {
+                op: Opcode::BRK,
+                mode: AddressMode::Implied,
+            },
+        );
         let sl = m.as_mut_slice();
         let mut hs = HashSet::new();
 
-        for (op, hm) in NMOS_OPCODES.iter() {
+        for (op, hm) in nmos_opcodes().iter() {
             for (am, opbytes) in hm {
                 for opbyte in opbytes {
                     assert!(!hs.contains(opbyte),"OPCODES contains multiple entries for {opbyte:#04X} found in opcode {op} but we already have {:?}", sl[usize::from(*opbyte)]);
                     hs.insert(*opbyte);
-                    sl[usize::from(*opbyte)] = Operation{
-                                op: *op,
-                                mode: *am,
-                    };
+                    sl[usize::from(*opbyte)] = Operation { op: *op, mode: *am };
                 }
             }
         }
 
-        assert!(hs.len() == (1 << 8), "Didn't fill out {} opcodes. Only defined {} - {m:?}", 1<<8, hs.len());
+        assert!(
+            hs.len() == (1 << 8),
+            "Didn't fill out {} opcodes. Only defined {} - {m:?}",
+            1 << 8,
+            hs.len()
+        );
         m
-    };
+    })
 }
 
 /// Given an `Opcode` and `AddressMode` return the valid u8 values that
@@ -587,7 +599,7 @@ pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'stat
         Type::NMOS | Type::NMOS6510 | Type::Ricoh => {
             // SAFETY: When we built OPCODES we validated all Opcode were present
             unsafe {
-                hm = NMOS_OPCODES.get(op).unwrap_unchecked();
+                hm = nmos_opcodes().get(op).unwrap_unchecked();
             }
         }
         Type::CMOS => todo!("implement CMOS"),
@@ -610,7 +622,7 @@ pub fn opcode_op(t: Type, op: u8) -> Operation {
         // SAFETY: We know a u8 is in range due to how we build this
         //         so a direct index is fine.
         {
-            NMOS_OPCODES_VALUES[usize::from(op)]
+            nmos_opcodes_values()[usize::from(op)]
         }
         Type::CMOS => todo!("implement CMOS"),
     }

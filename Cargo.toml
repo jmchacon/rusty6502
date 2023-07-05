@@ -8,6 +8,7 @@ members = [
     "./cpu",
     "./disassembler",
     "./handasm",
+    "./io",
     "./irq",
     "./memory",
 ]
@@ -20,6 +21,7 @@ default-members = [
     "./cpu",
     "./disassembler",
     "./handasm",
+    "./io",
     "./irq",
     "./memory",
 ]
@@ -30,10 +32,15 @@ opt-level = 3
 [profile.bench]
 debug = true
 
+[profile.release]
+debug = true
+
 [workspace.dependencies]
 clap = { version = "~4.0", features = ["derive", "wrap_help"] }
 color-eyre = { version = "0.6.2", default-features = false }
-lazy_static = "1.4.0"
+# Force bind proc-macro2 as the default most people are on (1.0.58) doesn't
+# work on nightly after 2023-06-27
+proc-macro2 = { version = "=1.0.60", features=["default", "proc-macro"] }
 rand = "0.8.5"
 regex = "1"
 strum_macros = "0.24.1"
@@ -42,7 +49,7 @@ thiserror = "1.0.37"
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.65"
+rust-version = "1.70"
 authors = ["James Chacon <chacon.james@gmail.com>"]
 
 [package]

@@ -1,13 +1,9 @@
 [package]
-name    = "assemble"
+name = "io"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rusty6502  = { path = "../", version = "~0.1" }
-
-color-eyre = { workspace = true }
 proc-macro2 = { workspace = true }
-regex = { workspace = true }

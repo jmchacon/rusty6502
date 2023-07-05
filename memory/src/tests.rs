@@ -9,6 +9,7 @@ fn array_memory() {
     r.write(0x1234, 0xAE);
     assert!(r.read(0x1234) == 0xAE, "Bad value");
 
-    let t = r.ram();
+    let mut t = [0; MAX_SIZE];
+    r.ram(&mut t);
     assert!(t[0x1234] == 0xAE, "Bad ram() value");
 }

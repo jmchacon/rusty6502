@@ -3,7 +3,6 @@
 //! system.
 
 use color_eyre::eyre::{eyre, Result};
-use lazy_static::lazy_static;
 use regex::Regex;
 use rusty6502::prelude::*;
 use std::collections::HashMap;
@@ -11,6 +10,7 @@ use std::fmt::{self, Write};
 use std::io::BufReader;
 use std::num::Wrapping;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::{fs::File, io::Lines};
 
 #[cfg(test)]
@@ -214,7 +214,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 // An ORG statement must be followed by a u16 value.
                 State::Org => {
                     let Some(TokenVal::Val16(pc)) = parse_val(token, true) else {
-                            return Err(eyre!(
+                        return Err(eyre!(
                                 "Error parsing line {}: invalid ORG value not 16 bit - {token} - {line}",
                                 line_num + 1,
                             ));
@@ -880,7 +880,7 @@ fn parse_label(label: &str) -> Result<String> {
         return Ok(String::from(label));
     }
 
-    if RE.is_match(label) {
+    if re().is_match(label) {
         Ok(String::from(label))
     } else {
         Err(eyre!(
@@ -891,15 +891,14 @@ fn parse_label(label: &str) -> Result<String> {
 
 const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-]+$";
 
-lazy_static! {
-    static ref RE: Regex = {
-        match Regex::new(LABEL) {
-            Ok(re) => re,
-            Err(err) => {
-                panic!("Error parsing regex {LABEL} - {err}");
-            }
+fn re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| match Regex::new(LABEL) {
+        Ok(re) => re,
+        Err(err) => {
+            panic!("Error parsing regex {LABEL} - {err}");
         }
-    };
+    })
 }
 
 fn find_mode(v: TokenVal, operation: &Operation) -> AddressMode {
