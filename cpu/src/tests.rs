@@ -1391,11 +1391,11 @@ macro_rules! rom_test {
                     #[test]
                     fn $name() -> Result<()> {
                         let r = $rom_test;
-                      let res = run_rom_test(&r, false);
-                      if res.is_err() {
-                        return run_rom_test(&r, true)
-                      }
-                      Ok(())
+                        let res = run_rom_test(&r, false);
+                        if res.is_err() {
+                            return run_rom_test(&r, true)
+                        }
+                        Ok(())
                     }
                 )*
             }
