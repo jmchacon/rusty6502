@@ -554,6 +554,12 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                             // has been processed so we don't know the PC value yet but will below.
                             width = 2;
                         }
+                        AddressMode::ZeroPageRelative => {
+                            // We just add width here. In byte emission below it'll compute and validate
+                            // the actual offset. This is due to forward label refs. i.e. BBR 0,0x12,DONE before DONE
+                            // has been processed so we don't know the PC value yet but will below.
+                            width = 3;
+                        }
                     };
 
                     o.pc = pc;
@@ -618,6 +624,7 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
 
                     // Things are mutable here as we may have to fixup op_val for branches before
                     // emitting bytes below.
+                    // TODO(jchacon): Handle ZeroPageRelative
                     if o.mode == AddressMode::Relative {
                         let mut ok = false;
                         if let Some(v) = &o.op_val {
@@ -726,16 +733,10 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                             AddressMode::Immediate => {
                                 write!(output, " #{val}").unwrap();
                             }
-                            AddressMode::AbsoluteIndirect => {
+                            AddressMode::Indirect | AddressMode::AbsoluteIndirect => {
                                 write!(output, " ({val})").unwrap();
                             }
-                            AddressMode::AbsoluteIndirectX => {
-                                write!(output, " ({val},X)").unwrap();
-                            }
-                            AddressMode::Indirect => {
-                                write!(output, " ({val})").unwrap();
-                            }
-                            AddressMode::IndirectX => {
+                            AddressMode::IndirectX | AddressMode::AbsoluteIndirectX => {
                                 write!(output, " ({val},X)").unwrap();
                             }
                             AddressMode::IndirectY => {

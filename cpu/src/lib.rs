@@ -14,8 +14,8 @@ use color_eyre::eyre::{eyre, ErrReport, Result};
 use rand::Rng;
 use strum_macros::{Display, EnumIter, EnumString};
 
-mod lookup;
-pub use crate::lookup::*;
+mod nmos_opcodes;
+pub use crate::nmos_opcodes::*;
 
 pub mod disassemble;
 
@@ -47,6 +47,7 @@ pub enum AddressMode {
     /// `Indirect` uses the given address from the first 256 bytes (zero page).
     /// It then uses this and the following location as a pointer to use as the final address.
     /// Example LDA (04) and location 04,05 have 02 and 01. This would load the value from 0x0102 into A.
+    /// NOTE: CMOS only
     Indirect,
 
     /// `IndirectX` uses the given address from the first 256 bytes (zero page) with addition from the X register.
@@ -81,6 +82,7 @@ pub enum AddressMode {
     /// `AbsoluteIndirectX` loads a pointer from the given address after adding X and de-references it to get the final address.
     /// This is useful for assembling jump tables.
     /// Example: JMP (D000,X) with 0xD002,0xD003 equal to 0x01,0xC0 and X=2 will jump to 0xC001.
+    /// NOTE: CMOS only
     AbsoluteIndirectX,
 
     /// `Implied` takes no arguments and instead operates directly based on the opcode only.
@@ -91,13 +93,18 @@ pub enum AddressMode {
     /// This is used for branching.
     /// Example: D004 D0 FE is a BNE which computes to D004 if true and would infinite loop.
     Relative,
+
+    /// `ZeroPageRelative` is a combination addressing mode used in 2 CMOS instructions (BBR,BBS)
+    /// It takes both a ZP address and a relative offset destination to test and then branch.
+    /// Example BBR 0,$12,FE would test bit 0 on location 12 and if clear branches to FE which is an infinite loop.
+    ZeroPageRelative,
 }
 
 // Opcode matric taken from:
 // http://wiki.nesdev.com/w/index.php/CPU_unofficial_opcodes#Games_using_unofficial_opcodes
 //
 // NOTE: The above lists 0xAB as LAX #i but we call it OAL since it has odd behavior and needs
-//       it's own code compared to other LAX. See 6502-NMOS.extra.opcodes below.
+//       its own code compared to other LAX. See 6502-NMOS.extra.opcodes below.
 //
 // Description of undocumented opcodes:
 //
@@ -108,7 +115,7 @@ pub enum AddressMode {
 // Opcode descriptions/timing/etc:
 // http://obelisk.me.uk/6502/reference.html
 
-/// `Opcode` defines all the unique 6502 opcodes including undocumented ones.
+/// `Opcode` defines all the unique 65XX and 65C02 opcodes including undocumented ones.
 /// A given implementation may include only some of these (such as the CMOS version).
 #[derive(Clone, Copy, Debug, Display, Default, PartialEq, Eq, Hash, EnumIter, EnumString)]
 #[strum(ascii_case_insensitive)]
@@ -137,6 +144,14 @@ pub enum Opcode {
     /// Undocumented opcode AXS. This does (A AND X) - operand (no borrow) setting all associated flags post SBC.
     AXS,
 
+    /// Branch on bit reset
+    /// Note: CMOS only with Rockwell/WDC extensions.
+    BBR,
+
+    /// Branch on bit set
+    /// Note: CMOS only with Rockwell/WDC extensions.
+    BBS,
+
     /// Branch if carry is clear.
     BCC,
 
@@ -157,6 +172,10 @@ pub enum Opcode {
 
     /// Branch on plus (N is clear)
     BPL,
+
+    /// Branch always
+    /// Note: CMOS only
+    BRA,
 
     /// Break execution. Same as an IRQ but software defined. B bit is set in P on stack to indicate source.
     #[default]
@@ -258,14 +277,34 @@ pub enum Opcode {
     /// Pushes P onto the stack.
     PHP,
 
+    /// Pushes X onto the stack.
+    /// Note: CMOS only
+    PHX,
+
+    /// Pushes Y onto the stack.
+    /// Note: CMOS only
+    PHY,
+
     /// Pulls A from the stack.
     PLA,
+
+    /// Pulls X from the stack.
+    /// Note: CMOS only
+    PLX,
+
+    /// Pulls Y from the stack.
+    /// Note: CMOS only
+    PLY,
 
     /// Pulls P from the stack.
     PLP,
 
     /// Undocumented opcode RLA. This does a ROL on the value at the operand address and then AND's it against A. Sets flags and carry.
     RLA,
+
+    /// Reset memory bit.
+    /// Note: CMOS only with Rockwell/WDC extensions.
+    RMB,
 
     /// Rotates left the value at the operand address or the A register. Bit 7 is shifted into the C flag and the C flag is shifted into bit 0.
     ROL,
@@ -308,17 +347,29 @@ pub enum Opcode {
     /// Undocumented instruction SLO. This does an ASL on the value at the operand address and then OR's it against A. Sets flags and carry
     SLO,
 
+    /// Set memory bit.
+    /// Note: CMOS only with Rockwell/WDC extensions.
+    SMB,
+
     /// Undocumented instruction SRE. This does a LSR on the value at the operand address and then EOR's it against A. Sets flags and carry.
     SRE,
 
     /// Stores the A register at the operand address.
     STA,
 
+    /// Stops the CPU until a reset occurs
+    /// Note: CMOS only on WDC implementations.
+    STP,
+
     /// Stores the X register at the operand address.
     STX,
 
     /// Stores the Y register at the operand address.
     STY,
+
+    /// Stores a 0 at the given location.
+    /// Note: CMOS only.
+    STZ,
 
     /// Undocumented instruction TAS. This does the same operations as AHX but then also sets S = A&X.
     TAS,
@@ -328,6 +379,14 @@ pub enum Opcode {
 
     /// Loads the Y register with the value of the A register.
     TAY,
+
+    /// Test and reset bits.
+    /// Note: CMOS only
+    TRB,
+
+    /// Test and set bits.
+    /// Note: CMOS only
+    TSB,
 
     /// Loads the X register with the value of the S register.
     TSX,
@@ -340,6 +399,10 @@ pub enum Opcode {
 
     /// Loads the A register with the value of the Y register.
     TYA,
+
+    /// Wait for interrupt. Pauses the CPU until either an interrupt or reset occurs.
+    /// Note: CMOS only on WDC implementations.
+    WAI,
 
     /// Undocumented instruction XAA. We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
     /// for implementation and pick 0xEE as the constant. According to VICE this may break so might need to change it to 0xFF
@@ -2907,7 +2970,6 @@ impl<'a> Cpu<'a> {
         }
     }
 
-    // compare_y
     // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
     // This sets all associated flags in P. For SBC simply ones-complement op_val
     // before calling.
