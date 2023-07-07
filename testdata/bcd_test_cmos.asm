@@ -37,11 +37,11 @@ ORG $C000
 	        AND #$F0  	; [4] see text
 	        STA N1H
        		JSR ADD
-		JSR A6502
+		JSR A65C02
 	        JSR COMPARE
 	        BNE DONE
 	        JSR SUB
-	        JSR S6502
+	        JSR S65C02
 	        JSR COMPARE
 	        BNE DONE
 	        INC N1    	; [5] see text

@@ -13,6 +13,18 @@ wget https://github.com/Klaus2m5/6502_65C02_functional_tests/raw/master/bin_file
 To debug failures for 6502_function_test.bin read the listing file to see commented understanding of what
 failed and then the execution buffer to see how you got to this state.
 
+<h2>65C02_functional_test.bin</h2>
+<p>
+To download new versions of the 65C02 functional test:
+
+wget https://github.com/Klaus2m5/6502_65C02_functional_tests/raw/master/bin_files/65C02_extended_opcodes_test.bin
+<br>
+wget https://github.com/Klaus2m5/6502_65C02_functional_tests/raw/master/bin_files/65C02_extended_opcodes_test.lst
+<br>
+
+To debug failures for 65C02_function_test.bin read the listing file to see commented understanding of what
+failed and then the execution buffer to see how you got to this state.
+
 <h2>PRG files</h2>
 <p>
 dadc.prg, dincsbc-deccmp.prg, dincsbc.prg, droradc.prg, dsbc-cmp-flags.prg, dsbc.prg, sbx.prg and  vsbx.prg
@@ -36,5 +48,6 @@ value to use for comparison.
 <h2>bcd_test.bin</h2>
 <p>
 bcd_test.asm is hand extracted assembly from http://www.6502.org/tutorials/decimal_mode.html#B
-and then using ../hand_asm converted into a test ROM file.
+and then using ../assembler converted into a test ROM file.
 
+bcd_test_cmos.asm is the same file as the above except 2 JSR's have been changed to pickup CMOS instead of NMOS for testing.
