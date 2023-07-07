@@ -44,6 +44,11 @@ pub enum AddressMode {
     /// Example: LDA 0F,Y with Y=4 would load the value from 0x13 into A.
     ZeroPageY,
 
+    /// `Indirect` uses the given address from the first 256 bytes (zero page).
+    /// It then uses this and the following location as a pointer to use as the final address.
+    /// Example LDA (04) and location 04,05 have 02 and 01. This would load the value from 0x0102 into A.
+    Indirect,
+
     /// `IndirectX` uses the given address from the first 256 bytes (zero page) with addition from the X register.
     /// It then uses this and the following location as a pointer to use as the final address.
     /// Example LDA (04,X) with X = 8 and location 0C,0D have 02 and 01. This would load the value at 0x0102 into A
@@ -69,9 +74,14 @@ pub enum AddressMode {
     /// Example: LDA D000,X with Y = 5 loads A from 0xD005
     AbsoluteY,
 
-    /// `Indirect` loads a pointer from the given address and de-references it to get the final address.
+    /// `AbsoluteIndirect` loads a pointer from the given address and de-references it to get the final address.
     /// Example: JMP (D000) with 0xD000,0xD001 equal to 0x01,0xC0 will jump to 0xC001
-    Indirect,
+    AbsoluteIndirect,
+
+    /// `AbsoluteIndirectX` loads a pointer from the given address after adding X and de-references it to get the final address.
+    /// This is useful for assembling jump tables.
+    /// Example: JMP (D000,X) with 0xD002,0xD003 equal to 0x01,0xC0 and X=2 will jump to 0xC001.
+    AbsoluteIndirectX,
 
     /// `Implied` takes no arguments and instead operates directly based on the opcode only.
     /// Example: INX increments the X register.
@@ -352,6 +362,8 @@ pub enum Type {
     NMOS6510,
 
     /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
+    /// This is an implementation of the later WDC spec so will include support
+    /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
     CMOS,
 }
 
@@ -946,7 +958,9 @@ impl<'a> Chip for Cpu<'a> {
         self.op_tick = self.op_tick.next();
 
         // Emit debugging if required
-        self.debug();
+        if self.debug.is_some() && self.op_tick == Tick::Tick1 {
+            self.debug();
+        }
 
         // If we get a new interrupt while running one then NMI always wins until it's done.
         let mut irq_raised = false;
@@ -1160,9 +1174,6 @@ impl<'a> Cpu<'a> {
     /// debug will emit a filled in value on the start of new instructions.
     /// If RDY is asserted it will simply repeat the previous state if at Tick1.
     pub fn debug(&self) {
-        if self.debug.is_none() || self.op_tick != Tick::Tick1 {
-            return;
-        }
         if let Some(d) = self.debug {
             let (ref_state, full) = d();
             let mut state = ref_state.borrow_mut();
@@ -1693,7 +1704,7 @@ impl<'a> Cpu<'a> {
                 self.load_instruction(Self::addr_immediate, Self::arr)
             }
             // 0x6C - JMP (a)
-            (Opcode::JMP, AddressMode::Indirect) => self.jmp_indirect(),
+            (Opcode::JMP, AddressMode::AbsoluteIndirect) => self.jmp_indirect(),
             // 0x6D - ADC a
             (Opcode::ADC, AddressMode::Absolute) => {
                 self.load_instruction(Self::addr_absolute, Self::adc)

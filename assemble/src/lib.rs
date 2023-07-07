@@ -322,7 +322,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             }
                             // Indirect - (val)
                             [b'(', val @ .., b')'] => {
-                                operation.mode = AddressMode::Indirect;
+                                operation.mode = AddressMode::AbsoluteIndirect;
                                 val
                             }
                             // AbsoluteX or ZeroPageX - val,x
@@ -485,6 +485,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                         | AddressMode::ZeroPage
                         | AddressMode::ZeroPageX
                         | AddressMode::ZeroPageY
+                        | AddressMode::Indirect
                         | AddressMode::IndirectX
                         | AddressMode::IndirectY => {
                             let mut ok = false;
@@ -516,7 +517,8 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                         AddressMode::Absolute
                         | AddressMode::AbsoluteX
                         | AddressMode::AbsoluteY
-                        | AddressMode::Indirect => {
+                        | AddressMode::AbsoluteIndirect
+                        | AddressMode::AbsoluteIndirectX => {
                             let mut ok = false;
                             if let Some(v) = &o.op_val {
                                 match v {
@@ -723,6 +725,12 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                         match o.mode {
                             AddressMode::Immediate => {
                                 write!(output, " #{val}").unwrap();
+                            }
+                            AddressMode::AbsoluteIndirect => {
+                                write!(output, " ({val})").unwrap();
+                            }
+                            AddressMode::AbsoluteIndirectX => {
+                                write!(output, " ({val},X)").unwrap();
                             }
                             AddressMode::Indirect => {
                                 write!(output, " ({val})").unwrap();

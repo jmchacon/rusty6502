@@ -41,6 +41,9 @@ pub fn step(ty: Type, pc: Wrapping<u16>, r: &dyn Memory) -> (String, Wrapping<u1
         AddressMode::ZeroPageY => {
             write!(out, "{pc1:02X}      {opcode} {pc1:02X},Y").unwrap();
         }
+        AddressMode::Indirect => {
+            write!(out, "{pc1:02X}      {opcode} ({pc1:02X})").unwrap();
+        }
         AddressMode::IndirectX => {
             write!(out, "{pc1:02X}      {opcode} ({pc1:02X},X)",).unwrap();
         }
@@ -59,8 +62,12 @@ pub fn step(ty: Type, pc: Wrapping<u16>, r: &dyn Memory) -> (String, Wrapping<u1
             write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},Y",).unwrap();
             count += 1;
         }
-        AddressMode::Indirect => {
+        AddressMode::AbsoluteIndirect => {
             write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X})",).unwrap();
+            count += 1;
+        }
+        AddressMode::AbsoluteIndirectX => {
+            write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X},X)",).unwrap();
             count += 1;
         }
         AddressMode::Implied => {

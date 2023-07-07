@@ -243,7 +243,7 @@ fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Vec<u8>>> {
             (
                 Opcode::JMP,
                 HashMap::from([
-                    (AddressMode::Indirect, vec![108]),
+                    (AddressMode::AbsoluteIndirect, vec![108]),
                     (AddressMode::Absolute, vec![76]),
                 ]),
             ),
