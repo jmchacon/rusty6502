@@ -1486,6 +1486,7 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
+            let (_, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1524,6 +1525,7 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
+            let (_, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1546,8 +1548,6 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
-            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
-            println!("{s}");
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
