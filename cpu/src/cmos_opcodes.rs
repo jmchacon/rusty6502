@@ -6,13 +6,14 @@ use strum::IntoEnumIterator;
 // TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
 //                once LazyLock stablizes.
 
-// NMOS_OPCODES is a hashmap of the Opcode -> Hashmap of valid addressing modes and their u8 opcode values.
+// CMOS_OPCODES is a hashmap of the Opcode -> Hashmap of valid addressing modes and their u8 opcode values.
 // This is a vector since NOP, HLT and a few others duplicate address mode and can do the same thing from N values.
-// An assembler should simply use the first value of each Vec unless they want to randomly chose.
+// An assembler should simply use the first value of each Vec (unless they want to randomly chose) except for BBR/BBS/RMB/SMB
+// where the index in the vec indicates the bit it is impacting.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Vec<u8>>> {
-    static NMOS_OPCODES: OnceLock<HashMap<Opcode, HashMap<AddressMode, Vec<u8>>>> = OnceLock::new();
-    NMOS_OPCODES.get_or_init(|| {
+pub(crate) fn cmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Vec<u8>>> {
+    static CMOS_OPCODES: OnceLock<HashMap<Opcode, HashMap<AddressMode, Vec<u8>>>> = OnceLock::new();
+    CMOS_OPCODES.get_or_init(|| {
         let m = HashMap::from([
             (
                 Opcode::ADC,
@@ -25,22 +26,8 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::ZeroPage, vec![0x65]),
                     (AddressMode::Immediate, vec![0x69]),
                     (AddressMode::Absolute, vec![0x6D]),
+                    (AddressMode::Indirect, vec![0x72]),
                 ]),
-            ),
-            (
-                Opcode::AHX,
-                HashMap::from([
-                    (AddressMode::IndirectY, vec![0x93]),
-                    (AddressMode::AbsoluteY, vec![0x9F]),
-                ]),
-            ),
-            (
-                Opcode::ALR,
-                HashMap::from([(AddressMode::Immediate, vec![0x4B])]),
-            ),
-            (
-                Opcode::ANC,
-                HashMap::from([(AddressMode::Immediate, vec![0x0B, 0x2B])]),
             ),
             (
                 Opcode::AND,
@@ -53,11 +40,8 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::AbsoluteX, vec![0x3D]),
                     (AddressMode::ZeroPage, vec![0x25]),
                     (AddressMode::AbsoluteY, vec![0x39]),
+                    (AddressMode::Indirect, vec![0x32]),
                 ]),
-            ),
-            (
-                Opcode::ARR,
-                HashMap::from([(AddressMode::Immediate, vec![0x6B])]),
             ),
             (
                 Opcode::ASL,
@@ -70,8 +54,18 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 ]),
             ),
             (
-                Opcode::AXS,
-                HashMap::from([(AddressMode::Immediate, vec![0xCB])]),
+                Opcode::BBR,
+                HashMap::from([(
+                    AddressMode::ZeroPageRelative,
+                    vec![0x0F, 0x1F, 0x2F, 0x3F, 0x4F, 0x5F, 0x6F, 0x7F],
+                )]),
+            ),
+            (
+                Opcode::BBS,
+                HashMap::from([(
+                    AddressMode::ZeroPageRelative,
+                    vec![0x8F, 0x9F, 0xAF, 0xBF, 0xCF, 0xDF, 0xEF, 0xFF],
+                )]),
             ),
             (
                 Opcode::BCC,
@@ -90,6 +84,9 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 HashMap::from([
                     (AddressMode::ZeroPage, vec![0x24]),
                     (AddressMode::Absolute, vec![0x2C]),
+                    (AddressMode::Immediate, vec![0x89]),
+                    (AddressMode::ZeroPageX, vec![0x34]),
+                    (AddressMode::AbsoluteX, vec![0x3C]),
                 ]),
             ),
             (
@@ -103,6 +100,10 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
             (
                 Opcode::BPL,
                 HashMap::from([(AddressMode::Relative, vec![0x10])]),
+            ),
+            (
+                Opcode::BRA,
+                HashMap::from([(AddressMode::Relative, vec![0x80])]),
             ),
             (
                 Opcode::BRK,
@@ -143,6 +144,7 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::Immediate, vec![0xC9]),
                     (AddressMode::IndirectX, vec![0xC1]),
                     (AddressMode::AbsoluteY, vec![0xD9]),
+                    (AddressMode::Indirect, vec![0xD2]),
                 ]),
             ),
             (
@@ -168,23 +170,12 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::Absolute, vec![0xCE]),
                     (AddressMode::ZeroPage, vec![0xC6]),
                     (AddressMode::AbsoluteX, vec![0xDE]),
+                    (AddressMode::Implied, vec![0x3A]),
                 ]),
             ),
             (
                 Opcode::DEX,
                 HashMap::from([(AddressMode::Implied, vec![0xCA])]),
-            ),
-            (
-                Opcode::DCP,
-                HashMap::from([
-                    (AddressMode::Absolute, vec![0xCF]),
-                    (AddressMode::ZeroPage, vec![0xC7]),
-                    (AddressMode::IndirectY, vec![0xD3]),
-                    (AddressMode::IndirectX, vec![0xC3]),
-                    (AddressMode::AbsoluteX, vec![0xDF]),
-                    (AddressMode::ZeroPageX, vec![0xD7]),
-                    (AddressMode::AbsoluteY, vec![0xDB]),
-                ]),
             ),
             (
                 Opcode::DEY,
@@ -201,16 +192,8 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::IndirectY, vec![0x51]),
                     (AddressMode::Immediate, vec![0x49]),
                     (AddressMode::ZeroPageX, vec![0x55]),
+                    (AddressMode::Indirect, vec![0x52]),
                 ]),
-            ),
-            (
-                Opcode::HLT,
-                HashMap::from([(
-                    AddressMode::Implied,
-                    vec![
-                        0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2,
-                    ],
-                )]),
             ),
             (
                 Opcode::INC,
@@ -219,6 +202,7 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::ZeroPageX, vec![0xF6]),
                     (AddressMode::AbsoluteX, vec![0xFE]),
                     (AddressMode::ZeroPage, vec![0xE6]),
+                    (AddressMode::Implied, vec![0x1A]),
                 ]),
             ),
             (
@@ -230,42 +214,16 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 HashMap::from([(AddressMode::Implied, vec![0xC8])]),
             ),
             (
-                Opcode::ISC,
-                HashMap::from([
-                    (AddressMode::Absolute, vec![0xEF]),
-                    (AddressMode::IndirectX, vec![0xE3]),
-                    (AddressMode::AbsoluteY, vec![0xFB]),
-                    (AddressMode::ZeroPage, vec![0xE7]),
-                    (AddressMode::AbsoluteX, vec![0xFF]),
-                    (AddressMode::ZeroPageX, vec![0xF7]),
-                    (AddressMode::IndirectY, vec![0xF3]),
-                ]),
-            ),
-            (
                 Opcode::JMP,
                 HashMap::from([
                     (AddressMode::Absolute, vec![0x4C]),
                     (AddressMode::AbsoluteIndirect, vec![0x6C]),
+                    (AddressMode::AbsoluteIndirectX, vec![0x7C]),
                 ]),
             ),
             (
                 Opcode::JSR,
                 HashMap::from([(AddressMode::Absolute, vec![0x20])]),
-            ),
-            (
-                Opcode::LAS,
-                HashMap::from([(AddressMode::AbsoluteY, vec![0xBB])]),
-            ),
-            (
-                Opcode::LAX,
-                HashMap::from([
-                    (AddressMode::AbsoluteY, vec![0xBF]),
-                    (AddressMode::Absolute, vec![0xAF]),
-                    (AddressMode::ZeroPage, vec![0xA7]),
-                    (AddressMode::ZeroPageY, vec![0xB7]),
-                    (AddressMode::IndirectY, vec![0xB3]),
-                    (AddressMode::IndirectX, vec![0xA3]),
-                ]),
             ),
             (
                 Opcode::LDA,
@@ -278,6 +236,7 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::Absolute, vec![0xAD]),
                     (AddressMode::IndirectX, vec![0xA1]),
                     (AddressMode::Immediate, vec![0xA9]),
+                    (AddressMode::Indirect, vec![0xB2]),
                 ]),
             ),
             (
@@ -313,26 +272,24 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
             (
                 Opcode::NOP,
                 HashMap::from([
+                    (AddressMode::ZeroPageX, vec![0x54, 0xD4, 0xF4]),
+                    (AddressMode::ZeroPage, vec![0x44]),
+                    (AddressMode::AbsoluteX, vec![0xDC, 0xFC]),
+                    (AddressMode::AbsoluteNOP, vec![0x5C]),
+                    (AddressMode::Implied, vec![0xEA]),
                     (
-                        AddressMode::ZeroPageX,
-                        vec![0x14, 0x34, 0x54, 0x74, 0xD4, 0xF4],
+                        AddressMode::Immediate,
+                        vec![0x02, 0x22, 0x42, 0x62, 0x82, 0xC2, 0xE2],
                     ),
                     (
-                        AddressMode::Implied,
-                        vec![0x1A, 0x3A, 0x5A, 0x7A, 0xDA, 0xEA, 0xFA],
-                    ),
-                    (AddressMode::ZeroPage, vec![0x04, 0x44, 0x64]),
-                    (AddressMode::Immediate, vec![0x80, 0x82, 0x89, 0xC2, 0xE2]),
-                    (AddressMode::Absolute, vec![0x0C]),
-                    (
-                        AddressMode::AbsoluteX,
-                        vec![0x1C, 0x3C, 0x5C, 0x7C, 0xDC, 0xFC],
+                        AddressMode::NOPCmos,
+                        vec![
+                            0x03, 0x13, 0x23, 0x33, 0x43, 0x53, 0x63, 0x73, 0x83, 0x93, 0xA3, 0xB3,
+                            0xC3, 0xD3, 0xE3, 0xF3, 0x0B, 0x1B, 0x2B, 0x3B, 0x4B, 0x5B, 0x6B, 0x7B,
+                            0x8B, 0x9B, 0xAB, 0xBB, 0xEB, 0xFB,
+                        ],
                     ),
                 ]),
-            ),
-            (
-                Opcode::OAL,
-                HashMap::from([(AddressMode::Immediate, vec![0xAB])]),
             ),
             (
                 Opcode::ORA,
@@ -345,6 +302,7 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::IndirectX, vec![0x01]),
                     (AddressMode::Absolute, vec![0x0D]),
                     (AddressMode::AbsoluteY, vec![0x19]),
+                    (AddressMode::Indirect, vec![0x12]),
                 ]),
             ),
             (
@@ -356,6 +314,14 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 HashMap::from([(AddressMode::Implied, vec![0x08])]),
             ),
             (
+                Opcode::PHX,
+                HashMap::from([(AddressMode::Implied, vec![0xDA])]),
+            ),
+            (
+                Opcode::PHY,
+                HashMap::from([(AddressMode::Implied, vec![0x5A])]),
+            ),
+            (
                 Opcode::PLA,
                 HashMap::from([(AddressMode::Implied, vec![0x68])]),
             ),
@@ -364,16 +330,19 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 HashMap::from([(AddressMode::Implied, vec![0x28])]),
             ),
             (
-                Opcode::RLA,
-                HashMap::from([
-                    (AddressMode::AbsoluteY, vec![0x3B]),
-                    (AddressMode::ZeroPageX, vec![0x37]),
-                    (AddressMode::IndirectX, vec![0x23]),
-                    (AddressMode::Absolute, vec![0x2F]),
-                    (AddressMode::IndirectY, vec![0x33]),
-                    (AddressMode::ZeroPage, vec![0x27]),
-                    (AddressMode::AbsoluteX, vec![0x3F]),
-                ]),
+                Opcode::PLX,
+                HashMap::from([(AddressMode::Implied, vec![0xFA])]),
+            ),
+            (
+                Opcode::PLY,
+                HashMap::from([(AddressMode::Implied, vec![0x7A])]),
+            ),
+            (
+                Opcode::RMB,
+                HashMap::from([(
+                    AddressMode::ZeroPage,
+                    vec![0x07, 0x17, 0x27, 0x37, 0x47, 0x57, 0x67, 0x77],
+                )]),
             ),
             (
                 Opcode::ROL,
@@ -396,33 +365,12 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 ]),
             ),
             (
-                Opcode::RRA,
-                HashMap::from([
-                    (AddressMode::IndirectY, vec![0x73]),
-                    (AddressMode::AbsoluteY, vec![0x7B]),
-                    (AddressMode::AbsoluteX, vec![0x7F]),
-                    (AddressMode::ZeroPageX, vec![0x77]),
-                    (AddressMode::ZeroPage, vec![0x67]),
-                    (AddressMode::Absolute, vec![0x6F]),
-                    (AddressMode::IndirectX, vec![0x63]),
-                ]),
-            ),
-            (
                 Opcode::RTI,
                 HashMap::from([(AddressMode::Implied, vec![0x40])]),
             ),
             (
                 Opcode::RTS,
                 HashMap::from([(AddressMode::Implied, vec![0x60])]),
-            ),
-            (
-                Opcode::SAX,
-                HashMap::from([
-                    (AddressMode::ZeroPageY, vec![0x97]),
-                    (AddressMode::Absolute, vec![0x8F]),
-                    (AddressMode::ZeroPage, vec![0x87]),
-                    (AddressMode::IndirectX, vec![0x83]),
-                ]),
             ),
             (
                 Opcode::SBC,
@@ -432,9 +380,10 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::ZeroPage, vec![0xE5]),
                     (AddressMode::AbsoluteX, vec![0xFD]),
                     (AddressMode::IndirectX, vec![0xE1]),
-                    (AddressMode::Immediate, vec![0xE9, 0xEB]),
+                    (AddressMode::Immediate, vec![0xE9]),
                     (AddressMode::IndirectY, vec![0xF1]),
                     (AddressMode::Absolute, vec![0xED]),
+                    (AddressMode::Indirect, vec![0xF2]),
                 ]),
             ),
             (
@@ -450,36 +399,11 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 HashMap::from([(AddressMode::Implied, vec![0x78])]),
             ),
             (
-                Opcode::SHX,
-                HashMap::from([(AddressMode::AbsoluteY, vec![0x9E])]),
-            ),
-            (
-                Opcode::SHY,
-                HashMap::from([(AddressMode::AbsoluteX, vec![0x9C])]),
-            ),
-            (
-                Opcode::SLO,
-                HashMap::from([
-                    (AddressMode::AbsoluteY, vec![0x1B]),
-                    (AddressMode::IndirectX, vec![0x03]),
-                    (AddressMode::IndirectY, vec![0x13]),
-                    (AddressMode::ZeroPage, vec![0x07]),
-                    (AddressMode::AbsoluteX, vec![0x1F]),
-                    (AddressMode::Absolute, vec![0x0F]),
-                    (AddressMode::ZeroPageX, vec![0x17]),
-                ]),
-            ),
-            (
-                Opcode::SRE,
-                HashMap::from([
-                    (AddressMode::AbsoluteY, vec![0x5B]),
-                    (AddressMode::ZeroPage, vec![0x47]),
-                    (AddressMode::Absolute, vec![0x4F]),
-                    (AddressMode::AbsoluteX, vec![0x5F]),
-                    (AddressMode::IndirectX, vec![0x43]),
-                    (AddressMode::IndirectY, vec![0x53]),
-                    (AddressMode::ZeroPageX, vec![0x57]),
-                ]),
+                Opcode::SMB,
+                HashMap::from([(
+                    AddressMode::ZeroPage,
+                    vec![0x87, 0x97, 0xA7, 0xB7, 0xC7, 0xD7, 0xE7, 0xF7],
+                )]),
             ),
             (
                 Opcode::STA,
@@ -491,7 +415,12 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                     (AddressMode::AbsoluteX, vec![0x9D]),
                     (AddressMode::Absolute, vec![0x8D]),
                     (AddressMode::AbsoluteY, vec![0x99]),
+                    (AddressMode::Indirect, vec![0x92]),
                 ]),
+            ),
+            (
+                Opcode::STP,
+                HashMap::from([(AddressMode::Implied, vec![0xDB])]),
             ),
             (
                 Opcode::STX,
@@ -510,8 +439,13 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 ]),
             ),
             (
-                Opcode::TAS,
-                HashMap::from([(AddressMode::AbsoluteY, vec![0x9B])]),
+                Opcode::STZ,
+                HashMap::from([
+                    (AddressMode::ZeroPageX, vec![0x74]),
+                    (AddressMode::Absolute, vec![0x9C]),
+                    (AddressMode::AbsoluteX, vec![0x9E]),
+                    (AddressMode::ZeroPage, vec![0x64]),
+                ]),
             ),
             (
                 Opcode::TAX,
@@ -520,6 +454,20 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
             (
                 Opcode::TAY,
                 HashMap::from([(AddressMode::Implied, vec![0xA8])]),
+            ),
+            (
+                Opcode::TRB,
+                HashMap::from([
+                    (AddressMode::ZeroPage, vec![0x14]),
+                    (AddressMode::Absolute, vec![0x1C]),
+                ]),
+            ),
+            (
+                Opcode::TSB,
+                HashMap::from([
+                    (AddressMode::ZeroPage, vec![0x04]),
+                    (AddressMode::Absolute, vec![0x0C]),
+                ]),
             ),
             (
                 Opcode::TSX,
@@ -538,44 +486,50 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
                 HashMap::from([(AddressMode::Implied, vec![0x98])]),
             ),
             (
-                Opcode::XAA,
-                HashMap::from([(AddressMode::Immediate, vec![0x8B])]),
+                Opcode::WAI,
+                HashMap::from([(AddressMode::Implied, vec![0xCB])]),
             ),
         ]);
 
-        // opcodes that are CMOS only so we can't validate they are in the map.
-        let cmos = HashSet::from([
-            Opcode::BBR,
-            Opcode::BBS,
-            Opcode::BRA,
-            Opcode::PHX,
-            Opcode::PHY,
-            Opcode::PLX,
-            Opcode::PLY,
-            Opcode::RMB,
-            Opcode::SMB,
-            Opcode::STP,
-            Opcode::STZ,
-            Opcode::TRB,
-            Opcode::TSB,
-            Opcode::WAI,
+        // opcodes that are NMOS only so we can't validate they are in the map.
+        let nmos = HashSet::from([
+            Opcode::AHX,
+            Opcode::ALR,
+            Opcode::ANC,
+            Opcode::ARR,
+            Opcode::AXS,
+            Opcode::DCP,
+            Opcode::HLT,
+            Opcode::ISC,
+            Opcode::LAS,
+            Opcode::LAX,
+            Opcode::OAL,
+            Opcode::RLA,
+            Opcode::RRA,
+            Opcode::SAX,
+            Opcode::SHX,
+            Opcode::SHY,
+            Opcode::SLO,
+            Opcode::SRE,
+            Opcode::TAS,
+            Opcode::XAA,
         ]);
 
         // Make sure every other opcode in the enum has a map entry.
         assert!(
-            !Opcode::iter().any(|op| !cmos.contains(&op) && m.get(&op).is_none()),
+            !Opcode::iter().any(|op| !nmos.contains(&op) && m.get(&op).is_none()),
             "Not all opcodes covered! - {m:?}"
         );
         m
     })
 }
 
-// NMOS_OPCODES_VALUES is the inverse of NMOS_OPCODES where the keys are the u8 byte codes and values Operation defining
+// CMOS_OPCODES_VALUES is the inverse of CMOS_OPCODES where the keys are the u8 byte codes and values Operation defining
 // the Opcode and AddressMode. Used in processing the CPU tick() or in disassembly for mapping a byte code back
 // to an Opcode.
-pub(crate) fn nmos_opcodes_values() -> &'static Vec<Operation> {
-    static NMOS_OPCODES_VALUES: OnceLock<Vec<Operation>> = OnceLock::new();
-    NMOS_OPCODES_VALUES.get_or_init(|| {
+pub(crate) fn cmos_opcodes_values() -> &'static Vec<Operation> {
+    static CMOS_OPCODES_VALUES: OnceLock<Vec<Operation>> = OnceLock::new();
+    CMOS_OPCODES_VALUES.get_or_init(|| {
         // We know this much be a vector of all u8 values since the 6502
         // has behavior at each so we'll have some combo of opcode/addressmode.
         //
@@ -593,10 +547,10 @@ pub(crate) fn nmos_opcodes_values() -> &'static Vec<Operation> {
         let sl = m.as_mut_slice();
         let mut hs = HashSet::new();
 
-        for (op, hm) in nmos_opcodes().iter() {
+        for (op, hm) in cmos_opcodes().iter() {
             for (am, opbytes) in hm {
                 for opbyte in opbytes {
-                    assert!(!hs.contains(opbyte),"NMOS_OPCODES contains multiple entries for {opbyte:#04X} found in opcode {op} but we already have {:?}", sl[usize::from(*opbyte)]);
+                    assert!(!hs.contains(opbyte),"CMOS_OPCODES contains multiple entries for {opbyte:#04X} found in opcode {op} but we already have {:?}", sl[usize::from(*opbyte)]);
                     hs.insert(*opbyte);
                     sl[usize::from(*opbyte)] = Operation { op: *op, mode: *am };
                 }

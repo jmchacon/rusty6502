@@ -449,7 +449,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                     match o.mode {
                         // Implied gets handled here as it could resolve into another mode
                         // still due to not knowing all labels earlier.
-                        AddressMode::Implied => {
+                        AddressMode::Implied | AddressMode::NOPCmos => {
                             // Check the operand and if there is one it means
                             // this isn't Implied and we need to use this to compute either ZeroPage or Absolute
                             match &o.op_val {
@@ -515,6 +515,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                             }
                         }
                         AddressMode::Absolute
+                        | AddressMode::AbsoluteNOP
                         | AddressMode::AbsoluteX
                         | AddressMode::AbsoluteY
                         | AddressMode::AbsoluteIndirect
