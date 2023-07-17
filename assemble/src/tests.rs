@@ -31,7 +31,7 @@ macro_rules! assemble_test {
                     }
 
                     // This should be the same for all these CPU's
-                    for t in [Type::NMOS, Type::NMOS6510, Type::Ricoh] {
+                    for t in [Type::NMOS, Type::NMOS6510, Type::RICOH] {
                       // Get the input asm and read it in.
                       let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/").join(a.asm);
 

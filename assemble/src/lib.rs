@@ -322,7 +322,7 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             }
                             // Indirect - (val)
                             [b'(', val @ .., b')'] => {
-                                operation.mode = AddressMode::Indirect;
+                                operation.mode = AddressMode::AbsoluteIndirect;
                                 val
                             }
                             // AbsoluteX or ZeroPageX - val,x
@@ -449,7 +449,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                     match o.mode {
                         // Implied gets handled here as it could resolve into another mode
                         // still due to not knowing all labels earlier.
-                        AddressMode::Implied => {
+                        AddressMode::Implied | AddressMode::NOPCmos => {
                             // Check the operand and if there is one it means
                             // this isn't Implied and we need to use this to compute either ZeroPage or Absolute
                             match &o.op_val {
@@ -485,6 +485,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                         | AddressMode::ZeroPage
                         | AddressMode::ZeroPageX
                         | AddressMode::ZeroPageY
+                        | AddressMode::Indirect
                         | AddressMode::IndirectX
                         | AddressMode::IndirectY => {
                             let mut ok = false;
@@ -514,9 +515,11 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                             }
                         }
                         AddressMode::Absolute
+                        | AddressMode::AbsoluteNOP
                         | AddressMode::AbsoluteX
                         | AddressMode::AbsoluteY
-                        | AddressMode::Indirect => {
+                        | AddressMode::AbsoluteIndirect
+                        | AddressMode::AbsoluteIndirectX => {
                             let mut ok = false;
                             if let Some(v) = &o.op_val {
                                 match v {
@@ -551,6 +554,12 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                             // the actual offset. This is due to forward label refs. i.e. BEQ DONE before DONE
                             // has been processed so we don't know the PC value yet but will below.
                             width = 2;
+                        }
+                        AddressMode::ZeroPageRelative => {
+                            // We just add width here. In byte emission below it'll compute and validate
+                            // the actual offset. This is due to forward label refs. i.e. BBR 0,0x12,DONE before DONE
+                            // has been processed so we don't know the PC value yet but will below.
+                            width = 3;
                         }
                     };
 
@@ -616,6 +625,7 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
 
                     // Things are mutable here as we may have to fixup op_val for branches before
                     // emitting bytes below.
+                    // TODO(jchacon): Handle ZeroPageRelative
                     if o.mode == AddressMode::Relative {
                         let mut ok = false;
                         if let Some(v) = &o.op_val {
@@ -724,10 +734,10 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                             AddressMode::Immediate => {
                                 write!(output, " #{val}").unwrap();
                             }
-                            AddressMode::Indirect => {
+                            AddressMode::Indirect | AddressMode::AbsoluteIndirect => {
                                 write!(output, " ({val})").unwrap();
                             }
-                            AddressMode::IndirectX => {
+                            AddressMode::IndirectX | AddressMode::AbsoluteIndirectX => {
                                 write!(output, " ({val},X)").unwrap();
                             }
                             AddressMode::IndirectY => {

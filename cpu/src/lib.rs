@@ -1,5 +1,6 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
 use std::num::Wrapping;
 use std::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, Not};
@@ -7,15 +8,17 @@ use std::rc::Rc;
 
 use chip::Chip;
 
+mod cmos_opcodes;
+mod nmos_opcodes;
+
+use cmos_opcodes::{cmos_opcodes, cmos_opcodes_values};
 use memory::{Memory, MAX_SIZE};
+use nmos_opcodes::{nmos_opcodes, nmos_opcodes_values};
 use thiserror::Error;
 
 use color_eyre::eyre::{eyre, ErrReport, Result};
 use rand::Rng;
 use strum_macros::{Display, EnumIter, EnumString};
-
-mod lookup;
-pub use crate::lookup::*;
 
 pub mod disassemble;
 
@@ -44,6 +47,12 @@ pub enum AddressMode {
     /// Example: LDA 0F,Y with Y=4 would load the value from 0x13 into A.
     ZeroPageY,
 
+    /// `Indirect` uses the given address from the first 256 bytes (zero page).
+    /// It then uses this and the following location as a pointer to use as the final address.
+    /// Example LDA (04) and location 04,05 have 02 and 01. This would load the value from 0x0102 into A.
+    /// NOTE: CMOS only
+    Indirect,
+
     /// `IndirectX` uses the given address from the first 256 bytes (zero page) with addition from the X register.
     /// It then uses this and the following location as a pointer to use as the final address.
     /// Example LDA (04,X) with X = 8 and location 0C,0D have 02 and 01. This would load the value at 0x0102 into A
@@ -69,9 +78,20 @@ pub enum AddressMode {
     /// Example: LDA D000,X with Y = 5 loads A from 0xD005
     AbsoluteY,
 
-    /// `Indirect` loads a pointer from the given address and de-references it to get the final address.
+    /// `AbsoluteIndirect` loads a pointer from the given address and de-references it to get the final address.
     /// Example: JMP (D000) with 0xD000,0xD001 equal to 0x01,0xC0 will jump to 0xC001
-    Indirect,
+    AbsoluteIndirect,
+
+    /// `AbsoluteIndirectX` loads a pointer from the given address after adding X and de-references it to get the final address.
+    /// This is useful for assembling jump tables.
+    /// Example: JMP (D000,X) with 0xD002,0xD003 equal to 0x01,0xC0 and X=2 will jump to 0xC001.
+    /// NOTE: CMOS only
+    AbsoluteIndirectX,
+
+    /// `AbsoluteNOP` is a special mode for CMOS NOP 0x5C which takes 8 cycles
+    /// and then reads from somewhere in memory.
+    /// Node: CMOS only.
+    AbsoluteNOP,
 
     /// `Implied` takes no arguments and instead operates directly based on the opcode only.
     /// Example: INX increments the X register.
@@ -81,13 +101,23 @@ pub enum AddressMode {
     /// This is used for branching.
     /// Example: D004 D0 FE is a BNE which computes to D004 if true and would infinite loop.
     Relative,
+
+    /// `ZeroPageRelative` is a combination addressing mode used in 2 CMOS instructions (BBR,BBS)
+    /// It takes both a ZP address and a relative offset destination to test and then branch.
+    /// Example BBR 0,$12,FE would test bit 0 on location 12 and if clear branches to FE which is an infinite loop.
+    ZeroPageRelative,
+
+    /// `NOPCmos` is a CMOS only mode indicating a 1 byte NOP that also executes
+    /// in one cycle.
+    /// Note: CMOS only.
+    NOPCmos,
 }
 
 // Opcode matric taken from:
 // http://wiki.nesdev.com/w/index.php/CPU_unofficial_opcodes#Games_using_unofficial_opcodes
 //
 // NOTE: The above lists 0xAB as LAX #i but we call it OAL since it has odd behavior and needs
-//       it's own code compared to other LAX. See 6502-NMOS.extra.opcodes below.
+//       its own code compared to other LAX. See 6502-NMOS.extra.opcodes below.
 //
 // Description of undocumented opcodes:
 //
@@ -98,7 +128,7 @@ pub enum AddressMode {
 // Opcode descriptions/timing/etc:
 // http://obelisk.me.uk/6502/reference.html
 
-/// `Opcode` defines all the unique 6502 opcodes including undocumented ones.
+/// `Opcode` defines all the unique 65XX and 65C02 opcodes including undocumented ones.
 /// A given implementation may include only some of these (such as the CMOS version).
 #[derive(Clone, Copy, Debug, Display, Default, PartialEq, Eq, Hash, EnumIter, EnumString)]
 #[strum(ascii_case_insensitive)]
@@ -127,6 +157,14 @@ pub enum Opcode {
     /// Undocumented opcode AXS. This does (A AND X) - operand (no borrow) setting all associated flags post SBC.
     AXS,
 
+    /// Branch on bit reset
+    /// Note: CMOS only with Rockwell/WDC extensions.
+    BBR,
+
+    /// Branch on bit set
+    /// Note: CMOS only with Rockwell/WDC extensions.
+    BBS,
+
     /// Branch if carry is clear.
     BCC,
 
@@ -147,6 +185,10 @@ pub enum Opcode {
 
     /// Branch on plus (N is clear)
     BPL,
+
+    /// Branch always
+    /// Note: CMOS only
+    BRA,
 
     /// Break execution. Same as an IRQ but software defined. B bit is set in P on stack to indicate source.
     #[default]
@@ -248,14 +290,34 @@ pub enum Opcode {
     /// Pushes P onto the stack.
     PHP,
 
+    /// Pushes X onto the stack.
+    /// Note: CMOS only
+    PHX,
+
+    /// Pushes Y onto the stack.
+    /// Note: CMOS only
+    PHY,
+
     /// Pulls A from the stack.
     PLA,
+
+    /// Pulls X from the stack.
+    /// Note: CMOS only
+    PLX,
+
+    /// Pulls Y from the stack.
+    /// Note: CMOS only
+    PLY,
 
     /// Pulls P from the stack.
     PLP,
 
     /// Undocumented opcode RLA. This does a ROL on the value at the operand address and then AND's it against A. Sets flags and carry.
     RLA,
+
+    /// Reset memory bit.
+    /// Note: CMOS only with Rockwell/WDC extensions.
+    RMB,
 
     /// Rotates left the value at the operand address or the A register. Bit 7 is shifted into the C flag and the C flag is shifted into bit 0.
     ROL,
@@ -298,17 +360,29 @@ pub enum Opcode {
     /// Undocumented instruction SLO. This does an ASL on the value at the operand address and then OR's it against A. Sets flags and carry
     SLO,
 
+    /// Set memory bit.
+    /// Note: CMOS only with Rockwell/WDC extensions.
+    SMB,
+
     /// Undocumented instruction SRE. This does a LSR on the value at the operand address and then EOR's it against A. Sets flags and carry.
     SRE,
 
     /// Stores the A register at the operand address.
     STA,
 
+    /// Stops the CPU until a reset occurs
+    /// Note: CMOS only on WDC implementations.
+    STP,
+
     /// Stores the X register at the operand address.
     STX,
 
     /// Stores the Y register at the operand address.
     STY,
+
+    /// Stores a 0 at the given location.
+    /// Note: CMOS only.
+    STZ,
 
     /// Undocumented instruction TAS. This does the same operations as AHX but then also sets S = A&X.
     TAS,
@@ -318,6 +392,14 @@ pub enum Opcode {
 
     /// Loads the Y register with the value of the A register.
     TAY,
+
+    /// Test and reset bits.
+    /// Note: CMOS only
+    TRB,
+
+    /// Test and set bits.
+    /// Note: CMOS only
+    TSB,
 
     /// Loads the X register with the value of the S register.
     TSX,
@@ -330,6 +412,10 @@ pub enum Opcode {
 
     /// Loads the A register with the value of the Y register.
     TYA,
+
+    /// Wait for interrupt. Pauses the CPU until either an interrupt or reset occurs.
+    /// Note: CMOS only on WDC implementations.
+    WAI,
 
     /// Undocumented instruction XAA. We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
     /// for implementation and pick 0xEE as the constant. According to VICE this may break so might need to change it to 0xFF
@@ -345,13 +431,15 @@ pub enum Type {
 
     /// Ricoh version used in the NES which is identical to NMOS except BCD mode is unimplemented.
     #[strum(to_string = "NMOS_RICOH")]
-    Ricoh,
+    RICOH,
 
     /// NMOS 6501 variant (used in c64) which includes I/O ports mapped at addresses 0x00 and 0x01.
     #[strum(to_string = "NMOS_6510")]
     NMOS6510,
 
     /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
+    /// This is an implementation of the later WDC spec so will include support
+    /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
     CMOS,
 }
 
@@ -402,16 +490,21 @@ pub enum State {
     /// The mode we are in after a `tick` has run
     Tick,
 
-    /// If we ran a halted instruction we end up here.
+    /// If we ran an HLT/STP instruction we end up here.
     Halted,
+
+    /// WAI will cause this state where processing is paused
+    /// until an interrupt happens.
+    WaitingForInterrupt,
 }
 
 #[derive(Default, Debug, Display, PartialEq, Clone)]
+#[allow(clippy::upper_case_acronyms)]
 enum InterruptStyle {
     #[default]
     None,
-    Irq,
-    Nmi,
+    IRQ,
+    NMI,
 }
 
 #[derive(Default, Debug, Display, PartialEq)]
@@ -725,11 +818,61 @@ impl fmt::Display for CPUState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (dis, _) = disassemble::step(self.cpu_type, Wrapping(self.pc), &self.ram);
 
-        write!(
+        writeln!(
             f,
             "{:>6} {dis:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X}",
             self.clocks, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr
-        )
+        )?;
+        writeln!(f, "Memory:")?;
+        writeln!(f)?;
+        writeln!(f, "{}", &self.ram as &dyn Memory)
+    }
+}
+
+/// Given an `Opcode` and `AddressMode` return the valid u8 values that
+/// can represent it.
+///
+/// # Errors
+/// If the `AddressMode` is not valid for this opcode an error will result.
+///
+pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
+    let hm: &HashMap<AddressMode, Vec<u8>>;
+    match t {
+        Type::NMOS | Type::NMOS6510 | Type::RICOH => {
+            // SAFETY: When we built NMOS_OPCODES we validated all Opcodes were present
+            unsafe {
+                hm = nmos_opcodes().get(op).unwrap_unchecked();
+            }
+        }
+        Type::CMOS => {
+            // SAFETY: When we built CMOS_OPCODES we validated all Opcodes were present
+            unsafe {
+                hm = cmos_opcodes().get(op).unwrap_unchecked();
+            }
+        }
+    };
+    let Some(v) = hm.get(mode) else {
+        return Err(eyre!("address mode {mode} isn't valid for opcode {op}"));
+    };
+    Ok(v)
+}
+
+/// Given an opcode u8 value this will return the Operation struct
+/// defining it. i.e. `Opcode` and `AddressMode`.
+///
+#[must_use]
+pub fn opcode_op(t: Type, op: u8) -> Operation {
+    match t {
+        Type::NMOS | Type::NMOS6510 | Type::RICOH => {
+            // SAFETY: We know a u8 is in range due to how we built this
+            //         so a direct index is fine.
+            nmos_opcodes_values()[usize::from(op)]
+        }
+        Type::CMOS => {
+            // SAFETY: We know a u8 is in range due to how we built this
+            //         so a direct index is fine.
+            cmos_opcodes_values()[usize::from(op)]
+        }
     }
 }
 
@@ -914,6 +1057,7 @@ impl<'a> Chip for Cpu<'a> {
     ///
     /// Bad internal state includes not powering on, not completing a reset sequence
     /// and already being halted.
+    #[allow(clippy::too_many_lines)]
     fn tick(&mut self) -> Result<()> {
         // Fast path if halted. PC doesn't advance nor do we take clocks.
         if self.state == State::Halted {
@@ -922,13 +1066,23 @@ impl<'a> Chip for Cpu<'a> {
             }));
         }
 
-        // Handles improper state. Only tick_done() or reset() can move into this state.
-        if self.state != State::Running {
-            return Err(eyre!("CPU not in Running state - {}", self.state));
-        }
-
-        // Move to the state tick_done() has to move us out of.
-        self.state = State::Tick;
+        match self.cpu_type {
+            Type::NMOS | Type::NMOS6510 | Type::RICOH => {
+                // Handles improper states. Only tick_done() or reset() can move into this state.
+                if self.state != State::Running {
+                    return Err(eyre!("CPU not in Running state - {}", self.state));
+                }
+            }
+            Type::CMOS => {
+                // Handles improper states. Only tick_done() or reset() or wai() can move into these states.
+                if self.state != State::Running && self.state != State::WaitingForInterrupt {
+                    return Err(eyre!(
+                        "CPU not in Running or WaitingForInterrupt state - {}",
+                        self.state
+                    ));
+                }
+            }
+        };
 
         // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
         // Ok, this technically only works like this in combination with SYNC being held high as well.
@@ -940,13 +1094,6 @@ impl<'a> Chip for Cpu<'a> {
                 return Ok(());
             }
         }
-
-        // Always bump the clock count and op_tick.
-        self.clocks += 1;
-        self.op_tick = self.op_tick.next();
-
-        // Emit debugging if required
-        self.debug();
 
         // If we get a new interrupt while running one then NMI always wins until it's done.
         let mut irq_raised = false;
@@ -963,19 +1110,39 @@ impl<'a> Chip for Cpu<'a> {
         if irq_raised || nmi_raised {
             match self.irq_raised {
                 InterruptStyle::None => {
-                    self.irq_raised = InterruptStyle::Irq;
+                    self.irq_raised = InterruptStyle::IRQ;
                     if nmi_raised {
-                        self.irq_raised = InterruptStyle::Nmi;
+                        self.irq_raised = InterruptStyle::NMI;
                     }
                 }
-                InterruptStyle::Irq => {
+                InterruptStyle::IRQ => {
                     if nmi_raised {
-                        self.irq_raised = InterruptStyle::Nmi;
+                        self.irq_raised = InterruptStyle::NMI;
                     }
                 }
-                InterruptStyle::Nmi => {}
+                InterruptStyle::NMI => {}
             }
         }
+
+        // If we're waiting for an interrupt and none have been raised we don't
+        // advance time and just stay waiting for instruction start.
+        // CMOS only (handled by check above)
+        if self.state == State::WaitingForInterrupt && self.irq_raised == InterruptStyle::None {
+            return Ok(());
+        }
+
+        // Move to the state tick_done() has to move us out of.
+        self.state = State::Tick;
+
+        // Always bump the clock count and op_tick.
+        self.clocks += 1;
+        self.op_tick = self.op_tick.next();
+
+        // Emit debugging if required
+        if self.debug.is_some() && self.op_tick == Tick::Tick1 {
+            self.debug();
+        }
+
         match self.op_tick {
             Tick::Tick1 => {
                 // If we're in Tick1 this means start a new instruction based on the PC value so grab
@@ -983,15 +1150,31 @@ impl<'a> Chip for Cpu<'a> {
                 self.op_raw = self.ram.read(self.pc.0);
                 self.op = opcode_op(self.cpu_type, self.op_raw);
 
-                // PC advances always when we start a new opcode except for IRQ/NMI (unless we're skipping to run one more instruction)
+                // Special case the 1 cycle NOP for CMOS. This just burns a cycle and ignores interrupts.
+                if self.cpu_type == Type::CMOS
+                    && self.op.op == Opcode::NOP
+                    && self.op.mode == AddressMode::NOPCmos
+                {
+                    self.pc += 1;
+                    self.op_tick = Tick::Reset;
+                    return Ok(());
+                }
+
+                // PC advances always when we start a new opcode except for IRQ/NMI
+                // (unless we're skipping to run one more instruction).
                 if self.irq_raised == InterruptStyle::None
                     || self.skip_interrupt == SkipInterrupt::Skip
                 {
                     self.pc += 1;
                     self.interrupt_state = InterruptState::None;
                 }
+
+                // If one is raised and we're not skipping and interrupts
+                // are enabled or it's an NMI then we move into interrupt mode.
                 if self.irq_raised != InterruptStyle::None
                     && self.skip_interrupt != SkipInterrupt::Skip
+                    && (self.p & P_INTERRUPT == Flags(0x00)
+                        || self.irq_raised == InterruptStyle::NMI)
                 {
                     self.interrupt_state = InterruptState::Running;
                 }
@@ -1023,12 +1206,14 @@ impl<'a> Chip for Cpu<'a> {
         let ret: Result<OpState>;
         if self.interrupt_state == InterruptState::Running {
             let mut addr = IRQ_VECTOR;
-            if self.irq_raised == InterruptStyle::Nmi {
+            if self.irq_raised == InterruptStyle::NMI {
                 addr = NMI_VECTOR;
             }
             ret = self.run_interrupt(addr, true);
+        } else if self.cpu_type == Type::CMOS {
+            ret = self.process_opcode_cmos();
         } else {
-            ret = self.process_opcode();
+            ret = self.process_opcode_nmos();
         }
 
         // We'll treat an error as halted since internal state is unknown at that point.
@@ -1062,10 +1247,18 @@ impl<'a> Chip for Cpu<'a> {
     /// `tick_done` moves the CPU back to a state where the next tick can run.
     /// For the 6502 there are no internal latches so generally there is no shadow
     /// state to account but all Chip implementations need this function.
+    /// NOTE: Calling `tick` with rdy() high and `tick_done` with it low will
+    ///       result in an error as `tick`+`tick_done` is assumed to be otherwise atomic.
     ///
     /// # Errors
     /// Bad internal state will result in errors.
     fn tick_done(&mut self) -> Result<()> {
+        if let Some(rdy) = self.rdy {
+            if rdy.raised() {
+                return Ok(());
+            }
+        }
+
         if self.state != State::Tick {
             return Err(eyre!("tick_done called outside Tick - {}", self.state));
         }
@@ -1087,7 +1280,7 @@ impl<'a> Cpu<'a> {
         let ram: Box<dyn Memory>;
         let io: Option<Rc<RefCell<[io::Style; 6]>>>;
         match def.cpu_type {
-            Type::NMOS | Type::Ricoh | Type::CMOS => {
+            Type::NMOS | Type::RICOH | Type::CMOS => {
                 assert!(
                     def.io_ports_input.is_none(),
                     "I/O ports can only be defined on a 6510"
@@ -1160,9 +1353,6 @@ impl<'a> Cpu<'a> {
     /// debug will emit a filled in value on the start of new instructions.
     /// If RDY is asserted it will simply repeat the previous state if at Tick1.
     pub fn debug(&self) {
-        if self.debug.is_none() || self.op_tick != Tick::Tick1 {
-            return;
-        }
         if let Some(d) = self.debug {
             let (ref_state, full) = d();
             let mut state = ref_state.borrow_mut();
@@ -1374,9 +1564,710 @@ impl<'a> Cpu<'a> {
         }
     }
 
-    // Actual opcode processing for each variant is handled here.
     #[allow(clippy::too_many_lines)]
-    fn process_opcode(&mut self) -> Result<OpState> {
+    fn process_opcode_cmos(&mut self) -> Result<OpState> {
+        match (self.op.op, self.op.mode) {
+            // 0x00 - BRK #i
+            (Opcode::BRK, AddressMode::Immediate) => self.brk(),
+            // 0x01 - ORA (d,x)
+            (Opcode::ORA, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::ora)
+            }
+            // 0x02 0x22 0x42 0x62 0x82 0xC2 0xE2 - NOP #i
+            (Opcode::NOP, AddressMode::Immediate) => self.addr_immediate(&InstructionMode::Load),
+            // 0x03 0x13 0x23 0x33 0x43 0x53 0x63 0x73 0x83 0x93 0xA3 0xB3 0xC3 0xD3 0xE3 0xF3
+            // 0x0B 0x1B 0x2B 0x3B 0x4B 0x5B 0x6B 0x7B 0x8B 0x9B 0xAB 0xBB 0xEA 0xEB 0xFB
+            // NOP
+            // Note: Technically none of these which trigger NOPCmos will get here as single
+            //       cycles ones are handled directly in tick(). But here for completeness.
+            (Opcode::NOP, AddressMode::NOPCmos | AddressMode::Implied) => Ok(OpState::Done),
+            // 0x04 - TSB d
+            (Opcode::TSB, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::tsb),
+            // 0x05 - ORA d
+            (Opcode::ORA, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::ora),
+            // 0x06 - ASL d
+            (Opcode::ASL, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::asl),
+            // 0x07 0x17 0x27 0x37 0x47 0x57 0x67 0x77 - RMB x,d
+            (Opcode::RMB, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rmb),
+            // 0x08 - PHP
+            (Opcode::PHP, AddressMode::Implied) => self.php(),
+            // 0x09 - ORA #i
+            (Opcode::ORA, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::ora)
+            }
+            // 0x0A - ASL
+            (Opcode::ASL, AddressMode::Implied) => self.asl_acc(),
+            // 0x0B - NOP see 0x03
+            // 0x0C - TSB a
+            (Opcode::TSB, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::tsb)
+            }
+            // 0x0D - ORA a
+            (Opcode::ORA, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::ora)
+            }
+            // 0x0E - ASL a
+            (Opcode::ASL, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::asl)
+            }
+            // 0x0F 0x1F 0x2F 0x3F 0x4F 0x5F 0x6F 0x7F - BBR x,dr
+            (Opcode::BBR, AddressMode::ZeroPageRelative) => {
+                // Figure out the x based on opcode. MSB is the index
+                let x = (self.op_raw & 0xF0) >> 4;
+                self.bbr(x)
+            }
+            // 0x10 - BPL *+r
+            (Opcode::BPL, AddressMode::Relative) => self.bpl(),
+            // 0x11 - ORA (d),y
+            (Opcode::ORA, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::ora)
+            }
+            // 0x12 - ORA (d)
+            (Opcode::ORA, AddressMode::Indirect) => {
+                self.load_instruction(Self::addr_indirect, Self::ora)
+            }
+            // 0x13 - NOP see 0x03
+            // 0x14 - TRB d
+            (Opcode::TRB, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::trb),
+            // 0x15 - ORA d,x
+            (Opcode::ORA, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::ora)
+            }
+            // 0x16 - ASL d,x
+            (Opcode::ASL, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::asl)
+            }
+            // 0x17 - RMB 1,x see 0x07
+            // 0x18 - CLC
+            (Opcode::CLC, AddressMode::Implied) => self.clc(),
+            // 0x19 - ORA a,y
+            (Opcode::ORA, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::ora)
+            }
+            // 0x1A - INC
+            (Opcode::INC, AddressMode::Implied) => {
+                self.load_register(Register::A, (self.a + Wrapping(1)).0)
+            }
+            // 0x1B - NOP see 0x03
+            // 0x1C - TRB a
+            (Opcode::TRB, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::trb)
+            }
+            // 0x1D - ORA a,x
+            (Opcode::ORA, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::ora)
+            }
+            // 0x1E - ASL a,x
+            (Opcode::ASL, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::asl)
+            }
+            // 0x1F - BBR 1,dr see 0x0F
+            // 0x20 - JSR a
+            (Opcode::JSR, AddressMode::Absolute) => self.jsr(),
+            // 0x21 - AND (d,x)
+            (Opcode::AND, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::and)
+            }
+            // 0x22 - NOP #i see 0x02
+            // 0x23 - NOP see 0x03
+            // 0x24 - BIT d
+            (Opcode::BIT, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::bit),
+            // 0x25 - AND d
+            (Opcode::AND, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::and),
+            // 0x26 - ROL d
+            (Opcode::ROL, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rol),
+            // 0x27 - RMB 2,x see 0x07
+            // 0x28 - PLP
+            (Opcode::PLP, AddressMode::Implied) => self.plp(),
+            // 0x29 - AND #i
+            (Opcode::AND, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::and)
+            }
+            // 0x2A - ROL
+            (Opcode::ROL, AddressMode::Implied) => self.rol_acc(),
+            // 0x2B - NOP see 0x03
+            // 0x2C - BIT a
+            (Opcode::BIT, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::bit)
+            }
+            // 0x2D - AND a
+            (Opcode::AND, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::and)
+            }
+            // 0x2E - ROL a
+            (Opcode::ROL, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::rol)
+            }
+            // 0x2F - BBR 2,dr see 0x0F
+            // 0x30 - BMI *+r
+            (Opcode::BMI, AddressMode::Relative) => self.bmi(),
+            // 0x31 - AND (d),y
+            (Opcode::AND, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::and)
+            }
+            // 0x32 - AND (d)
+            (Opcode::AND, AddressMode::Indirect) => {
+                self.load_instruction(Self::addr_indirect, Self::and)
+            }
+            // 0x33 - NOP see 0x03
+            // 0x34 - BIT d,x
+            (Opcode::BIT, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::bit)
+            }
+            // 0x35 - AND d,x
+            (Opcode::AND, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::and)
+            }
+            // 0x36 - ROL d,x
+            (Opcode::ROL, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::rol)
+            }
+            // 0x37 - RMB 3,x see 0x07
+            // 0x38 - SEC
+            (Opcode::SEC, AddressMode::Implied) => self.sec(),
+            // 0x39 - AND a,y
+            (Opcode::AND, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::and)
+            }
+            // 0x3A - DEC
+            (Opcode::DEC, AddressMode::Implied) => {
+                self.load_register(Register::A, (self.a - Wrapping(1)).0)
+            }
+            // 0x3B - NOP see 0x03
+            // 0x3C - BIT a,x
+            (Opcode::BIT, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::bit)
+            }
+            // 0x3D - AND a,x
+            (Opcode::AND, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::and)
+            }
+            // 0x3E - ROL a,x
+            (Opcode::ROL, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::rol)
+            }
+            // 0x3F - BBR 3,dr see 0x0F
+            // 0x40 - RTI
+            (Opcode::RTI, AddressMode::Implied) => self.rti(),
+            // 0x41 - EOR (d,x)
+            (Opcode::EOR, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::eor)
+            }
+            // 0x42 - NOP #i see 0x02
+            // 0x43 - NOP see 0x03
+            // 0x44 - NOP d
+            (Opcode::NOP, AddressMode::ZeroPage) => self.addr_zp(&InstructionMode::Load),
+            // 0x45 - EOR d
+            (Opcode::EOR, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::eor),
+            // 0x46 - LSR d
+            (Opcode::LSR, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::lsr),
+            // 0x47 - RMB 4,x see 0x07
+            // 0x48 - PHA
+            (Opcode::PHA, AddressMode::Implied) => self.pha(),
+            // 0x49 - EOR #i
+            (Opcode::EOR, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::eor)
+            }
+            // 0x4A - LSR
+            (Opcode::LSR, AddressMode::Implied) => self.lsr_acc(),
+            // 0x4B - NOP see 0x03
+            // 0x4C - JMP a
+            (Opcode::JMP, AddressMode::Absolute) => self.jmp(),
+            // 0x4D - EOR a
+            (Opcode::EOR, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::eor)
+            }
+            // 0x4E - LSR a
+            (Opcode::LSR, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::lsr)
+            }
+            // 0x4F - BBR 4,dr see 0x0F
+            // 0x50 - BVC *+r
+            (Opcode::BVC, AddressMode::Relative) => self.bvc(),
+            // 0x51 - EOR (d),y
+            (Opcode::EOR, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::eor)
+            }
+            // 0x52 - EOR (d)
+            (Opcode::EOR, AddressMode::Indirect) => {
+                self.load_instruction(Self::addr_indirect, Self::eor)
+            }
+            // 0x53 - NOP see 0x03
+            // 0x54 0xD4 0xF4 - NOP d,x
+            (Opcode::NOP, AddressMode::ZeroPageX) => self.addr_zp_x(&InstructionMode::Load),
+            // 0x55 - EOR d,x
+            (Opcode::EOR, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::eor)
+            }
+            // 0x56 - LSR d,x
+            (Opcode::LSR, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::lsr)
+            }
+            // 0x57 - RMB 5,x see 0x07
+            // 0x58 - CLI
+            (Opcode::CLI, AddressMode::Implied) => self.cli(),
+            // 0x59 - EOR a,y
+            (Opcode::EOR, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::eor)
+            }
+            // 0x5A - PHY
+            (Opcode::PHY, AddressMode::Implied) => self.phy(),
+            // 0x5B - NOP see 0x03
+            // 0x5C - NOP 8
+            (Opcode::NOP, AddressMode::AbsoluteNOP) => self.nop8(),
+            // 0x5D - EOR a,x
+            (Opcode::EOR, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::eor)
+            }
+            // 0x5E - LSR a,x
+            (Opcode::LSR, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::lsr)
+            }
+            // 0x5F - BBR 5,dr see 0x0F
+            // 0x60 - RTS
+            (Opcode::RTS, AddressMode::Implied) => self.rts(),
+            // 0x61 - ADC (d,x)
+            (Opcode::ADC, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::adc)
+            }
+            // 0x62 - NOP #i see 0x02
+            // 0x63 - NOP see 0x03
+            // 0x64 - STZ d
+            (Opcode::STZ, AddressMode::ZeroPage) => self.store_instruction(Self::addr_zp, 0),
+            // 0x65 - ADC d
+            (Opcode::ADC, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::adc),
+            // 0x66 - ROR d
+            (Opcode::ROR, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::ror),
+            // 0x67 - RMB 6,x see 0x07
+            // 0x68 - PLA
+            (Opcode::PLA, AddressMode::Implied) => self.pla(),
+            // 0x69 - ADC #i
+            (Opcode::ADC, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::adc)
+            }
+            // 0x6A - ROR
+            (Opcode::ROR, AddressMode::Implied) => self.ror_acc(),
+            // 0x6B - NOP see 0x03
+            // 0x6C - JMP (a)
+            (Opcode::JMP, AddressMode::AbsoluteIndirect) => self.jmp_indirect(),
+            // 0x6D - ADC a
+            (Opcode::ADC, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::adc)
+            }
+            // 0x6E - ROR a
+            (Opcode::ROR, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::ror)
+            }
+            // 0x6F - BBR 6,dr see 0x0F
+            // 0x70 - BVS *+r
+            (Opcode::BVS, AddressMode::Relative) => self.bvs(),
+            // 0x71 - ADC (d),y
+            (Opcode::ADC, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::adc)
+            }
+            // 0x72 - ADC (zp)
+            (Opcode::ADC, AddressMode::Indirect) => {
+                self.load_instruction(Self::addr_indirect, Self::adc)
+            }
+            // 0x73 - NOP see 0x03
+            // 0x74 - STZ d,x
+            (Opcode::STZ, AddressMode::ZeroPageX) => self.store_instruction(Self::addr_zp_x, 0),
+            // 0x75 - ADC d,x
+            (Opcode::ADC, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::adc)
+            }
+            // 0x76 - ROR d,x
+            (Opcode::ROR, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::ror)
+            }
+            // 0x77 - RMB 7,x see 0x07
+            // 0x78 - SEI
+            (Opcode::SEI, AddressMode::Implied) => self.sei(),
+            // 0x79 - ADC a,y
+            (Opcode::ADC, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::adc)
+            }
+            // 0x7A - PLY
+            (Opcode::PLY, AddressMode::Implied) => self.ply(),
+            // 0x7B - NOP see 0x03
+            // 0x7C - JMP (a,x)
+            (Opcode::JMP, AddressMode::AbsoluteIndirectX) => self.jmp_indirect_x(),
+            // 0x7D - ADC a,x
+            (Opcode::ADC, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::adc)
+            }
+            // 0x7E - ROR a,x
+            (Opcode::ROR, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::ror)
+            }
+            // 0x7F - BBR 7,dr see 0x0F
+            // 0x80 - BRA r
+            (Opcode::BRA, AddressMode::Relative) => self.perform_branch(),
+            // 0x81 - STA (d,x)
+            (Opcode::STA, AddressMode::IndirectX) => {
+                self.store_instruction(Self::addr_indirect_x, self.a.0)
+            }
+            // 0x82 - NOP #i see 0x02
+            // 0x83 - NOP see 0x03
+            // 0x84 - STY d
+            (Opcode::STY, AddressMode::ZeroPage) => self.store_instruction(Self::addr_zp, self.y.0),
+            // 0x85 - STA d
+            (Opcode::STA, AddressMode::ZeroPage) => self.store_instruction(Self::addr_zp, self.a.0),
+            // 0x86 - STX d
+            (Opcode::STX, AddressMode::ZeroPage) => self.store_instruction(Self::addr_zp, self.x.0),
+            // 0x87 - 0x87 0x97 0xA7 0xB7 0xC7 0xD7 0xE7 0xF7 - SMB x,d
+            (Opcode::SMB, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::smb),
+            // 0x88 - DEY
+            (Opcode::DEY, AddressMode::Implied) => {
+                self.load_register(Register::Y, (self.y - Wrapping(1)).0)
+            }
+            // 0x89 - BIT #i
+            (Opcode::BIT, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::bit)
+            }
+            // 0x8A - TXA
+            (Opcode::TXA, AddressMode::Implied) => self.load_register(Register::A, self.x.0),
+            // 0x8B - NOP see 0x03
+            // 0x8C - STY a
+            (Opcode::STY, AddressMode::Absolute) => {
+                self.store_instruction(Self::addr_absolute, self.y.0)
+            }
+            // 0x8D - STA a
+            (Opcode::STA, AddressMode::Absolute) => {
+                self.store_instruction(Self::addr_absolute, self.a.0)
+            }
+            // 0x8E - STX a
+            (Opcode::STX, AddressMode::Absolute) => {
+                self.store_instruction(Self::addr_absolute, self.x.0)
+            }
+            // 0x8F 0x9F 0xAF 0xBF 0xCF 0xDF 0xEF 0xFF - BBR x,dr
+            (Opcode::BBS, AddressMode::ZeroPageRelative) => {
+                // Figure out the x based on opcode. MSB is the index - 8.
+                let x = ((self.op_raw & 0xF0) >> 4) - 8;
+                self.bbs(x)
+            }
+            // 0x90 - BCC *+r
+            (Opcode::BCC, AddressMode::Relative) => self.bcc(),
+            // 0x91 - STA (d),y
+            (Opcode::STA, AddressMode::IndirectY) => {
+                self.store_instruction(Self::addr_indirect_y, self.a.0)
+            }
+            // 0x92 - STA (zp)
+            (Opcode::STA, AddressMode::Indirect) => {
+                self.store_instruction(Self::addr_indirect, self.a.0)
+            }
+            // 0x93 - NOP see 0x03
+            // 0x94 - STY d,x
+            (Opcode::STY, AddressMode::ZeroPageX) => {
+                self.store_instruction(Self::addr_zp_x, self.y.0)
+            }
+            // 0x95 - STA d,x
+            (Opcode::STA, AddressMode::ZeroPageX) => {
+                self.store_instruction(Self::addr_zp_x, self.a.0)
+            }
+            // 0x96 - STX d,y
+            (Opcode::STX, AddressMode::ZeroPageY) => {
+                self.store_instruction(Self::addr_zp_y, self.x.0)
+            }
+            // 0x97 - SMB 1,d see 0x87
+            // 0x98 - TYA
+            (Opcode::TYA, AddressMode::Implied) => self.load_register(Register::A, self.y.0),
+            // 0x99 - STA a,y
+            (Opcode::STA, AddressMode::AbsoluteY) => {
+                self.store_instruction(Self::addr_absolute_y, self.a.0)
+            }
+            // 0x9A - TXS
+            (Opcode::TXS, AddressMode::Implied) => {
+                self.s = self.x;
+                Ok(OpState::Done)
+            }
+            // 0x9B - NOP see 0x03
+            // 0x9C - STZ a
+            (Opcode::STZ, AddressMode::Absolute) => self.store_instruction(Self::addr_absolute, 0),
+            // 0x9D - STA a,x
+            (Opcode::STA, AddressMode::AbsoluteX) => {
+                self.store_instruction(Self::addr_absolute_x, self.a.0)
+            }
+            // 0x9E - STZ a,x
+            (Opcode::STZ, AddressMode::AbsoluteX) => {
+                self.store_instruction(Self::addr_absolute_x, 0)
+            }
+            // 0x9F - BBS 1,dr - see 0x8F
+            // 0xA0 - LDY #i
+            (Opcode::LDY, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::load_register_y)
+            }
+            // 0xA1 - LDA (d,x)
+            (Opcode::LDA, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::load_register_a)
+            }
+            // 0xA2 - LDX #i
+            (Opcode::LDX, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::load_register_x)
+            }
+            // 0xA3 - NOP see 0x03
+            // 0xA4 - LDY d
+            (Opcode::LDY, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::load_register_y)
+            }
+            // 0xA5 - LDA d
+            (Opcode::LDA, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::load_register_a)
+            }
+            // 0xA6 - LDX d
+            (Opcode::LDX, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::load_register_x)
+            }
+            // 0xA7 - SMB 2,d see 0x87
+            // 0xA8 - TAY
+            (Opcode::TAY, AddressMode::Implied) => self.load_register(Register::Y, self.a.0),
+            // 0xA9 - LDA #i
+            (Opcode::LDA, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::load_register_a)
+            }
+            // 0xAA - TAX
+            (Opcode::TAX, AddressMode::Implied) => self.load_register(Register::X, self.a.0),
+            // 0xAB - NOP see 0x03
+            // 0xAC - LDY a
+            (Opcode::LDY, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::load_register_y)
+            }
+            // 0xAD - LDA a
+            (Opcode::LDA, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::load_register_a)
+            }
+            // 0xAE - LDX a
+            (Opcode::LDX, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::load_register_x)
+            }
+            // 0xAF - BBS 2,dr - see 0x8F
+            // 0xB0 - BCS *+r
+            (Opcode::BCS, AddressMode::Relative) => self.bcs(),
+            // 0xB1 - LDA (d),y
+            (Opcode::LDA, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::load_register_a)
+            }
+            // 0xB2 - LDA (zp)
+            (Opcode::LDA, AddressMode::Indirect) => {
+                self.load_instruction(Self::addr_indirect, Self::load_register_a)
+            }
+            // 0xB3 - NOP see 0x03
+            // 0xB4 - LDY d,x
+            (Opcode::LDY, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::load_register_y)
+            }
+            // 0xB5 - LDA d,x
+            (Opcode::LDA, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::load_register_a)
+            }
+            // 0xB6 - LDX d,y
+            (Opcode::LDX, AddressMode::ZeroPageY) => {
+                self.load_instruction(Self::addr_zp_y, Self::load_register_x)
+            }
+            // 0xB7 - SMB 3,d see 0x87
+            // 0xB8 - CLV
+            (Opcode::CLV, AddressMode::Implied) => self.clv(),
+            // 0xB9 - LDA a,y
+            (Opcode::LDA, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::load_register_a)
+            }
+            // 0xBA - TSX
+            (Opcode::TSX, AddressMode::Implied) => self.load_register(Register::X, self.s.0),
+            // 0xBB - NOP see 0x03
+            // 0xBC - LDY a,x
+            (Opcode::LDY, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::load_register_y)
+            }
+            // 0xBD - LDA a,x
+            (Opcode::LDA, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::load_register_a)
+            }
+            // 0xBE - LDX a,y
+            (Opcode::LDX, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::load_register_x)
+            }
+            // 0xBF - BBS 3,dr - see 0x8F
+            // 0xC0 - CPY #i
+            (Opcode::CPY, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::compare_y)
+            }
+            // 0xC1 - CMP (d,x)
+            (Opcode::CMP, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::compare_a)
+            }
+            // 0xC2 - NOP #i see 0x02
+            // 0xC3 - NOP see 0x03
+            // 0xC4 - CPY d
+            (Opcode::CPY, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::compare_y)
+            }
+            // 0xC5 - CMP d
+            (Opcode::CMP, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::compare_a)
+            }
+            // 0xC6 - DEC d
+            (Opcode::DEC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::dec),
+            // 0xC7 - SMB 4,d see 0x87
+            // 0xC8 - INY
+            (Opcode::INY, AddressMode::Implied) => {
+                self.load_register(Register::Y, (self.y + Wrapping(1)).0)
+            }
+            // 0xC9 - CMP #i
+            (Opcode::CMP, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::compare_a)
+            }
+            // 0xCA - DEX
+            (Opcode::DEX, AddressMode::Implied) => {
+                self.load_register(Register::X, (self.x - Wrapping(1)).0)
+            }
+            // 0xCB - WAI
+            (Opcode::WAI, AddressMode::Implied) => self.wai(),
+            // 0xCC - CPY a
+            (Opcode::CPY, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::compare_y)
+            }
+            // 0xCD - CMP a
+            (Opcode::CMP, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::compare_a)
+            }
+            // 0xCE - DEC a
+            (Opcode::DEC, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::dec)
+            }
+            // 0xCF - BBS 4,dr - see 0x8F
+            // 0xD0 - BNE *+r
+            (Opcode::BNE, AddressMode::Relative) => self.bne(),
+            // 0xD1 - CMP (d),y
+            (Opcode::CMP, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::compare_a)
+            }
+            // 0xD2 - CMP (d)
+            (Opcode::CMP, AddressMode::Indirect) => {
+                self.load_instruction(Self::addr_indirect, Self::compare_a)
+            }
+            // 0xD3 - NOP see 0x03
+            // 0xD4 - NOP d,x see 0x54
+            // 0xD5 - CMP d,x
+            (Opcode::CMP, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::compare_a)
+            }
+            // 0xD6 - DEC d,x
+            (Opcode::DEC, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::dec)
+            }
+            // 0xD7 - SMB 5,d see 0x87
+            // 0xD8 - CLD
+            (Opcode::CLD, AddressMode::Implied) => self.cld(),
+            // 0xD9 - CMP a,y
+            (Opcode::CMP, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::compare_a)
+            }
+            // 0xDA - PHX
+            (Opcode::PHX, AddressMode::Implied) => self.phx(),
+            // 0xDB - STP
+            (Opcode::STP, AddressMode::Implied) => {
+                self.state = State::Halted;
+                Ok(OpState::Done)
+            }
+            // 0xDC 0xFC - NOP a,x
+            (Opcode::NOP, AddressMode::AbsoluteX) => self.addr_absolute_x(&InstructionMode::Load),
+            // 0xDD - CMP a,x
+            (Opcode::CMP, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::compare_a)
+            }
+            // 0xDE - DEC a,x
+            (Opcode::DEC, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::dec)
+            }
+            // 0xDF - BBS 5,dr - see 0x8F
+            // 0xE0 - CPX #i
+            (Opcode::CPX, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::compare_x)
+            }
+            // 0xE1 - SBC (d,x)
+            (Opcode::SBC, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::sbc)
+            }
+            // 0xE2 - NOP #i see 0x02
+            // 0xE3 - NOP see 0x03
+            // 0xE4 - CPX d
+            (Opcode::CPX, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::compare_x)
+            }
+            // 0xE5 - SBC d
+            (Opcode::SBC, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::sbc),
+            // 0xE6 - INC d
+            (Opcode::INC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::inc),
+            // 0xE7 - SMB 6,d see 0x87
+            // 0xE8 - INX
+            (Opcode::INX, AddressMode::Implied) => {
+                self.load_register(Register::X, (self.x + Wrapping(1)).0)
+            }
+            // 0xE9 0xEB - SBC #i
+            (Opcode::SBC, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::sbc)
+            }
+            // 0xEA - NOP see 0x03
+            // 0xEB - NOP see 0x03
+            // 0xEC - CPX a
+            (Opcode::CPX, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::compare_x)
+            }
+            // 0xED - SBC a
+            (Opcode::SBC, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::sbc)
+            }
+            // 0xEE - INC a
+            (Opcode::INC, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::inc)
+            }
+            // 0xEF - BBS 6,dr - see 0x8F
+            // 0xF0 - BEQ *+r
+            (Opcode::BEQ, AddressMode::Relative) => self.beq(),
+            // 0xF1 - SBC (d),y
+            (Opcode::SBC, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::sbc)
+            }
+            // 0xF2 - SBC (d)
+            (Opcode::SBC, AddressMode::Indirect) => {
+                self.load_instruction(Self::addr_indirect, Self::sbc)
+            }
+            // 0xF3 - NOP see 0x03
+            // 0xF4 - NOP d,x see 0x54
+            // 0xF5 - SBC d,x
+            (Opcode::SBC, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::sbc)
+            }
+            // 0xF6 - INC d,x
+            (Opcode::INC, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::inc)
+            }
+            // 0xF7 - SMB 7,d see 0x87
+            // 0xF8 - SED
+            (Opcode::SED, AddressMode::Implied) => self.sed(),
+            // 0xF9 - SBC a,y
+            (Opcode::SBC, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::sbc)
+            }
+            // 0xFA - PLX
+            (Opcode::PLX, AddressMode::Implied) => self.plx(),
+            // 0xFB - NOP see 0x03
+            // 0xFC - NOP a,x see 0xDC
+            // 0xFD - SBC a,x
+            (Opcode::SBC, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::sbc)
+            }
+            // 0xFE - INC a,x
+            (Opcode::INC, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::inc)
+            }
+            // 0xFF - BBS 7,dr - see 0x8F
+            _ => panic!("no implementation for {:?} {:?}", self.op.op, self.op.mode),
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn process_opcode_nmos(&mut self) -> Result<OpState> {
         match (self.op.op, self.op.mode) {
             // 0x00 - BRK #i
             (Opcode::BRK, AddressMode::Immediate) => self.brk(),
@@ -1505,7 +2396,7 @@ impl<'a> Cpu<'a> {
             }
             // 0x2A - ROL
             (Opcode::ROL, AddressMode::Implied) => self.rol_acc(),
-            // 0x2B - ANC 0x0B
+            // 0x2B - ANC #i see 0x0B
             // 0x2C - BIT a
             (Opcode::BIT, AddressMode::Absolute) => {
                 self.load_instruction(Self::addr_absolute, Self::bit)
@@ -1533,7 +2424,7 @@ impl<'a> Cpu<'a> {
             (Opcode::RLA, AddressMode::IndirectY) => {
                 self.rmw_instruction(Self::addr_indirect_y, Self::rla)
             }
-            // 0x34 - see 0x14
+            // 0x34 - NOP d,x see 0x14
             // 0x35 - AND d,x
             (Opcode::AND, AddressMode::ZeroPageX) => {
                 self.load_instruction(Self::addr_zp_x, Self::and)
@@ -1693,7 +2584,7 @@ impl<'a> Cpu<'a> {
                 self.load_instruction(Self::addr_immediate, Self::arr)
             }
             // 0x6C - JMP (a)
-            (Opcode::JMP, AddressMode::Indirect) => self.jmp_indirect(),
+            (Opcode::JMP, AddressMode::AbsoluteIndirect) => self.jmp_indirect(),
             // 0x6D - ADC a
             (Opcode::ADC, AddressMode::Absolute) => {
                 self.load_instruction(Self::addr_absolute, Self::adc)
@@ -2165,7 +3056,7 @@ impl<'a> Cpu<'a> {
             (Opcode::ISC, AddressMode::AbsoluteX) => {
                 self.rmw_instruction(Self::addr_absolute_x, Self::isc)
             }
-            _ => todo!("implement for {:?} {:?}", self.op.op, self.op.mode),
+            _ => panic!("no implementation for {:?} {:?}", self.op.op, self.op.mode),
         }
     }
 
@@ -2294,10 +3185,29 @@ impl<'a> Cpu<'a> {
         address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
         op_func: fn(&mut Self) -> Result<OpState>,
     ) -> Result<OpState> {
-        self.addr_done = address_mode(self, &InstructionMode::Load)?;
+        // Account for ADC/SBC in D mode on CMOS needing to do one more cycle.
+        let mut skip_done = false;
+        if self.addr_done != OpState::Done {
+            self.addr_done = address_mode(self, &InstructionMode::Load)?;
+            if self.addr_done == OpState::Done {
+                skip_done = true;
+            }
+        }
         match self.addr_done {
             OpState::Processing => Ok(OpState::Processing),
-            OpState::Done => op_func(self),
+            OpState::Done => {
+                if self.cpu_type == Type::CMOS
+                    && skip_done
+                    && self.p & P_DECIMAL != Flags(0x00)
+                    && (self.op.op == Opcode::ADC || self.op.op == Opcode::SBC)
+                {
+                    // Do another read cycle to account for SBC/ADC needing this
+                    self.op_val = self.ram.read(self.op_addr);
+                    Ok(OpState::Processing)
+                } else {
+                    op_func(self)
+                }
+            }
         }
     }
 
@@ -2372,12 +3282,19 @@ impl<'a> Cpu<'a> {
                 // For load and RMW we read the value
                 self.op_val = self.ram.read(self.op_addr);
                 match mode {
+                    // For a load we're now done.
                     &InstructionMode::Load => Ok(OpState::Done),
                     _ => Ok(OpState::Processing),
                 }
             }
             Tick::Tick5 => {
-                self.ram.write(self.op_addr, self.op_val);
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                if self.cpu_type == Type::CMOS {
+                    self.ram.read(self.op_addr);
+                } else {
+                    self.ram.write(self.op_addr, self.op_val);
+                }
                 Ok(OpState::Done)
             }
         }
@@ -2387,7 +3304,7 @@ impl<'a> Cpu<'a> {
     // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
+    // the 6502 operates. In the CMOS case this is a 2nd read.
     // Returns OpState::Done if this tick ends address processing and/or any errors.
     fn addr_absolute_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
         self.addr_absolute_xy(mode, self.x.0)
@@ -2397,13 +3314,14 @@ impl<'a> Cpu<'a> {
     // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
+    // the 6502 operates. In the CMOS case this is a 2nd read.
     // Returns OpState::Done if this tick ends address processing and/or any errors.
     fn addr_absolute_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
         self.addr_absolute_xy(mode, self.y.0)
     }
 
-    // addr_absolute_xy implements the details for addr_absolute_x and addr_absolute_y since they only differ based on the register used.
+    // addr_absolute_xy implements the details for addr_absolute_x and addr_absolute_y since
+    // they only differ based on the register used.
     // See those functions for arg/return specifics.
     fn addr_absolute_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
         match self.op_tick {
@@ -2418,7 +3336,6 @@ impl<'a> Cpu<'a> {
             }
             Tick::Tick3 => {
                 self.op_val = self.ram.read(self.pc.0);
-                self.pc += 1;
                 self.op_addr |= u16::from(self.op_val) << 8;
                 // Add reg but do it in a way which won't page wrap (if needed).
                 let a = (self.op_addr & 0xFF00)
@@ -2432,38 +3349,80 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             Tick::Tick4 => {
-                let t = self.op_val;
-                self.op_val = self.ram.read(self.op_addr);
                 // Check old opVal to see if it's non-zero. If so it means the reg addition
-                // crosses a page boundary and we'll have to fixup.
-                // For a load operation that means another tick to read the correct
-                // address.
+                // crosses a page boundary and we'll have to fixup otherwise this is fine.
+                // For a load operation that means another tick to read the correct address.
                 // For RMW it doesn't matter (we always do the extra tick).
                 // For Store we're done. Just fixup p.opAddr so the return value is correct.
-                let mut done = Ok(OpState::Done);
-                if t != 0 {
-                    self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
-                    if mode == &InstructionMode::Load {
-                        done = Ok(OpState::Processing);
+
+                // If we didn't make the wrong address and load/storing we're good.
+                // For RMW we still read here but do continue to the next tick.
+                if self.op_val == 0 {
+                    // Advance the PC since we didn't earlier as down below CMOS
+                    // can reread this value.
+                    self.pc += 1;
+                    self.op_val = self.ram.read(self.op_addr);
+                    if mode == &InstructionMode::Rmw {
+                        return Ok(OpState::Processing);
                     }
+                    return Ok(OpState::Done);
                 }
-                // For RMW it doesn't matter, we tick again.
-                if mode == &InstructionMode::Rmw {
-                    done = Ok(OpState::Processing);
+
+                // Every tick requires a bus cycle so while we're fixing up
+                // we have to read something. In this case we read the wrong op_addr
+                // except CMOS which rereads the last PC+2 value.
+                // Leave op_val as it was so the next tick can tell we had to
+                // do a fixup (for RMW since it always gets there).
+                if self.cpu_type == Type::CMOS {
+                    _ = self.ram.read(self.pc.0);
+                } else {
+                    _ = self.ram.read(self.op_addr);
                 }
-                done
+                self.pc += 1;
+
+                // We computed the wrong addr before so fix it now by page wrapping.
+                self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
+
+                // Stores are done and ready to write on their next cycle since
+                // the addr is correct now.
+                if mode == &InstructionMode::Store {
+                    return Ok(OpState::Done);
+                }
+
+                // Everything else runs another tick at this point
+                Ok(OpState::Processing)
             }
             Tick::Tick5 => {
-                // Optional (on load) in case adding reg went past a page boundary.
+                let t = self.op_val;
+                // So get the correct value in now for both loads (extra cycle for fixup)
+                // and RMW (which always gets here minimum).
                 self.op_val = self.ram.read(self.op_addr);
-                if mode == &InstructionMode::Rmw {
-                    Ok(OpState::Processing)
-                } else {
-                    Ok(OpState::Done)
+
+                // For a load or a CMOS RMW that didn't overflow we're done. Unless...it's
+                // a INC/DEC in which case it always goes the extra cycle per
+                // http://www.6502.org/tutorials/65c02opcodes.html
+                // Otherwise RMW overflow always advances as does non CMOS RMW always.
+                if mode == &InstructionMode::Load
+                    || (self.cpu_type == Type::CMOS
+                        && t == 0
+                        && self.op.op != Opcode::INC
+                        && self.op.op != Opcode::DEC)
+                {
+                    return Ok(OpState::Done);
                 }
+                Ok(OpState::Processing)
             }
             Tick::Tick6 => {
-                self.ram.write(self.op_addr, self.op_val);
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                if self.cpu_type == Type::CMOS {
+                    // TODO(jchacon): The WDC datasheet says this is AA+X+1 which
+                    // I doubt actually. Everything else just seems to think it
+                    // rereads the same addr twice.
+                    _ = self.ram.read(self.op_addr);
+                } else {
+                    self.ram.write(self.op_addr, self.op_val);
+                }
                 Ok(OpState::Done)
             }
         }
@@ -2486,6 +3445,9 @@ impl<'a> Cpu<'a> {
             Tick::Tick2 => {
                 // Already read the value but need to bump the PC
                 // since this mode consumes op_val.
+                // Set op_addr in case ADC/SBC need an extra bus cycle and a place
+                // to read.
+                self.op_addr = self.pc.0;
                 self.pc += 1;
                 Ok(OpState::Done)
             }
@@ -2496,7 +3458,7 @@ impl<'a> Cpu<'a> {
     // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
+    // the 6502 operates. In the CMOS case this is a 2nd read.
     // Returns OpState::Done if this tick ends address processing and/or any errors.
     fn addr_indirect_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
         match self.op_tick {
@@ -2548,7 +3510,59 @@ impl<'a> Cpu<'a> {
                 }
             }
             Tick::Tick7 => {
-                self.ram.write(self.op_addr, self.op_val);
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                // TODO(jchacon): I think the CMOS check can go away here as there
+                // aren't any of these in CMOS, just undocumented NMOS.
+                if self.cpu_type == Type::CMOS {
+                    self.ram.read(self.op_addr);
+                } else {
+                    self.ram.write(self.op_addr, self.op_val);
+                }
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_indirect implements Zero page indirect mode - (d)
+    // returning the value in op_val and the address read in op_addr.
+    // Note: This is a CMOS only opcode which doesn't require RMW
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_indirect(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_indirect_x invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // We've already read the value but need to bump the PC
+                // and assign it into op_addr.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read effective addr low byte
+                self.op_val = self.ram.read(self.op_addr);
+                // Now increment (with ZP rollover) for next read.
+                // There is no truncation since we know this is always
+                // 0-255.
+                #[allow(clippy::cast_possible_truncation)]
+                let a = Wrapping(self.op_addr as u8);
+                self.op_addr = u16::from((a + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Read high byte, shift over and add op_val which has the low byte.
+                self.op_addr =
+                    (u16::from(self.ram.read(self.op_addr)) << 8) | u16::from(self.op_val);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Addr is in op_addr. If this is a load go ahead and read it.
+                // Otherwise a store will just use it.
+                if *mode == InstructionMode::Load {
+                    self.op_val = self.ram.read(self.op_addr);
+                }
                 Ok(OpState::Done)
             }
         }
@@ -2558,7 +3572,7 @@ impl<'a> Cpu<'a> {
     // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
+    // the 6502 operates. In the CMOS case this is a 2nd read.
     // Returns OpState::Done if this tick ends address processing and/or any errors.
     fn addr_indirect_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
         match self.op_tick {
@@ -2601,8 +3615,13 @@ impl<'a> Cpu<'a> {
             Tick::Tick5 => {
                 // Save op_val so we know if this needed fixing.
                 let t = self.op_val;
-                // Even with an incorrect op_addr we still read from it.
-                self.op_val = self.ram.read(self.op_addr);
+                if self.cpu_type != Type::CMOS || t == 0 {
+                    // Even with an incorrect op_addr we still read from it on non CMOS.
+                    self.op_val = self.ram.read(self.op_addr);
+                } else {
+                    // CMOS doesn't spurious read the wrong op_addr. It just rereads the last PC.
+                    _ = self.ram.read((self.pc - Wrapping(1)).0);
+                }
 
                 // Check old opVal to see if it's non-zero. If so it means the Y addition
                 // crosses a page boundary and we'll have to fixup.
@@ -2632,7 +3651,15 @@ impl<'a> Cpu<'a> {
                 }
             }
             Tick::Tick7 => {
-                self.ram.write(self.op_addr, self.op_val);
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                // TODO(jchacon): I think the CMOS check can go away here as there
+                // aren't any of these in CMOS, just undocumented NMOS.
+                if self.cpu_type == Type::CMOS {
+                    self.ram.read(self.op_addr);
+                } else {
+                    self.ram.write(self.op_addr, self.op_val);
+                }
                 Ok(OpState::Done)
             }
         }
@@ -2642,7 +3669,7 @@ impl<'a> Cpu<'a> {
     // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
+    // the 6502 operates. In the CMOS case this is a 2nd read.
     // Returns OpState::Done if this tick ends address processing and/or any errors.
     fn addr_zp(&mut self, mode: &InstructionMode) -> Result<OpState> {
         match self.op_tick {
@@ -2668,7 +3695,13 @@ impl<'a> Cpu<'a> {
                 }
             }
             Tick::Tick4 => {
-                self.ram.write(self.op_addr, self.op_val);
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                if self.cpu_type == Type::CMOS {
+                    self.ram.read(self.op_addr);
+                } else {
+                    self.ram.write(self.op_addr, self.op_val);
+                }
                 Ok(OpState::Done)
             }
         }
@@ -2678,7 +3711,7 @@ impl<'a> Cpu<'a> {
     // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
+    // the 6502 operates. In the CMOS case this is a 2nd read.
     // Returns OpState::Done if this tick ends address processing and/or any errors.
     fn addr_zp_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
         self.addr_zp_xy(mode, self.x.0)
@@ -2688,7 +3721,7 @@ impl<'a> Cpu<'a> {
     // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
     // reread memory incorrectly to compute a storage address).
     // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
+    // the 6502 operates. In the CMOS case this is a 2nd read.
     // Returns OpState::Done if this tick ends address processing and/or any errors.
     fn addr_zp_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
         self.addr_zp_xy(mode, self.y.0)
@@ -2722,6 +3755,7 @@ impl<'a> Cpu<'a> {
             Tick::Tick4 => {
                 // Now read from the final address.
                 self.op_val = self.ram.read(self.op_addr);
+                // If we're load we're now done.
                 if mode == &InstructionMode::Load {
                     Ok(OpState::Done)
                 } else {
@@ -2729,7 +3763,13 @@ impl<'a> Cpu<'a> {
                 }
             }
             Tick::Tick5 => {
-                self.ram.write(self.op_addr, self.op_val);
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                if self.cpu_type == Type::CMOS {
+                    self.ram.read(self.op_addr);
+                } else {
+                    self.ram.write(self.op_addr, self.op_val);
+                }
                 Ok(OpState::Done)
             }
         }
@@ -2750,54 +3790,64 @@ impl<'a> Cpu<'a> {
                 if self.skip_interrupt != SkipInterrupt::PrevSkip {
                     self.skip_interrupt = SkipInterrupt::Skip;
                 }
-
-                // Per http://www.6502.org/tutorials/6502opcodes.html
-                // the wrong page is defined as the a different page than
-                // the next byte after the jump. i.e. current PC at the moment.
-
-                // Now compute the new PC but possibly wrong page.
-                // Stash the old one in p.opAddr so we can use in tick 4 if needed.
-                self.op_addr = self.pc.0;
-                self.pc = Wrapping(
-                    (self.pc.0 & 0xFF00)
-                        | u16::from(
-                            (Wrapping((self.pc.0 & 0x00FF) as u8) + Wrapping(self.op_val)).0,
-                        ),
-                );
-                // It always triggers a bus read of the newly computed PC.
-                _ = self.ram.read(self.pc.0);
-                // Now check the pc against one which didn't truncate for page by sign extending
-                // op_val and adding it to op_addr.
-                // NOTE: We don't lose the sign here since Wrapping will do the right thing.
-                #[allow(
-                    clippy::cast_sign_loss,
-                    clippy::cast_lossless,
-                    clippy::cast_possible_wrap
-                )]
-                if self.pc == Wrapping(self.op_addr) + Wrapping(self.op_val as i8 as i16 as u16) {
-                    Ok(OpState::Done)
-                } else {
-                    Ok(OpState::Processing)
-                }
+                self.branch_taken()
             }
-            Tick::Tick4 => {
-                // Set the correct PC value if we got here.
-                // NOTE: We don't lose the sign here since Wrapping will do the right thing.
-                #[allow(
-                    clippy::cast_sign_loss,
-                    clippy::cast_lossless,
-                    clippy::cast_possible_wrap
-                )]
-                let val = Wrapping(self.op_addr) + Wrapping(self.op_val as i8 as i16 as u16);
-                self.pc = val;
-                // Always read the next opcode now.
-                _ = self.ram.read(self.pc.0);
-                Ok(OpState::Done)
-            }
+            Tick::Tick4 => self.branch_taken2(),
         }
     }
 
-    // branch_nopreads the next byte as the branch offset and increments the PC.
+    // branch_taken computes the first attempt to take a branch. This may be wrong
+    // due to page crossing so it will return Processing or Done to indicate
+    // whether to call branch_taken2 or not (call if Processing returns)
+    #[allow(clippy::unnecessary_wraps)]
+    fn branch_taken(&mut self) -> Result<OpState> {
+        // Per http://www.6502.org/tutorials/6502opcodes.html
+        // the wrong page is defined as the a different page than
+        // the next byte after the jump. i.e. current PC at the moment.
+
+        // Now compute the new PC but possibly wrong page.
+        // Stash the old one in p.opAddr so we can use in tick 4 if needed.
+        self.op_addr = self.pc.0;
+        self.pc = Wrapping(
+            (self.pc.0 & 0xFF00)
+                | u16::from((Wrapping((self.pc.0 & 0x00FF) as u8) + Wrapping(self.op_val)).0),
+        );
+        // It always triggers a bus read of the newly computed PC.
+        _ = self.ram.read(self.pc.0);
+        // Now check the pc against one which didn't truncate for page by sign extending
+        // op_val and adding it to op_addr.
+        // NOTE: We don't lose the sign here since Wrapping will do the right thing.
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_lossless,
+            clippy::cast_possible_wrap
+        )]
+        if self.pc == Wrapping(self.op_addr) + Wrapping(self.op_val as i8 as i16 as u16) {
+            return Ok(OpState::Done);
+        }
+        Ok(OpState::Processing)
+    }
+
+    // branch_taken2 is used when fixing up a page boundary issue from a previous
+    // branch_taken call.
+    #[allow(clippy::unnecessary_wraps)]
+
+    fn branch_taken2(&mut self) -> Result<OpState> {
+        // Set the correct PC value if we got here.
+        // NOTE: We don't lose the sign here since Wrapping will do the right thing.
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_lossless,
+            clippy::cast_possible_wrap
+        )]
+        let val = Wrapping(self.op_addr) + Wrapping(self.op_val as i8 as i16 as u16);
+        self.pc = val;
+        // Always read the next opcode now.
+        _ = self.ram.read(self.pc.0);
+        Ok(OpState::Done)
+    }
+
+    // branch_nop reads the next byte as the branch offset and increments the PC.
     // Used for the 2rd tick when branches aren't taken.
     fn branch_nop(&mut self) -> Result<OpState> {
         match self.op_tick {
@@ -2869,12 +3919,17 @@ impl<'a> Cpu<'a> {
                 if irq {
                     push &= !P_B;
                 }
+                self.push_stack(push.0);
+                // Now set P after we've pushed.
+
                 // CMOS turns off D always
                 if Type::CMOS == self.cpu_type {
                     self.p &= !P_DECIMAL;
                 }
-                self.p |= P_INTERRUPT;
-                self.push_stack(push.0);
+                // For BRK/IRQ we set I. NMI does not.
+                if self.irq_raised != InterruptStyle::NMI {
+                    self.p |= P_INTERRUPT;
+                }
                 Ok(OpState::Processing)
             }
             Tick::Tick6 => {
@@ -2896,7 +3951,6 @@ impl<'a> Cpu<'a> {
         }
     }
 
-    // compare_y
     // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
     // This sets all associated flags in P. For SBC simply ones-complement op_val
     // before calling.
@@ -2909,7 +3963,7 @@ impl<'a> Cpu<'a> {
 
         // Do BCD but not on the Ricoh version which didn't implement it.
         // This is the CPU for the NES.
-        if (self.p & P_DECIMAL) != Flags(0x00) && self.cpu_type != Type::Ricoh {
+        if (self.p & P_DECIMAL) != Flags(0x00) && self.cpu_type != Type::RICOH {
             // BCD details - http://6502.org/tutorials/decimal_mode.html
             // Also http://nesdev.com/6502_cpu.txt but it has errors
             let mut al = Wrapping(self.a.0 & 0x0F) + Wrapping(self.op_val & 0x0F) + Wrapping(carry);
@@ -2930,8 +3984,13 @@ impl<'a> Cpu<'a> {
             self.overflow_check(self.a.0, self.op_val, seq.0);
             self.carry_check(sum.0);
             // TODO(jchacon): CMOS gets N/Z set correctly and needs implementing.
-            self.negative_check(seq.0);
-            self.zero_check(bin.0);
+            if self.cpu_type == Type::CMOS {
+                self.negative_check(res);
+                self.zero_check(res);
+            } else {
+                self.negative_check(seq.0);
+                self.zero_check(bin.0);
+            }
             self.a = Wrapping(res);
             return Ok(OpState::Done);
         }
@@ -3098,6 +4157,95 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    // bbr_bbs_common implement the common tick portions which both instructions
+    // share. They only differ on how the bit is tested but have unique bus cycle
+    // operations compared to normal branches.
+    // Note: CMOS only.
+    fn bbr_bbs_common(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick8 => {
+                Err(eyre!("bbr_bbs_common: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // Just bump the PC and continue after computing op_addr for
+                // the ZP read. op_val was already read for us before entering.
+                self.op_addr = u16::from(self.op_val);
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read the ZP value into op_addr which we can use to mask
+                // below to test.
+                self.op_addr = u16::from(self.ram.read(self.op_addr));
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Read dest offset
+                self.op_val = self.ram.read(self.pc.0);
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Compute the initial branch PC and read from it regardless if
+                // we branch or not.
+                let a = Wrapping(
+                    (self.pc.0 & 0xFF00)
+                        | u16::from(
+                            (Wrapping((self.pc.0 & 0x00FF) as u8) + Wrapping(self.op_val)).0,
+                        ),
+                )
+                .0;
+                _ = self.ram.read(a);
+                // Just return here and let bbr/bbs pick up this.
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => self.branch_taken(),
+            Tick::Tick7 => self.branch_taken2(),
+        }
+    }
+    // bbr implements support for all BBR x,d instructions which will branch
+    // if bit x is clear in the given ZP location.
+    // Note: CMOS only.
+    fn bbr(&mut self, pos: u8) -> Result<OpState> {
+        let ret = self.bbr_bbs_common();
+        if self.op_tick == Tick::Tick5 {
+            // For tick 5 common implemented the parts needed for bus cycling
+            // and then returns processing. Pick the actual return based on
+            // whether we really branch or not.
+            let mask = 1 << pos;
+            if self.op_addr & mask == 0x00 {
+                // We keep going to do the actual branch
+                Ok(OpState::Processing)
+            } else {
+                Ok(OpState::Done)
+            }
+        } else {
+            ret
+        }
+    }
+
+    // bbs implements support for all BBR x,d instructions which will branch
+    // if bit x is set in the given ZP location.
+    // Note: CMOS only.
+    fn bbs(&mut self, pos: u8) -> Result<OpState> {
+        let ret = self.bbr_bbs_common();
+        if self.op_tick == Tick::Tick5 {
+            // For tick 5 common implemented the parts needed for bus cycling
+            // and then returns processing. Pick the actual return based on
+            // whether we really branch or not.
+            let mask = 1 << pos;
+            if self.op_addr & mask == 0x00 {
+                // In this one if the bit is clear we're done.
+                Ok(OpState::Done)
+            } else {
+                // We keep going to do the actual branch
+                Ok(OpState::Processing)
+            }
+        } else {
+            ret
+        }
+    }
+
     // bcs implements the BCS instruction and branches if C is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bcs(&mut self) -> Result<OpState> {
@@ -3119,16 +4267,19 @@ impl<'a> Cpu<'a> {
     }
 
     // bit implements the BIT instruction for AND'ing against A
-    // and setting N/V based on the value.
+    // and setting N/V/Z based on the value.
+    // CMOS only: In immediate mode (CMOS only) only Z is set, not N/V.
     // Always returns Done since this takes one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
     fn bit(&mut self) -> Result<OpState> {
         self.zero_check(self.a.0 & self.op_val);
-        self.negative_check(self.op_val);
-        // Copy V from bit 6
-        self.p &= !P_OVERFLOW;
-        if self.op_val & P_OVERFLOW != 0x00 {
-            self.p |= P_OVERFLOW;
+        if self.cpu_type != Type::CMOS || self.op.mode != AddressMode::Immediate {
+            self.negative_check(self.op_val);
+            // Copy V from bit 6
+            self.p &= !P_OVERFLOW;
+            if self.op_val & P_OVERFLOW != 0x00 {
+                self.p |= P_OVERFLOW;
+            }
         }
         Ok(OpState::Done)
     }
@@ -3188,13 +4339,17 @@ impl<'a> Cpu<'a> {
     // Returns Done when done and/or errors.
     fn brk(&mut self) -> Result<OpState> {
         // This is the same as an interrupt handler so the vector we call
-        // can change on a per tick basis. i.e. we might push P with P_B set
+        // can change on a per tick basis on NMOS. i.e. we might push P with P_B set
         // but go to the NMI vector depending on timing.
+        // CMOS doesn't do this. It will always run BRK to completion first.
+        if self.cpu_type == Type::CMOS {
+            return self.run_interrupt(IRQ_VECTOR, false);
+        }
 
         // New PC comes from IRQ_VECTOR unless we've raised an NMI.
         let ret = match self.irq_raised {
-            InterruptStyle::Irq => self.run_interrupt(IRQ_VECTOR, true),
-            InterruptStyle::Nmi => self.run_interrupt(NMI_VECTOR, true),
+            InterruptStyle::IRQ => self.run_interrupt(IRQ_VECTOR, true),
+            InterruptStyle::NMI => self.run_interrupt(NMI_VECTOR, true),
             InterruptStyle::None => self.run_interrupt(IRQ_VECTOR, false),
         };
         // If we're done on this tick eat any pending interrupt since BRK is special.
@@ -3313,21 +4468,26 @@ impl<'a> Cpu<'a> {
                 self.addr_absolute(&InstructionMode::Load)
             }
             Tick::Tick4 => {
-                // Read the low byte of the pointer and stash it in op_val
-                self.op_val = self.ram.read(self.op_addr);
+                // Read the low byte of the pointer and stash it in op_val if NMOS
+                // For CMOS we simply reread PC+2
+                if self.cpu_type == Type::CMOS {
+                    self.op_val = self.ram.read((self.pc - Wrapping(1)).0);
+                } else {
+                    self.op_val = self.ram.read(self.op_addr);
+                }
                 Ok(OpState::Processing)
             }
             Tick::Tick5 => {
-                // Read the high byte. On NMOS and CMOS this tick reads the wrong address if there was a page wrap.
-                let addr = (self.op_addr & 0xFF00)
-                    | u16::from((Wrapping((self.op_addr & 0x00FF) as u8) + Wrapping(1)).0);
-                let val = self.ram.read(addr);
+                // Do CMOS first since this always reads the right low byte as compared to NMOS.
                 if self.cpu_type == Type::CMOS {
-                    // Just do a normal +1 now for CMOS so tick 6 reads the correct address no matter what.
-                    // It may be a duplicate of this but that's fine.
+                    self.op_val = self.ram.read(self.op_addr);
                     self.op_addr = (Wrapping(self.op_addr) + Wrapping(1)).0;
                     return Ok(OpState::Processing);
                 }
+                // Read the high byte. On NMOS this tick reads the wrong address if there was a page wrap.
+                let addr = (self.op_addr & 0xFF00)
+                    | u16::from((Wrapping((self.op_addr & 0x00FF) as u8) + Wrapping(1)).0);
+                let val = self.ram.read(addr);
                 self.op_addr = (u16::from(val) << 8) | u16::from(self.op_val);
                 self.pc = Wrapping(self.op_addr);
                 Ok(OpState::Done)
@@ -3339,6 +4499,51 @@ impl<'a> Cpu<'a> {
                 let val = self.ram.read(self.op_addr);
                 self.op_addr = (u16::from(val) << 8) | u16::from(self.op_val);
                 self.pc = Wrapping(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // jmp_indirect_x implements the indirect JMP instruction for jumping through a pointer to a new address
+    // while adding X to the pointer before reading. This allows for easier jump
+    // table construction. This is mostly the same as jmp_indirect except
+    // bus reads are simpler and different due to CMOS only and no legacy bugs.
+    // Returns Done when the PC is correct. Returns an error on an invalid tick.
+    // Note: CMOS only.
+    fn jmp_indirect_x(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("jmp indirect_x: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // op_val has the first start of the address so start computing it.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                self.op_val = self.ram.read(self.pc.0);
+                self.op_addr |= u16::from(self.op_val) << 8;
+                // NOTE: Don't increment PC as we read this again in tick 4
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Do nothing read of 2nd op byte
+                _ = self.ram.read(self.pc.0);
+                // Add X to op_addr
+                self.op_addr = (Wrapping(self.op_addr) + Wrapping(u16::from(self.x.0))).0;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Read the high byte.
+                self.op_val = self.ram.read(self.op_addr);
+                self.op_addr = (Wrapping(self.op_addr) + Wrapping(1)).0;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                // Read the low byte and compute new PC
+                let val = self.ram.read(self.op_addr);
+                self.pc = Wrapping(u16::from(val) << 8) | Wrapping(u16::from(self.op_val));
                 Ok(OpState::Done)
             }
         }
@@ -3422,6 +4627,44 @@ impl<'a> Cpu<'a> {
         self.load_register(Register::A, self.a.0 >> 1)
     }
 
+    // nop8 implements the strange NOP for CMOS.
+    // This will read an absolute argument (bb aa) and then
+    // read FFbb followed by 4 FFFF reads
+    // Returns Done when done and/or errors.
+    // Note: CMOS only.
+    fn nop8(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 => Err(eyre!("pha: invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => {
+                // op_val has the first start of the address so start computing it.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                self.op_val = self.ram.read(self.pc.0);
+                self.pc += 1;
+                self.op_addr |= u16::from(self.op_val) << 8;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Turn this into FFbb and read from it.
+                self.op_addr |= 0xFF00;
+                _ = self.ram.read(self.op_addr);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 | Tick::Tick6 | Tick::Tick7 => {
+                self.op_addr = 0xFFFF;
+                _ = self.ram.read(self.op_addr);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick8 => {
+                _ = self.ram.read(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
     // oal implements the undocumented opcode for OAL.
     // This one acts a bit randomly. It somtimes does XAA and sometimes
     // does A=X=A&val.
@@ -3487,6 +4730,46 @@ impl<'a> Cpu<'a> {
         }
     }
 
+    // phx implements the PHX instruction for pushing X onto the stack.
+    // Returns Done when done and/or errors.
+    // Note: CMOS only
+    fn phx(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("phx: invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                self.push_stack(self.x.0);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // phy implements the PHY instruction for pushing Y onto the stack.
+    // Returns Done when done and/or errors.
+    // Note: CMOS only
+    fn phy(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("phy: invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                self.push_stack(self.y.0);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
     // pla implements the PLA instruction for pulling A from the stack.
     // Returns Done when done and/or errors.
     fn pla(&mut self) -> Result<OpState> {
@@ -3507,6 +4790,56 @@ impl<'a> Cpu<'a> {
                 // The real read
                 let val = self.pop_stack();
                 self.load_register(Register::A, val)
+            }
+        }
+    }
+
+    // plx implements the PLX instruction for pulling X from the stack.
+    // Returns Done when done and/or errors.
+    // Note: CMOS only.
+    fn plx(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("plx: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // A read of the current stack happens while the CPU is incrementing S.
+                // Since our popStack does both of these together on this cycle it's just
+                // a throw away read.
+                self.s -= 1;
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // The real read
+                let val = self.pop_stack();
+                self.load_register(Register::X, val)
+            }
+        }
+    }
+
+    // ply implements the PLY instruction for pulling Y from the stack.
+    // Returns Done when done and/or errors.
+    // Note: CMOS only.
+    fn ply(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("ply: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // A read of the current stack happens while the CPU is incrementing S.
+                // Since our popStack does both of these together on this cycle it's just
+                // a throw away read.
+                self.s -= 1;
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // The real read
+                let val = self.pop_stack();
+                self.load_register(Register::Y, val)
             }
         }
     }
@@ -3547,6 +4880,19 @@ impl<'a> Cpu<'a> {
         self.ram.write(self.op_addr, val);
         self.carry_check(u16::from(self.op_val) << 1);
         self.load_register(Register::A, self.a.0 & val)
+    }
+
+    // rmb implements all RMB instructions for clearing bit X at the given ZP location
+    // Always returns Done since this takes one tick and never returns an error.
+    // Note: CMOS only.
+    #[allow(clippy::unnecessary_wraps)]
+    fn rmb(&mut self) -> Result<OpState> {
+        // The MSB nibble is the bit to use.
+        let loc = (self.op_raw & 0xF0) >> 4;
+        let mask = 1 << loc;
+        let mask = !mask;
+        self.ram.write(self.op_addr, self.op_val & mask);
+        Ok(OpState::Done)
     }
 
     // rol implements the ROL instruction which does a rotate left on op_addr.
@@ -3687,7 +5033,7 @@ impl<'a> Cpu<'a> {
     fn sbc(&mut self) -> Result<OpState> {
         // Do BCD but not on the Ricoh version which didn't implement it.
         // This is the CPU for the NES.
-        if (self.p & P_DECIMAL) != Flags(0x00) && self.cpu_type != Type::Ricoh {
+        if (self.p & P_DECIMAL) != Flags(0x00) && self.cpu_type != Type::RICOH {
             // Pull the carry bit out which thankfully is the low bit so can be
             // used directly.
             let carry = (self.p & P_CARRY).0;
@@ -3700,18 +5046,30 @@ impl<'a> Cpu<'a> {
                 + Wrapping(carry as i8)
                 - Wrapping(1);
 
-            // Low nibble fixup
-            if al < Wrapping(0) {
+            // Low nibble fixup for non CMOS.
+            if al < Wrapping(0) && self.cpu_type != Type::CMOS {
                 al = ((al - Wrapping(0x06)) & Wrapping(0x0F)) - Wrapping(0x10);
             }
-            let mut sum = Wrapping(i16::from(self.a.0 & 0xF0))
-                - Wrapping(i16::from(self.op_val & 0xF0))
-                + Wrapping(i16::from(al.0));
 
-            // High nibble fixup
+            let mut sum;
+            if self.cpu_type == Type::CMOS {
+                sum = Wrapping(i16::from(self.a.0)) - Wrapping(i16::from(self.op_val))
+                    + Wrapping(i16::from(carry))
+                    - Wrapping(1);
+            } else {
+                sum = Wrapping(i16::from(self.a.0 & 0xF0))
+                    - Wrapping(i16::from(self.op_val & 0xF0))
+                    + Wrapping(i16::from(al.0));
+            }
+            // High nibble fixup (for all)
             if sum < Wrapping(0x0000) {
                 sum -= 0x60;
             }
+            // Also on CMOS fixup low nibble (since skipped above)
+            if self.cpu_type == Type::CMOS && al < Wrapping(0x0000) {
+                sum -= 0x06;
+            }
+
             // NOTE: We don't lose the sign here BCD doesn't care.
             #[allow(clippy::cast_sign_loss)]
             let res = (sum.0 & 0xFF) as u8;
@@ -3719,12 +5077,18 @@ impl<'a> Cpu<'a> {
             // Do normal binary math to set C,N,Z
             let b = self.a + Wrapping(!self.op_val) + Wrapping(carry);
             self.overflow_check(self.a.0, !self.op_val, b.0);
-            self.negative_check(b.0);
+
+            if self.cpu_type == Type::CMOS {
+                self.negative_check(res);
+                self.zero_check(res);
+            } else {
+                self.negative_check(b.0);
+                self.zero_check(b.0);
+            }
 
             // Yes, could do bit checks here like the hardware but
             // just treating as uint16 math is simpler to code.
             self.carry_check(u16::from(self.a.0) + u16::from(!self.op_val) + u16::from(carry));
-            self.zero_check(b.0);
             self.a = Wrapping(res);
             return Ok(OpState::Done);
         }
@@ -3811,6 +5175,18 @@ impl<'a> Cpu<'a> {
         self.load_register(Register::A, (self.op_val << 1) | self.a.0)
     }
 
+    // smb implements all SMB instructions for setting bit X at the given ZP location
+    // Always returns Done since this takes one tick and never returns an error.
+    // Note: CMOS only.
+    #[allow(clippy::unnecessary_wraps)]
+    fn smb(&mut self) -> Result<OpState> {
+        // The MSB nibble is the bit to use.
+        let loc = ((self.op_raw & 0xF0) >> 4) - 0x08;
+        let mask = 1 << loc;
+        self.ram.write(self.op_addr, self.op_val | mask);
+        Ok(OpState::Done)
+    }
+
     // sre implements the undocumented opcode for SRE. This does a LSR on
     // op_addr and then XOR's it against A. Sets flags and carry.
     // Always returns Done since this takes one tick and never returns an error.
@@ -3827,6 +5203,58 @@ impl<'a> Cpu<'a> {
     fn tas(&mut self) -> Result<OpState> {
         self.s = self.a & self.x;
         self.ahx(Self::addr_absolute_y)
+    }
+
+    // trb implements the CMOS only instruction for testing and setting bits.
+    // This modifies a memory location based on the value in A.
+    // Z is set based on loc&A
+    // The memory location is set based on loc&(A^0xFF)
+    // Always returns Done since this takes one tick and never returns an error.
+    // Note: CMOS only.
+    #[allow(clippy::unnecessary_wraps)]
+    fn trb(&mut self) -> Result<OpState> {
+        self.zero_check(self.a.0 & self.op_val);
+        self.ram
+            .write(self.op_addr, (self.a.0 ^ 0xFF) & self.op_val);
+        Ok(OpState::Done)
+    }
+
+    // tsb implements the CMOS only instruction for testing and setting bits.
+    // This modifies a memory location based on the value in A.
+    // Z is set based on loc&A
+    // The memory location is set based on loc|A
+    // Always returns Done since this takes one tick and never returns an error.
+    // Note: CMOS only.
+    #[allow(clippy::unnecessary_wraps)]
+    fn tsb(&mut self) -> Result<OpState> {
+        self.zero_check(self.a.0 & self.op_val);
+        self.ram.write(self.op_addr, self.a.0 | self.op_val);
+        Ok(OpState::Done)
+    }
+
+    // wai implements the WAI instruction which pauses the CPU until an interrupt occurs.
+    // Note: CMOS only
+    fn wai(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("wait: invalid op_tick: {:?}", self.op_tick)),
+            Tick::Tick2 => {
+                // All that happens here is a bus read of the next instruction
+                // which already happened in tick(). But we'll do it again in tick3.
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read the op_val byte again and leave PC alone for when we wake up.
+                self.op_val = self.ram.read(self.pc.0);
+                self.state = State::WaitingForInterrupt;
+                Ok(OpState::Done)
+            }
+        }
     }
 
     // xaa implements the undocumented opcode for XAA.

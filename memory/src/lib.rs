@@ -22,6 +22,55 @@ pub trait Memory {
     fn ram(&self, dest: &mut [u8; MAX_SIZE]);
 }
 
+impl std::fmt::Display for dyn Memory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Get a copy of the RAM image
+        let mut r = [0; MAX_SIZE];
+        self.ram(&mut r);
+
+        let mut repeat = false;
+        for row in 0..MAX_SIZE / 16 {
+            // After the first row compare this row with the previous one.
+            // If they are identical print a single * once and skip processing
+            // until they aren't identical anymore.
+            let cur = row * 16;
+            if row != 0 {
+                let old = (row - 1) * 16;
+                if r[cur..cur + 16] == r[old..old + 16] {
+                    if !repeat {
+                        writeln!(f, "*")?;
+                        repeat = true;
+                    }
+                    continue;
+                }
+                repeat = false;
+            }
+            // Match hexdump output and use lowercase hex
+            write!(f, "{cur:08x}  ")?;
+            for col in 0..8 {
+                write!(f, "{:02x} ", r[cur + col])?;
+            }
+            write!(f, " ")?;
+            for col in 8..16 {
+                write!(f, "{:02x} ", r[cur + col])?;
+            }
+            write!(f, " |")?;
+            for col in 0..16 {
+                let c = char::from(r[cur + col]);
+                if c == ' ' {
+                    write!(f, " ")?;
+                } else if c.is_ascii_graphic() {
+                    write!(f, "{c}")?;
+                } else {
+                    write!(f, ".")?;
+                }
+            }
+            writeln!(f, "|")?;
+        }
+        Ok(())
+    }
+}
+
 /// The maxmimum memory size one can address.
 pub const MAX_SIZE: usize = 1 << 16;
 

@@ -18,6 +18,9 @@ pub fn step(ty: Type, pc: Wrapping<u16>, r: &dyn Memory) -> (String, Wrapping<u1
     // Sign extend a 16 bit value so it can be added to PC for branch offsets
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
     let pc116 = Wrapping(i16::from(pc1 as i8) as u16);
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+    let pc216 = Wrapping(i16::from(pc2 as i8) as u16);
+
     let op = r.read(pc.0);
 
     let (opcode, mode) = {
@@ -41,13 +44,16 @@ pub fn step(ty: Type, pc: Wrapping<u16>, r: &dyn Memory) -> (String, Wrapping<u1
         AddressMode::ZeroPageY => {
             write!(out, "{pc1:02X}      {opcode} {pc1:02X},Y").unwrap();
         }
+        AddressMode::Indirect => {
+            write!(out, "{pc1:02X}      {opcode} ({pc1:02X})").unwrap();
+        }
         AddressMode::IndirectX => {
             write!(out, "{pc1:02X}      {opcode} ({pc1:02X},X)",).unwrap();
         }
         AddressMode::IndirectY => {
             write!(out, "{pc1:02X}      {opcode} ({pc1:02X},Y)").unwrap();
         }
-        AddressMode::Absolute => {
+        AddressMode::Absolute | AddressMode::AbsoluteNOP => {
             write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X}",).unwrap();
             count += 1;
         }
@@ -59,11 +65,15 @@ pub fn step(ty: Type, pc: Wrapping<u16>, r: &dyn Memory) -> (String, Wrapping<u1
             write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},Y",).unwrap();
             count += 1;
         }
-        AddressMode::Indirect => {
+        AddressMode::AbsoluteIndirect => {
             write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X})",).unwrap();
             count += 1;
         }
-        AddressMode::Implied => {
+        AddressMode::AbsoluteIndirectX => {
+            write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X},X)",).unwrap();
+            count += 1;
+        }
+        AddressMode::Implied | AddressMode::NOPCmos => {
             write!(out, "        {opcode}").unwrap();
             count -= 1;
         }
@@ -72,6 +82,15 @@ pub fn step(ty: Type, pc: Wrapping<u16>, r: &dyn Memory) -> (String, Wrapping<u1
                 out,
                 "{pc1:02X}      {opcode} {pc1:02X} ({:04X})",
                 pc + pc116 + Wrapping(2u16)
+            )
+            .unwrap();
+        }
+        AddressMode::ZeroPageRelative => {
+            write!(
+                out,
+                "{pc1:02X} {pc2:02X}   {opcode} {},{pc1:02X},{pc2:02X} ({:04X})",
+                (op & 0xF0) >> 4,
+                pc + pc216 + Wrapping(2u16)
             )
             .unwrap();
         }
