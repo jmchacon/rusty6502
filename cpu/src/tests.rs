@@ -169,6 +169,56 @@ fn tick_next() {
 }
 
 #[test]
+fn disassemble_test() {
+    let mut r = FlatRAM::default();
+
+    // All of our tests use CMOS since it's the superset of all modes
+    let tests = [
+        (vec![0xA9, 0x69], "LDA #69"),                  // Immediate
+        (vec![0xA5, 0x69], "LDA 69"),                   // ZP
+        (vec![0xB5, 0x69], "LDA 69,X"),                 // ZPX
+        (vec![0xB6, 0x69], "LDX 69,Y"),                 // ZPY
+        (vec![0xB2, 0x69], "LDA (69)"),                 // Indirect
+        (vec![0xA1, 0x69], "LDA (69,X)"),               // Indirect X
+        (vec![0xB1, 0x69], "LDA (69),Y"),               // Indirect Y
+        (vec![0xAD, 0x69, 0x55], "LDA 5569"),           // Absolute
+        (vec![0xBD, 0x69, 0x55], "LDA 5569,X"),         // Absolute X
+        (vec![0xB9, 0x69, 0x55], "LDA 5569,Y"),         // Absolute Y
+        (vec![0x6C, 0x69, 0x55], "JMP (5569)"),         // Absolute Indirect
+        (vec![0x7C, 0x69, 0x55], "JMP (5569,X)"),       // Absolute Indirect
+        (vec![0x1A], "INC"),                            // Implied
+        (vec![0x03], "NOP"),                            // NOPCmos
+        (vec![0x5C, 0x34, 0x12], "NOP 1234"),           // AbsoluteNOP
+        (vec![0x80, 0x69], "BRA 69 (006A)"),            // Relative,
+        (vec![0x1F, 0x55, 0x69], "BBR 1,55,69 (006A)"), // Zero Page Relative
+    ];
+
+    // Set addr at end of RAM to test wrapping.
+    let addr = Wrapping(0xFFFF);
+    for t in &tests {
+        #[allow(clippy::unwrap_used)]
+        let num = u16::try_from(t.0.len()).unwrap();
+        let mut out = format!("{addr:04X} ");
+        for l in 0..num {
+            // Assemble test bytes.
+            let b = t.0[usize::from(l)];
+            r.write((addr + Wrapping(l)).0, b);
+            write!(out, "{b:02X} ").unwrap();
+        }
+        match num {
+            1 => write!(out, "        ").unwrap(),
+            2 => write!(out, "     ").unwrap(),
+            3 => write!(out, "  ").unwrap(),
+            _ => panic!("odd vec?"),
+        };
+        write!(out, "{}", t.1).unwrap();
+
+        let (d, _) = disassemble::step(Type::CMOS, addr, &r);
+        assert!(d == out, "Expected output\n{out}\n\nDoesn't match\n{d}");
+    }
+}
+
+#[test]
 fn flags_test() {
     let mut f = Flags::default();
     assert!(f == Flags(P_S1), "Flags default not S1");
@@ -1486,7 +1536,6 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
-            let (_, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1525,7 +1574,6 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
-            let (_, _) = disassemble::step(Type::CMOS, cpu.pc, cpu.ram.as_ref());
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1760,8 +1808,6 @@ rom_test!(
         init: None,
         load_traces: None,
         end_check: |old, cpu| {
-            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
-            println!("{s}");
             old == cpu.pc.0
         },
         success_check: |_old, cpu| {
@@ -1811,8 +1857,6 @@ rom_test!(
         Ok(ret)
       }),
       end_check: |old, cpu| {
-            let (s, _) = disassemble::step(Type::NMOS, cpu.pc, cpu.ram.as_ref());
-            println!("{s}");
             old == 0xC66E || cpu.ram.read(0x0002) != 0x00 || cpu.ram.read(0x0003) != 0x00
       },
       success_check: |old, cpu| {
