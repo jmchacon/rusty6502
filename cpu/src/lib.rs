@@ -1044,6 +1044,7 @@ pub enum CPUError {
 #[derive(Clone, Copy, Display, EnumString)]
 enum Register {
     A,
+    P,
     X,
     Y,
 }
@@ -1461,8 +1462,6 @@ impl<'a> Cpu<'a> {
     ///
     /// # Errors
     /// Internal problems (getting into the wrong state) can result in errors.
-    ///
-    /// TODO: Can we reuse the BRK code for this?
     pub fn reset(&mut self) -> Result<OpState> {
         if self.state == State::Off {
             return Err(eyre!("power_on not called before calling reset!"));
@@ -1481,7 +1480,11 @@ impl<'a> Cpu<'a> {
         match self.reset_tick {
             Tick::Tick1 | Tick::Tick2 => {
                 // Burn off 2 clocks internally to reset before we start processing.
-                // TODO: This does trigger bus reads so figure those out and do them.
+                // Technically this runs the next 2 sequences of the current opcode.
+                // We don't bother emulating that and instead just reread the
+                // current PC
+                _ = self.ram.read(self.pc.0);
+
                 self.reset_tick = self.reset_tick.next();
 
                 // Leave op_tick in reset mode so once we're done here it'll match below
@@ -1506,7 +1509,6 @@ impl<'a> Cpu<'a> {
 
                         // The stack ends up at 0xFD which implies it gets set to 0x00 now
                         // as we pull 3 bytes off the stack in the end.
-                        // TODO: Double check this in visual 6502.
                         self.s = Wrapping(0x00);
                         Ok(OpState::Processing)
                     }
@@ -3083,7 +3085,8 @@ impl<'a> Cpu<'a> {
     }
 
     // load_register takes the val and inserts it into the given register.
-    // It then does Z and N checks against the new value and sets flags.
+    // It then does Z and N checks against the new value if and sets flags (only
+    // for A/X/Y).
     // Always returns OpState::Done as this happens on a single tick.
     #[allow(clippy::unnecessary_wraps)]
     fn load_register(&mut self, reg: Register, val: u8) -> Result<OpState> {
@@ -3091,6 +3094,10 @@ impl<'a> Cpu<'a> {
             Register::A => self.a = Wrapping(val),
             Register::X => self.x = Wrapping(val),
             Register::Y => self.y = Wrapping(val),
+            Register::P => {
+                self.p = Flags(val);
+                return Ok(OpState::Done);
+            }
         };
         self.zero_check(val);
         self.negative_check(val);
@@ -3438,7 +3445,7 @@ impl<'a> Cpu<'a> {
                 // On NMOS there's a spurious write here where we replay back
                 // what we just read. On CMOS instead it's a spurious read.
                 if self.cpu_type == Type::CMOS {
-                    // TODO(jchacon): The WDC datasheet says this is AA+X+1 which
+                    // The WDC datasheet says this is AA+X+1 which
                     // I doubt actually. Everything else just seems to think it
                     // rereads the same addr twice.
                     _ = self.ram.read(self.op_addr);
@@ -4641,7 +4648,7 @@ impl<'a> Cpu<'a> {
 
     // nop8 implements the strange NOP for CMOS.
     // This will read an absolute argument (bb aa) and then
-    // read FFbb followed by 4 FFFF reads
+    // read FFBB followed by 4 FFFF reads
     // Returns Done when done and/or errors.
     // Note: CMOS only.
     fn nop8(&mut self) -> Result<OpState> {
@@ -4697,9 +4704,8 @@ impl<'a> Cpu<'a> {
         self.load_register(Register::A, self.a.0 | self.op_val)
     }
 
-    // pha implements the PHA instruction for pushing A onto the stack.
-    // Returns Done when done and/or errors.
-    fn pha(&mut self) -> Result<OpState> {
+    // push_register is the common logic for pushing A,X,Y onto the stack.
+    fn push_register(&mut self, val: u8) -> Result<OpState> {
         match self.op_tick {
             Tick::Reset
             | Tick::Tick1
@@ -4710,81 +4716,47 @@ impl<'a> Cpu<'a> {
             | Tick::Tick8 => Err(eyre!("pha: invalid op_tick: {:?}", self.op_tick)),
             Tick::Tick2 => Ok(OpState::Processing),
             Tick::Tick3 => {
-                self.push_stack(self.a.0);
+                self.push_stack(val);
                 Ok(OpState::Done)
             }
         }
     }
 
+    // pha implements the PHA instruction for pushing A onto the stack.
+    // Returns Done when done and/or errors.
+    fn pha(&mut self) -> Result<OpState> {
+        self.push_register(self.a.0)
+    }
+
     // php implements the PHP instruction for pushing P onto the stack.
     // Returns Done when done and/or errors.
     fn php(&mut self) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset
-            | Tick::Tick1
-            | Tick::Tick4
-            | Tick::Tick5
-            | Tick::Tick6
-            | Tick::Tick7
-            | Tick::Tick8 => Err(eyre!("php: invalid op_tick: {:?}", self.op_tick)),
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                let mut push = self.p;
+        let mut push = self.p;
 
-                // This is always set
-                push |= P_S1;
+        // This is always set
+        push |= P_S1;
 
-                // PHP always sets B where-as IRQ/NMI don't.
-                push |= P_B;
-                self.push_stack(push.0);
-                Ok(OpState::Done)
-            }
-        }
+        // PHP always sets B where-as IRQ/NMI don't.
+        push |= P_B;
+        self.push_register(push.0)
     }
 
     // phx implements the PHX instruction for pushing X onto the stack.
     // Returns Done when done and/or errors.
     // Note: CMOS only
     fn phx(&mut self) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset
-            | Tick::Tick1
-            | Tick::Tick4
-            | Tick::Tick5
-            | Tick::Tick6
-            | Tick::Tick7
-            | Tick::Tick8 => Err(eyre!("phx: invalid op_tick: {:?}", self.op_tick)),
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                self.push_stack(self.x.0);
-                Ok(OpState::Done)
-            }
-        }
+        self.push_register(self.x.0)
     }
 
     // phy implements the PHY instruction for pushing Y onto the stack.
     // Returns Done when done and/or errors.
     // Note: CMOS only
     fn phy(&mut self) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset
-            | Tick::Tick1
-            | Tick::Tick4
-            | Tick::Tick5
-            | Tick::Tick6
-            | Tick::Tick7
-            | Tick::Tick8 => Err(eyre!("phy: invalid op_tick: {:?}", self.op_tick)),
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                self.push_stack(self.y.0);
-                Ok(OpState::Done)
-            }
-        }
+        self.push_register(self.y.0)
     }
 
-    // pla implements the PLA instruction for pulling A from the stack.
-    // Returns Done when done and/or errors.
-    fn pla(&mut self) -> Result<OpState> {
+    // pull_register is the common logic for pulling A,X,Y off the stack.
+    fn pull_register(&mut self, reg: Register) -> Result<OpState> {
         match self.op_tick {
             Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
                 Err(eyre!("pla: invalid op_tick: {:?}", self.op_tick))
@@ -4801,87 +4773,42 @@ impl<'a> Cpu<'a> {
             Tick::Tick4 => {
                 // The real read
                 let val = self.pop_stack();
-                self.load_register(Register::A, val)
+                self.load_register(reg, val)
             }
         }
+    }
+
+    // pla implements the PLA instruction for pulling A from the stack.
+    // Returns Done when done and/or errors.
+    fn pla(&mut self) -> Result<OpState> {
+        self.pull_register(Register::A)
+    }
+
+    // plp implements the PLP instructions for pulling P from the stack.
+    // Returns Done when done and/or errors.
+    fn plp(&mut self) -> Result<OpState> {
+        let ret = self.pull_register(Register::P)?;
+        if ret == OpState::Done {
+            // The actual flags register always has S1 set to one.
+            self.p |= P_S1;
+            // And the B bit is never set in the register.
+            self.p &= !P_B;
+        }
+        Ok(ret)
     }
 
     // plx implements the PLX instruction for pulling X from the stack.
     // Returns Done when done and/or errors.
     // Note: CMOS only.
     fn plx(&mut self) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("plx: invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                // A read of the current stack happens while the CPU is incrementing S.
-                // Since our popStack does both of these together on this cycle it's just
-                // a throw away read.
-                self.s -= 1;
-                _ = self.pop_stack();
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // The real read
-                let val = self.pop_stack();
-                self.load_register(Register::X, val)
-            }
-        }
+        self.pull_register(Register::X)
     }
 
     // ply implements the PLY instruction for pulling Y from the stack.
     // Returns Done when done and/or errors.
     // Note: CMOS only.
     fn ply(&mut self) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("ply: invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                // A read of the current stack happens while the CPU is incrementing S.
-                // Since our popStack does both of these together on this cycle it's just
-                // a throw away read.
-                self.s -= 1;
-                _ = self.pop_stack();
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // The real read
-                let val = self.pop_stack();
-                self.load_register(Register::Y, val)
-            }
-        }
-    }
-
-    // plp implements the PLP instructions for pulling P from the stack.
-    // Returns Done when done and/or errors.
-    fn plp(&mut self) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("php: invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                // A read of the current stack happens while the CPU is incrementing S.
-                // Since our popStack does both of these together on this cycle it's just
-                // a throw away read.
-                self.s -= 1;
-                _ = self.pop_stack();
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // The real read
-                self.p = Flags(self.pop_stack());
-                // The actual flags register always has S1 set to one.
-                self.p |= P_S1;
-                // And the B bit is never set in the register.
-                self.p &= !P_B;
-                Ok(OpState::Done)
-            }
-        }
+        self.pull_register(Register::Y)
     }
 
     // rla implements the undocumented opcode for RLA. This does a ROL on
@@ -5134,12 +5061,11 @@ impl<'a> Cpu<'a> {
         Ok(OpState::Done)
     }
 
-    // shx implements the undocumented SHX instruction based on the addressing mode passed in.
-    // The value stored is (X & (ADDR_HI + 1))
-    // Returns Done and/or errors when complete.
-    fn shx(
+    // shx_shy_common implements the common logic for SHX and SHY.
+    fn shx_shy_common(
         &mut self,
         address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        v: Wrapping<u8>,
     ) -> Result<OpState> {
         // This is a store but we can't use store_instruction since it depends on knowing op_addr
         // for the final computed value so we have to do the addressing mode ourselves.
@@ -5149,11 +5075,21 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val = (self.x & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
+                let val = (v & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
                 self.ram.write(self.op_addr, val);
                 Ok(OpState::Done)
             }
         }
+    }
+
+    // shx implements the undocumented SHX instruction based on the addressing mode passed in.
+    // The value stored is (X & (ADDR_HI + 1))
+    // Returns Done and/or errors when complete.
+    fn shx(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+    ) -> Result<OpState> {
+        self.shx_shy_common(address_mode, self.x)
     }
 
     // shy implements the undocumented SHY instruction based on the addressing mode passed in.
@@ -5163,19 +5099,7 @@ impl<'a> Cpu<'a> {
         &mut self,
         address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
     ) -> Result<OpState> {
-        // This is a store but we can't use store_instruction since it depends on knowing op_addr
-        // for the final computed value so we have to do the addressing mode ourselves.
-        match self.addr_done {
-            OpState::Processing => {
-                self.addr_done = address_mode(self, &InstructionMode::Store)?;
-                Ok(OpState::Processing)
-            }
-            OpState::Done => {
-                let val = (self.y & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
-                self.ram.write(self.op_addr, val);
-                Ok(OpState::Done)
-            }
-        }
+        self.shx_shy_common(address_mode, self.y)
     }
 
     // slo implements the undocumented opcode for SLO. This does an ASL on the
