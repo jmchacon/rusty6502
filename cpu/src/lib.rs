@@ -4362,17 +4362,15 @@ impl<'a> Cpu<'a> {
 
         // New PC comes from IRQ_VECTOR unless we've raised an NMI.
         let ret = match self.irq_raised {
-            InterruptStyle::IRQ => self.run_interrupt(IRQ_VECTOR, true),
-            InterruptStyle::NMI => self.run_interrupt(NMI_VECTOR, true),
-            InterruptStyle::None => self.run_interrupt(IRQ_VECTOR, false),
+            InterruptStyle::IRQ => self.run_interrupt(IRQ_VECTOR, true)?,
+            InterruptStyle::NMI => self.run_interrupt(NMI_VECTOR, true)?,
+            InterruptStyle::None => self.run_interrupt(IRQ_VECTOR, false)?,
         };
         // If we're done on this tick eat any pending interrupt since BRK is special.
-        if let Ok(r) = ret {
-            if r == OpState::Done {
-                self.irq_raised = InterruptStyle::None;
-            }
+        if ret == OpState::Done {
+            self.irq_raised = InterruptStyle::None;
         }
-        ret
+        Ok(ret)
     }
 
     // clc implements the CLC instruction clearing the C status bit.
