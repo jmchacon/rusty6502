@@ -51,7 +51,7 @@ pub fn step(ty: Type, pc: Wrapping<u16>, r: &dyn Memory) -> (String, Wrapping<u1
             write!(out, "{pc1:02X}      {opcode} ({pc1:02X},X)",).unwrap();
         }
         AddressMode::IndirectY => {
-            write!(out, "{pc1:02X}      {opcode} ({pc1:02X},Y)").unwrap();
+            write!(out, "{pc1:02X}      {opcode} ({pc1:02X}),Y").unwrap();
         }
         AddressMode::Absolute | AddressMode::AbsoluteNOP => {
             write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X}",).unwrap();

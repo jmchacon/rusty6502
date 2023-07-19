@@ -13,15 +13,15 @@ pub trait Chip {
     /// will be returned.
     fn tick(&mut self) -> Result<()>;
 
-    /// `done` is called on each `Chip` when all `tick` calls have
+    /// `tick_done` is called on each `Chip` when all `tick` calls have
     /// completed. As in real hardware there are no guarentees on ordering
     /// of `tick` calls so emulation of combinational logic including latches
-    /// should only get updated in `done` to prevent chips on the same
+    /// should only get updated here to prevent chips on the same
     /// clock cycle from possibly seeing differing views of data.
     /// i.e. the Atari 2600 is full of latches which this can come into play.
     ///
     /// # Errors
-    /// If calling `done` results in a lockup/illegal condition an error
+    /// If calling results in a lockup/illegal condition an error
     /// will be returned.
     fn tick_done(&mut self) -> Result<()>;
 }

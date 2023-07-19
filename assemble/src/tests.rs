@@ -9,6 +9,7 @@ use std::{
 struct AssembleTest<'a> {
     asm: &'a str,
     bin: &'a str,
+    cpus: Vec<Type>,
 }
 
 use crate::parse;
@@ -30,14 +31,13 @@ macro_rules! assemble_test {
                         image[pos] = *b;
                     }
 
-                    // This should be the same for all these CPU's
-                    for t in [Type::NMOS, Type::NMOS6510, Type::RICOH] {
+                    for t in &a.cpus {
                       // Get the input asm and read it in.
                       let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/").join(a.asm);
 
                       let file = File::open(path)?;
                       let lines = io::BufReader::new(file).lines();
-                      let asm = parse(t, lines, true)?;
+                      let asm = parse(*t, lines, true)?;
 
                       let diff = image
                           .iter()
@@ -65,14 +65,17 @@ assemble_test!(
     bcd_test: AssembleTest{
         asm: "bcd_test.asm",
         bin: "bcd_test.bin",
+        cpus: vec![Type::NMOS, Type::NMOS6510, Type::CMOS, Type::RICOH],
     }
     undocumented_test: AssembleTest{
         asm: "undocumented.asm",
         bin: "undocumented.bin",
+        cpus: vec![Type::NMOS, Type::NMOS6510, Type::RICOH],
     }
     testasm_test: AssembleTest{
         asm: "testasm.asm",
         bin: "testasm.bin",
+        cpus: vec![Type::NMOS, Type::NMOS6510, Type::RICOH],
     }
 );
 
