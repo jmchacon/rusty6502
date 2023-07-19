@@ -1480,7 +1480,11 @@ impl<'a> Cpu<'a> {
         match self.reset_tick {
             Tick::Tick1 | Tick::Tick2 => {
                 // Burn off 2 clocks internally to reset before we start processing.
-                // TODO: This does trigger bus reads so figure those out and do them.
+                // Technically this runs the next 2 sequences of the current opcode.
+                // We don't bother emulating that and instead just reread the
+                // current PC
+                _ = self.ram.read(self.pc.0);
+
                 self.reset_tick = self.reset_tick.next();
 
                 // Leave op_tick in reset mode so once we're done here it'll match below
@@ -1505,7 +1509,6 @@ impl<'a> Cpu<'a> {
 
                         // The stack ends up at 0xFD which implies it gets set to 0x00 now
                         // as we pull 3 bytes off the stack in the end.
-                        // TODO: Double check this in visual 6502.
                         self.s = Wrapping(0x00);
                         Ok(OpState::Processing)
                     }
