@@ -834,7 +834,6 @@ impl fmt::Display for CPUState {
 ///
 /// # Errors
 /// If the `AddressMode` is not valid for this opcode an error will result.
-///
 pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
     let hm: &HashMap<AddressMode, Vec<u8>>;
     match t {
@@ -859,7 +858,6 @@ pub fn resolve_opcode(t: Type, op: &Opcode, mode: &AddressMode) -> Result<&'stat
 
 /// Given an opcode u8 value this will return the Operation struct
 /// defining it. i.e. `Opcode` and `AddressMode`.
-///
 #[must_use]
 pub fn opcode_op(t: Type, op: u8) -> Operation {
     match t {
@@ -977,6 +975,8 @@ impl fmt::Debug for Cpu<'_> {
             .field("s", &self.s.0)
             .field("p", &self.p)
             .field("pc", &self.pc.0)
+            .field("state", &self.state)
+            .field("irq", &self.irq_raised)
             .finish()
     }
 }
@@ -1041,7 +1041,7 @@ pub enum CPUError {
     },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Display, EnumString)]
 enum Register {
     A,
     X,
@@ -1126,8 +1126,11 @@ impl<'a> Chip for Cpu<'a> {
 
         // If we're waiting for an interrupt and none have been raised we don't
         // advance time and just stay waiting for instruction start.
-        // CMOS only (handled by check above)
-        if self.state == State::WaitingForInterrupt && self.irq_raised == InterruptStyle::None {
+        // CMOS only.
+        if self.cpu_type == Type::CMOS
+            && self.state == State::WaitingForInterrupt
+            && self.irq_raised == InterruptStyle::None
+        {
             return Ok(());
         }
 
@@ -1160,23 +1163,26 @@ impl<'a> Chip for Cpu<'a> {
                     return Ok(());
                 }
 
-                // PC advances always when we start a new opcode except for IRQ/NMI
-                // (unless we're skipping to run one more instruction).
-                if self.irq_raised == InterruptStyle::None
-                    || self.skip_interrupt == SkipInterrupt::Skip
-                {
-                    self.pc += 1;
-                    self.interrupt_state = InterruptState::None;
-                }
-
                 // If one is raised and we're not skipping and interrupts
                 // are enabled or it's an NMI then we move into interrupt mode.
+                // If interrupts are disabled it doesn't change state.
                 if self.irq_raised != InterruptStyle::None
                     && self.skip_interrupt != SkipInterrupt::Skip
-                    && (self.p & P_INTERRUPT == Flags(0x00)
-                        || self.irq_raised == InterruptStyle::NMI)
                 {
-                    self.interrupt_state = InterruptState::Running;
+                    if self.p & P_INTERRUPT == Flags(P_INTERRUPT)
+                        && self.irq_raised == InterruptStyle::IRQ
+                    {
+                        self.irq_raised = InterruptStyle::None;
+                        self.interrupt_state = InterruptState::None;
+                    } else {
+                        self.interrupt_state = InterruptState::Running;
+                    }
+                }
+
+                // PC advances always when we start a new opcode except for IRQ/NMI
+                // (unless we're skipping to run one more instruction).
+                if self.interrupt_state != InterruptState::Running {
+                    self.pc += 1;
                 }
 
                 // Move out of the done state.
@@ -1227,19 +1233,24 @@ impl<'a> Chip for Cpu<'a> {
                 op: self.halt_opcode,
             }));
         }
-        if let Ok(state) = ret {
-            if state == OpState::Done {
-                // Reset so the next tick starts a new instruction
-                // It'll handle doing start of instruction reset on state.
-                self.op_tick = Tick::Reset;
 
-                // If we're already running an IRQ clear state so we don't loop
-                // trying to start it again.
-                if self.interrupt_state == InterruptState::Running {
-                    self.irq_raised = InterruptStyle::None;
-                }
-                self.interrupt_state = InterruptState::None;
+        let state;
+        // SAFETY: Err was checked above so just pull this out.
+        unsafe {
+            state = ret.unwrap_unchecked();
+        }
+
+        if state == OpState::Done {
+            // Reset so the next tick starts a new instruction
+            // It'll handle doing start of instruction reset on state.
+            self.op_tick = Tick::Reset;
+
+            // If we're already running an IRQ clear state so we don't loop
+            // trying to start it again.
+            if self.interrupt_state == InterruptState::Running {
+                self.irq_raised = InterruptStyle::None;
             }
+            self.interrupt_state = InterruptState::None;
         }
         Ok(())
     }
@@ -1257,6 +1268,11 @@ impl<'a> Chip for Cpu<'a> {
             if rdy.raised() {
                 return Ok(());
             }
+        }
+
+        // If we're in WAI just return, no state changes.
+        if self.state == State::WaitingForInterrupt {
+            return Ok(());
         }
 
         if self.state != State::Tick {
@@ -1392,8 +1408,6 @@ impl<'a> Cpu<'a> {
     ///
     /// # Errors
     /// If reset has any issues an error will be returned.
-    ///
-    /// TODO(jchacon): See if any of this gets more defined on CMOS versions.
     pub fn power_on(&mut self) -> Result<()> {
         if self.state != State::Off {
             return Err(eyre!("cannot power on except from an off state"));
@@ -2262,7 +2276,11 @@ impl<'a> Cpu<'a> {
                 self.rmw_instruction(Self::addr_absolute_x, Self::inc)
             }
             // 0xFF - BBS 7,dr - see 0x8F
-            _ => panic!("no implementation for {:?} {:?}", self.op.op, self.op.mode),
+            _ => Err(eyre!(
+                "no implementation for {:?} {:?}",
+                self.op.op,
+                self.op.mode
+            )),
         }
     }
 
@@ -3056,7 +3074,11 @@ impl<'a> Cpu<'a> {
             (Opcode::ISC, AddressMode::AbsoluteX) => {
                 self.rmw_instruction(Self::addr_absolute_x, Self::isc)
             }
-            _ => panic!("no implementation for {:?} {:?}", self.op.op, self.op.mode),
+            _ => Err(eyre!(
+                "no implementation for {:?} {:?}",
+                self.op.op,
+                self.op.mode
+            )),
         }
     }
 
@@ -3512,13 +3534,10 @@ impl<'a> Cpu<'a> {
             Tick::Tick7 => {
                 // On NMOS there's a spurious write here where we replay back
                 // what we just read. On CMOS instead it's a spurious read.
-                // TODO(jchacon): I think the CMOS check can go away here as there
-                // aren't any of these in CMOS, just undocumented NMOS.
-                if self.cpu_type == Type::CMOS {
-                    self.ram.read(self.op_addr);
-                } else {
-                    self.ram.write(self.op_addr, self.op_val);
-                }
+                // This doesn't happen on CMOS as we never
+                // get here as these are undocumented instructions that are
+                // 8 cycle RMW.
+                self.ram.write(self.op_addr, self.op_val);
                 Ok(OpState::Done)
             }
         }
@@ -3652,14 +3671,10 @@ impl<'a> Cpu<'a> {
             }
             Tick::Tick7 => {
                 // On NMOS there's a spurious write here where we replay back
-                // what we just read. On CMOS instead it's a spurious read.
-                // TODO(jchacon): I think the CMOS check can go away here as there
-                // aren't any of these in CMOS, just undocumented NMOS.
-                if self.cpu_type == Type::CMOS {
-                    self.ram.read(self.op_addr);
-                } else {
-                    self.ram.write(self.op_addr, self.op_val);
-                }
+                // what we just read. This doesn't happen on CMOS as we never
+                // get here as these are undocumented instructions that are
+                // 8 cycle RMW.
+                self.ram.write(self.op_addr, self.op_val);
                 Ok(OpState::Done)
             }
         }
@@ -3983,7 +3998,6 @@ impl<'a> Cpu<'a> {
             let bin = self.a + Wrapping(self.op_val) + Wrapping(carry);
             self.overflow_check(self.a.0, self.op_val, seq.0);
             self.carry_check(sum.0);
-            // TODO(jchacon): CMOS gets N/Z set correctly and needs implementing.
             if self.cpu_type == Type::CMOS {
                 self.negative_check(res);
                 self.zero_check(res);
@@ -4207,7 +4221,7 @@ impl<'a> Cpu<'a> {
     // if bit x is clear in the given ZP location.
     // Note: CMOS only.
     fn bbr(&mut self, pos: u8) -> Result<OpState> {
-        let ret = self.bbr_bbs_common();
+        let ret = self.bbr_bbs_common()?;
         if self.op_tick == Tick::Tick5 {
             // For tick 5 common implemented the parts needed for bus cycling
             // and then returns processing. Pick the actual return based on
@@ -4220,7 +4234,7 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Done)
             }
         } else {
-            ret
+            Ok(ret)
         }
     }
 
@@ -4228,7 +4242,7 @@ impl<'a> Cpu<'a> {
     // if bit x is set in the given ZP location.
     // Note: CMOS only.
     fn bbs(&mut self, pos: u8) -> Result<OpState> {
-        let ret = self.bbr_bbs_common();
+        let ret = self.bbr_bbs_common()?;
         if self.op_tick == Tick::Tick5 {
             // For tick 5 common implemented the parts needed for bus cycling
             // and then returns processing. Pick the actual return based on
@@ -4242,7 +4256,7 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
         } else {
-            ret
+            Ok(ret)
         }
     }
 

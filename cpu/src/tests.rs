@@ -1,7 +1,7 @@
 use crate::{
-    disassemble, CPUError, CPUState, ChipDef, Cpu, Flags, FlatRAM, InterruptState, InterruptStyle,
-    OpState, State, Tick, Type, Vectors, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT, P_NEGATIVE,
-    P_OVERFLOW, P_S1, P_ZERO, STACK_START,
+    disassemble, AddressMode, CPUError, CPUState, ChipDef, Cpu, Flags, FlatRAM, InstructionMode,
+    InterruptState, InterruptStyle, OpState, Opcode, Register, State, Tick, Type, Vectors, P_B,
+    P_CARRY, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
 use chip::Chip;
 use color_eyre::eyre::{eyre, Result};
@@ -166,6 +166,287 @@ fn tick_next() {
     assert!(ticker == Tick::Tick8, "didn't advance to tick8");
     ticker = ticker.next();
     assert!(ticker == Tick::Tick8, "didn't continue to stay in tick8");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn invalid_states() -> Result<()> {
+    // These tests are a little ridiculous but eliminating that one place
+    // of no coverage makes it easier to spots real issues.
+    let a = Register::A;
+    #[allow(clippy::clone_on_copy)]
+    let x = a.clone();
+    assert!(x.to_string() == "A", "Clone didn't work for register?");
+    let d = Debug::<CPUState>::new(128, 1);
+    let debug = { || d.debug() };
+    let nmi_addr = 0x1212;
+    let mut cpu = setup(
+        Type::CMOS,
+        nmi_addr,
+        0xEA,
+        None,
+        None,
+        None, // RDY doesn't matter here
+        Some(&debug),
+    );
+    cpu.power_on()?;
+
+    // Make sure the bad states in reset error.
+    cpu.reset()?;
+    cpu.reset_tick = Tick::Tick5;
+    let ret = cpu.reset();
+    assert!(ret.is_err(), "didn't get reset error for tick5?");
+    #[allow(clippy::unwrap_used)]
+    let errs = ret.err().unwrap().to_string();
+    assert!(
+        errs.contains("invalid reset_tick"),
+        "wrong error for invalid reset_tick: {errs}"
+    );
+
+    cpu.reset_tick = Tick::Tick3;
+    cpu.op_tick = Tick::Tick8;
+    let ret = cpu.reset();
+    assert!(ret.is_err(), "didn't get op_tick reset error?");
+    #[allow(clippy::unwrap_used)]
+    let errs = ret.err().unwrap().to_string();
+    assert!(
+        errs.contains("invalid op_tick"),
+        "wrong error for invalid op_tick: {errs}"
+    );
+
+    // Make sure invalid combos aren't somehow present in our processing.
+    cpu.op.op = Opcode::NOP;
+    cpu.op.mode = AddressMode::Relative;
+    let ret = cpu.process_opcode_cmos();
+    assert!(ret.is_err(), "No error for a relative NOP in CMOS? {ret:?}");
+
+    cpu.op.op = Opcode::NOP;
+    cpu.op.mode = AddressMode::Relative;
+    let ret = cpu.process_opcode_nmos();
+    assert!(ret.is_err(), "No error for a relative NOP in NMOS? {ret:?}");
+
+    // Now go through all the various modes/instructions getting an error
+    cpu.op_tick = Tick::Tick1;
+    let ret = cpu.addr_absolute(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for addr mode func addr_absolute"
+    );
+    let ret = cpu.addr_absolute_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for addr mode func addr_absolute_x"
+    );
+    let ret = cpu.addr_immediate(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for addr mode func addr_immediate"
+    );
+    let ret = cpu.addr_indirect_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for addr mode func addr_indirect_x"
+    );
+    let ret = cpu.addr_indirect(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for addr mode func addr_indirect"
+    );
+    let ret = cpu.addr_indirect_y(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for addr mode func addr_indirect_y"
+    );
+    let ret = cpu.addr_zp(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for addr mode func addr_zp"
+    );
+    let ret = cpu.addr_zp_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for addr mode func addr_zp_x"
+    );
+
+    let ret = cpu.perform_branch();
+    assert!(ret.is_err(), "didn't get an error for perform_branch");
+    let ret = cpu.branch_nop();
+    assert!(ret.is_err(), "didn't get an error for branch_nop");
+    let ret = cpu.run_interrupt(0x1234, false);
+    assert!(ret.is_err(), "didn't get an error for run_interrupt");
+
+    let ret = cpu.bbr(1);
+    assert!(ret.is_err(), "didn't get an error for bbr1");
+
+    let ret = cpu.jmp();
+    assert!(ret.is_err(), "didn't get an error for jmp");
+    let ret = cpu.jmp_indirect();
+    assert!(ret.is_err(), "didn't get an error for jmp_indirect");
+    let ret = cpu.jmp_indirect_x();
+    assert!(ret.is_err(), "didn't get an error for jmp_indirect_x");
+    let ret = cpu.jsr();
+    assert!(ret.is_err(), "didn't get an error for jsr");
+    let ret = cpu.rts();
+    assert!(ret.is_err(), "didn't get an error for rts");
+    let ret = cpu.rti();
+    assert!(ret.is_err(), "didn't get an error for rti");
+
+    let ret = cpu.nop8();
+    assert!(ret.is_err(), "didn't get an error for nop8");
+
+    let ret = cpu.pha();
+    assert!(ret.is_err(), "didn't get an error for pha");
+    let ret = cpu.phx();
+    assert!(ret.is_err(), "didn't get an error for phx");
+    let ret = cpu.phy();
+    assert!(ret.is_err(), "didn't get an error for phy");
+    let ret = cpu.php();
+    assert!(ret.is_err(), "didn't get an error for php");
+    let ret = cpu.pla();
+    assert!(ret.is_err(), "didn't get an error for pla");
+    let ret = cpu.plx();
+    assert!(ret.is_err(), "didn't get an error for plx");
+    let ret = cpu.ply();
+    assert!(ret.is_err(), "didn't get an error for ply");
+    let ret = cpu.plp();
+    assert!(ret.is_err(), "didn't get an error for plp");
+
+    let ret = cpu.wai();
+    assert!(ret.is_err(), "didn't get an error for wai");
+
+    Ok(())
+}
+
+#[test]
+fn wai_test() -> Result<()> {
+    let d = Debug::<CPUState>::new(128, 1);
+    let debug = { || d.debug() };
+    let irq = Irq {
+        raised: RefCell::new(false),
+    };
+    let nmi = Irq {
+        raised: RefCell::new(false),
+    };
+    let nmi_addr = 0x1212;
+    let mut cpu = setup(
+        Type::CMOS,
+        nmi_addr,
+        0xEA,
+        Some(&irq),
+        Some(&nmi),
+        None, // RDY doesn't matter here
+        Some(&debug),
+    );
+    cpu.power_on()?;
+
+    cpu.ram.write(0x1FFE, 0xA9); // LDA #A1
+    cpu.ram.write(0x1FFF, 0xA1);
+    cpu.ram.write(0x2000, 0xCB); // WAI
+    cpu.ram.write(0x2001, 0x1A); // INC
+
+    // Run to WAI
+    step(&mut cpu)?;
+    step(&mut cpu)?;
+    let p = cpu.pc.0;
+    assert!(p == 0x2001, "PC after WAI not 0x2001 - is {p:#06X}");
+    let state = cpu.state;
+    assert!(
+        state == State::WaitingForInterrupt,
+        "State not WAI is {state}"
+    );
+
+    // Show no time advances
+    let c = cpu.clocks;
+    cpu.tick()?;
+    let n = cpu.clocks;
+    assert!(c == n, "Clocks advanced from {c} to {n} during WAI");
+
+    // Set I
+    cpu.p |= P_INTERRUPT;
+
+    // Trigger IRQ
+    *irq.raised.borrow_mut() = true;
+
+    // Check PC == INC
+    step(&mut cpu)?;
+    *irq.raised.borrow_mut() = false;
+    let p = cpu.pc.0;
+    assert!(
+        p == 0x2002,
+        "PC after WAI unpauses not 0x2002 after running - is {p:#06X}"
+    );
+
+    // Reset PC to WAI and run to it.
+    cpu.pc.0 = 0x2000;
+    step(&mut cpu)?;
+    let p = cpu.pc.0;
+    assert!(p == 0x2001, "PC after WAI not 0x2001 - is {p:#06X}");
+    let state = cpu.state;
+    assert!(
+        state == State::WaitingForInterrupt,
+        "State not WAI is {state}"
+    );
+
+    // Show no time advances
+    let c = cpu.clocks;
+    println!("cpu - \n{cpu:?}");
+    cpu.tick()?;
+    let n = cpu.clocks;
+    assert!(
+        c == n,
+        "Clocks advanced from {c} to {n} during WAI - \n{cpu:?}"
+    );
+
+    // Clear I
+    cpu.p &= !P_INTERRUPT;
+
+    // Trigger IRQ
+    *irq.raised.borrow_mut() = true;
+
+    // Check PC == IRQ vector
+    step(&mut cpu)?;
+    let p = cpu.pc.0;
+    assert!(
+        p == IRQ_ADDR,
+        "PC after WAI not {IRQ_ADDR:#06X} - is {p:#06X}"
+    );
+    *irq.raised.borrow_mut() = false;
+
+    // Reset PC to WAI and run to it.
+    cpu.pc.0 = 0x2000;
+    step(&mut cpu)?;
+    let p = cpu.pc.0;
+    assert!(p == 0x2001, "PC after WAI not 0x2001 - is {p:#06X}");
+    let state = cpu.state;
+    assert!(
+        state == State::WaitingForInterrupt,
+        "State not WAI is {state}"
+    );
+
+    // Show no time advances
+    let c = cpu.clocks;
+    println!("cpu - \n{cpu:?}");
+    cpu.tick()?;
+    let n = cpu.clocks;
+    assert!(
+        c == n,
+        "Clocks advanced from {c} to {n} during WAI - \n{cpu:?}"
+    );
+
+    // Set I
+    cpu.p |= P_INTERRUPT;
+
+    // Trigger NMI
+    *nmi.raised.borrow_mut() = true;
+
+    // Check PC == NMI vector
+    step(&mut cpu)?;
+    let p = cpu.pc.0;
+    assert!(
+        p == nmi_addr,
+        "PC after WAI not {nmi_addr:#06X} - is {p:#06X}"
+    );
+    Ok(())
 }
 
 #[test]
@@ -455,7 +736,10 @@ macro_rules! init_test {
                                 // STP which acts like undocumented HLT did on a 6502.
                                 fill = 0xDB;
                             }
-                            let mut cpu = setup($type, 0x1212, fill, None, None, Some(&r), None);
+
+                            let d = Debug::<CPUState>::new(128, usize::MAX);
+                            let debug = { || d.debug() };
+                            let mut cpu = setup($type, 0x1212, fill, None, None, Some(&r), Some(&debug));
 
                             // This should fail
                             assert!(cpu.reset().is_err(), "reset worked before power_on");
@@ -466,6 +750,19 @@ macro_rules! init_test {
                                 track.insert(true);
                             } else {
                                 track.insert(false);
+                            }
+
+                            // Now run through a reset ourselves and see that
+                            // tick fails partially through it.
+                            cpu.reset()?;
+                            let ret = cpu.tick();
+                            assert!(ret.is_err(), "Tick didn't return error during reset");
+                            loop {
+                                match cpu.reset() {
+                                    Ok(OpState::Done) => break,
+                                    Ok(OpState::Processing) => continue,
+                                    Err(e) => panic!("error from reset: {e:?}"),
+                                }
                             }
 
                             // Pull RDY high and tick should return true but not advance.
