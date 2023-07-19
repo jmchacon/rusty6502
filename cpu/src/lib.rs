@@ -5058,12 +5058,11 @@ impl<'a> Cpu<'a> {
         Ok(OpState::Done)
     }
 
-    // shx implements the undocumented SHX instruction based on the addressing mode passed in.
-    // The value stored is (X & (ADDR_HI + 1))
-    // Returns Done and/or errors when complete.
-    fn shx(
+    // shx_shy_common implements the common logic for SHX and SHY.
+    fn shx_shy_common(
         &mut self,
         address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        v: Wrapping<u8>,
     ) -> Result<OpState> {
         // This is a store but we can't use store_instruction since it depends on knowing op_addr
         // for the final computed value so we have to do the addressing mode ourselves.
@@ -5073,11 +5072,21 @@ impl<'a> Cpu<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val = (self.x & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
+                let val = (v & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
                 self.ram.write(self.op_addr, val);
                 Ok(OpState::Done)
             }
         }
+    }
+
+    // shx implements the undocumented SHX instruction based on the addressing mode passed in.
+    // The value stored is (X & (ADDR_HI + 1))
+    // Returns Done and/or errors when complete.
+    fn shx(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+    ) -> Result<OpState> {
+        self.shx_shy_common(address_mode, self.x)
     }
 
     // shy implements the undocumented SHY instruction based on the addressing mode passed in.
@@ -5087,19 +5096,7 @@ impl<'a> Cpu<'a> {
         &mut self,
         address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
     ) -> Result<OpState> {
-        // This is a store but we can't use store_instruction since it depends on knowing op_addr
-        // for the final computed value so we have to do the addressing mode ourselves.
-        match self.addr_done {
-            OpState::Processing => {
-                self.addr_done = address_mode(self, &InstructionMode::Store)?;
-                Ok(OpState::Processing)
-            }
-            OpState::Done => {
-                let val = (self.y & (Wrapping((self.op_addr >> 8) as u8) + Wrapping(1))).0;
-                self.ram.write(self.op_addr, val);
-                Ok(OpState::Done)
-            }
-        }
+        self.shx_shy_common(address_mode, self.y)
     }
 
     // slo implements the undocumented opcode for SLO. This does an ASL on the
