@@ -1998,6 +1998,278 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> {
             )),
         }
     }
+
+    // ahx implements the undocumented AHX instruction based on the addressing mode passed in.
+    // The value stored is (A & X & (ADDR_HI + 1))
+    // Returns Done when complete and/or errors
+    fn ahx(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+    ) -> Result<OpState> {
+        // This is a store but we can't use store_instruction since it depends on knowing op_addr
+        // for the final computed value so we have to do the addressing mode ourselves.
+        match self.addr_done() {
+            OpState::Processing => {
+                let ret = address_mode(self, &InstructionMode::Store)?;
+                self.addr_done_mut(ret);
+                Ok(OpState::Processing)
+            }
+            OpState::Done => {
+                let val =
+                    (self.a() & self.x() & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
+                self.ram().borrow_mut().write(self.op_addr(), val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // alr implements the undocumented opcode for ALR.
+    // This does AND #i (op_val) and then LSR on A setting all associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn alr(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.a().0 & self.op_val())?;
+        self.lsr_acc()
+    }
+
+    // anc implements the undocumented opcode for ANC. This does AND #i (op_val) and then
+    // sets carry based on bit 7 (sign extend).
+    // Always returns Done since this takes one tick and never returns an error.
+    fn anc(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.a().0 & self.op_val())?;
+        self.carry_check(u16::from(self.a().0) << 1);
+        Ok(OpState::Done)
+    }
+
+    // arr implements implements the undocumented opcode for ARR.
+    // This does AND #i (p.opVal) and then ROR except some flags are set differently.
+    // Implemented as described in http://nesdev.com/6502_cpu.txt
+    // Always returns Done since this takes one tick and never returns an error.
+    fn arr(&mut self) -> Result<OpState> {
+        let val = self.a().0 & self.op_val();
+        self.load_register(Register::A, val)?;
+        self.ror_acc()?;
+
+        // Flags are different based on BCD or not (since the ALU acts different).
+        if self.p() & P_DECIMAL != Flags(0x00) {
+            // If bit 6 changed state between AND output and rotate output then set V.
+            if (val ^ self.a().0) & 0x40 == 0x00 {
+                self.p_mut(self.p() & !P_OVERFLOW);
+            } else {
+                self.p_mut(self.p() | P_OVERFLOW);
+            }
+
+            // Now do possible odd BCD fixups and set C
+            let ah = val >> 4;
+            let al = val & 0x0F;
+            if (al + (al & 0x01)) > 5 {
+                self.a_mut(Wrapping((self.a().0 & 0xF0) | ((self.a().0 + 6) & 0x0F)));
+            }
+            if (ah + (ah & 0x01)) > 5 {
+                self.p_mut(self.p() | P_CARRY);
+                self.a_mut(self.a() + Wrapping(0x60));
+            } else {
+                self.p_mut(self.p() & !P_CARRY);
+            }
+            return Ok(OpState::Done);
+        }
+
+        // C is bit 6
+        self.carry_check((u16::from(self.a().0) << 2) & 0x0100);
+        // V is bit 5 ^ bit 6
+        if ((self.a().0 & 0x40) >> 6) ^ ((self.a().0 & 0x20) >> 5) == 0x00 {
+            self.p_mut(self.p() & !P_OVERFLOW);
+        } else {
+            self.p_mut(self.p() | P_OVERFLOW);
+        }
+        Ok(OpState::Done)
+    }
+
+    // axs implements the undocumented opcode for AXS.
+    // (A AND X) - p.opVal (no borrow) setting all associated flags post SBC.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn axs(&mut self) -> Result<OpState> {
+        // Save A off to restore later
+        let a = self.a().0;
+        self.load_register(Register::A, self.a().0 & self.x().0)?;
+        // Carry is always set
+        self.p_mut(self.p() | P_CARRY);
+
+        // Save D & V state since it's always ignored for this but needs to keep values.
+        let d = self.p() & P_DECIMAL;
+        let v = self.p() & P_OVERFLOW;
+        // Clear D so SBC never uses BCD mode (we'll reset it later from saved state).
+        self.p_mut(self.p() & !P_DECIMAL);
+        self.sbc()?;
+
+        // Clear V now in case SBC set it so we can properly restore it below.
+        self.p_mut(self.p() & !P_OVERFLOW);
+
+        // Save A in a temp so we can load registers in the right order to set flags (based on X, not old A)
+        let x = self.a().0;
+        self.load_register(Register::A, a)?;
+        self.load_register(Register::X, x)?;
+
+        // Restore D & V from our initial state.
+        self.p_mut(self.p() | d | v);
+        Ok(OpState::Done)
+    }
+
+    // dcp implements the undocumented opcode for DCP.
+    // This decrements the value at op_addr and then does a CMP with A setting associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn dcp(&mut self) -> Result<OpState> {
+        self.op_val_mut((Wrapping(self.op_val()) - Wrapping(1)).0);
+        self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+        self.compare_a()
+    }
+
+    // isc implements the undocumented opcode for ISC.
+    // This increments the value at op_addr and then does an SBC and sets associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn isc(&mut self) -> Result<OpState> {
+        self.op_val_mut((Wrapping(self.op_val()) + Wrapping(1)).0);
+        self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+        self.sbc()
+    }
+
+    // las implements the undocumented opcode for LAS.
+    // This take op_val and ANDs it with S and then stores that in A,X,S setting flags accordingly.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn las(&mut self) -> Result<OpState> {
+        self.s_mut(Wrapping(self.s().0 & self.op_val()));
+        self.load_register(Register::X, self.s().0)?;
+        self.load_register(Register::A, self.s().0)
+    }
+
+    // lax implements the undocumented opcode for LAX.
+    // This loads A and X with the same value and sets all associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn lax(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.op_val())?;
+        self.load_register(Register::X, self.op_val())
+    }
+
+    // oal implements the undocumented opcode for OAL.
+    // This one acts a bit randomly. It somtimes does XAA and sometimes
+    // does A=X=A&val.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn oal(&mut self) -> Result<OpState> {
+        let mut rng = rand::thread_rng();
+        if rng.gen::<f64>() > 0.5 {
+            return self.xaa();
+        }
+        let val = self.a().0 & self.op_val();
+        self.load_register(Register::A, val)?;
+        self.load_register(Register::X, val)
+    }
+
+    // rla implements the undocumented opcode for RLA. This does a ROL on
+    // the contents of op_addr and then AND's it against A. Sets flags and carry.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn rla(&mut self) -> Result<OpState> {
+        let val = (self.op_val() << 1) | (self.p() & P_CARRY).0;
+        self.ram().borrow_mut().write(self.op_addr(), val);
+        self.carry_check(u16::from(self.op_val()) << 1);
+        self.load_register(Register::A, self.a().0 & val)
+    }
+
+    // rra implements the undocumented opcode for RRA. This does a ROR on op_addr
+    // and then ADC's it against A. Sets flags and carry.
+    // Always returns Done since this is one tick and never returns an error.
+    fn rra(&mut self) -> Result<OpState> {
+        let n = ((self.p() & P_CARRY).0 << 7) | (self.op_val() >> 1);
+        self.ram().borrow_mut().write(self.op_addr(), n);
+        // Old bit 0 becomes carry
+        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
+        self.op_val_mut(n);
+        self.adc()
+    }
+
+    // shx_shy_common implements the common logic for SHX and SHY.
+    fn shx_shy_common(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        v: Wrapping<u8>,
+    ) -> Result<OpState> {
+        // This is a store but we can't use store_instruction since it depends on knowing op_addr
+        // for the final computed value so we have to do the addressing mode ourselves.
+        match self.addr_done() {
+            OpState::Processing => {
+                let ret = address_mode(self, &InstructionMode::Store)?;
+                self.addr_done_mut(ret);
+                Ok(OpState::Processing)
+            }
+            OpState::Done => {
+                let val = (v & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
+                self.ram().borrow_mut().write(self.op_addr(), val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // shx implements the undocumented SHX instruction based on the addressing mode passed in.
+    // The value stored is (X & (ADDR_HI + 1))
+    // Returns Done and/or errors when complete.
+    fn shx(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+    ) -> Result<OpState> {
+        self.shx_shy_common(address_mode, self.x())
+    }
+
+    // shy implements the undocumented SHY instruction based on the addressing mode passed in.
+    // The value stored is (Y & (ADDR_HI + 1))
+    // Returns Done and/or errors when complete.
+    fn shy(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+    ) -> Result<OpState> {
+        self.shx_shy_common(address_mode, self.y())
+    }
+
+    // slo implements the undocumented opcode for SLO. This does an ASL on the
+    // contents of op_addr and then OR's it against A. Sets flags and carry.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn slo(&mut self) -> Result<OpState> {
+        self.ram()
+            .borrow_mut()
+            .write(self.op_addr(), self.op_val() << 1);
+        self.carry_check(u16::from(self.op_val()) << 1);
+        self.load_register(Register::A, (self.op_val() << 1) | self.a().0)
+    }
+
+    // sre implements the undocumented opcode for SRE. This does a LSR on
+    // op_addr and then XOR's it against A. Sets flags and carry.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn sre(&mut self) -> Result<OpState> {
+        self.ram()
+            .borrow_mut()
+            .write(self.op_addr(), self.op_val() >> 1);
+        // Old bit 0 becomes carry
+        self.carry_check(u16::from(self.op_val()) << 8);
+        self.load_register(Register::A, (self.op_val() >> 1) ^ self.a().0)
+    }
+
+    // tas implements the undocumented opcode for TAS which only has one addressing mode.
+    // This does the same operations as AHX above but then also sets S = A&X
+    // Returns Done and/or errors when complete.
+    fn tas(&mut self) -> Result<OpState> {
+        self.s_mut(self.a() & self.x());
+        self.ahx(Self::addr_absolute_y)
+    }
+
+    // xaa implements the undocumented opcode for XAA.
+    // We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
+    // for implementation and pick 0xEE as the constant. According to VICE this may break so
+    // we might need to change it to 0xFF.
+    // https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
+    // Always returns Done since this takes one tick and never returns an error.
+    fn xaa(&mut self) -> Result<OpState> {
+        self.load_register(
+            Register::A,
+            (self.a().0 | 0xEE) & self.x().0 & self.op_val(),
+        )
+    }
 }
 
 impl<'a> CPUNmosInternal<'a> for CpuNmos<'a> {}
@@ -2012,16 +2284,32 @@ trait CPUInternal<'a>: Chip {
     // and must be implmented by the relevant struct in order to provide
     // access and mutability for the default trait methods below.
 
+    // debug_hook returns the optional debug function callback.
     fn debug_hook(&self) -> Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>;
+
+    // state returns the current CPU state.
     fn state(&self) -> State;
+    // state_mut sets the current CPU state.
     fn state_mut(&mut self, new: State);
+
+    // a return the contents of the A register.
     fn a(&self) -> Wrapping<u8>;
+    // a_mut sets the contents of the A register.
     fn a_mut(&mut self, new: Wrapping<u8>);
+
+    // x return the contents of the X register.
     fn x(&self) -> Wrapping<u8>;
+    // x_mut sets the contents of the X register.
     fn x_mut(&mut self, new: Wrapping<u8>);
+
+    // y return the contents of the Y register.
     fn y(&self) -> Wrapping<u8>;
+    // y_mut sets the contents of the Y register.
     fn y_mut(&mut self, new: Wrapping<u8>);
+
+    // S return the contents of the S register.
     fn s(&self) -> Wrapping<u8>;
+    // s_mut sets the contents of the S register.
     fn s_mut(&mut self, new: Wrapping<u8>);
     fn p(&self) -> Flags;
     fn p_mut(&mut self, new: Flags);
@@ -2043,6 +2331,8 @@ trait CPUInternal<'a>: Chip {
     fn irq_raised_mut(&mut self, new: InterruptStyle);
     fn op_raw(&self) -> u8;
 
+    // debug will emit a filled in value on the start of new instructions.
+    // If RDY is asserted it will simply repeat the previous state if at Tick1.
     fn debug(&self) {
         if let Some(d) = self.debug_hook() {
             let (ref_state, full) = d();
@@ -2772,6 +3062,7 @@ trait CPUInternal<'a>: Chip {
         }
     }
 
+    // perform_branch does all of the main logic for processing a branch which is taken.
     fn perform_branch(&mut self) -> Result<OpState> {
         match self.op_tick() {
             Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
@@ -2831,7 +3122,6 @@ trait CPUInternal<'a>: Chip {
     // branch_taken2 is used when fixing up a page boundary issue from a previous
     // branch_taken call.
     #[allow(clippy::unnecessary_wraps)]
-
     fn branch_taken2(&mut self) -> Result<OpState> {
         // Set the correct PC value if we got here.
         // NOTE: We don't lose the sign here since Wrapping will do the right thing.
@@ -2887,7 +3177,8 @@ trait CPUInternal<'a>: Chip {
     // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
     // This sets all associated flags in P. For SBC simply ones-complement op_val
     // before calling.
-    // NOTE: SBC this only works in non BCD mode. sbc() handles this directly.
+    // NOTE: For SBC this only works in non BCD mode. sbc() handles BCD directly but
+    // otherwise calls adc for binary mode.
     // Always returns Done since this takes one tick and never returns an error.
     fn adc(&mut self) -> Result<OpState> {
         // Pull the carry bit out which thankfully is the low bit so can be
@@ -2933,96 +3224,11 @@ trait CPUInternal<'a>: Chip {
         self.load_register(Register::A, sum)
     }
 
-    // ahx implements the undocumented AHX instruction based on the addressing mode passed in.
-    // The value stored is (A & X & (ADDR_HI + 1))
-    // Returns Done when complete and/or errors
-    fn ahx(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-    ) -> Result<OpState> {
-        // This is a store but we can't use store_instruction since it depends on knowing op_addr
-        // for the final computed value so we have to do the addressing mode ourselves.
-        match self.addr_done() {
-            OpState::Processing => {
-                let ret = address_mode(self, &InstructionMode::Store)?;
-                self.addr_done_mut(ret);
-                Ok(OpState::Processing)
-            }
-            OpState::Done => {
-                let val =
-                    (self.a() & self.x() & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
-                self.ram().borrow_mut().write(self.op_addr(), val);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // alr implements the undocumented opcode for ALR.
-    // This does AND #i (op_val) and then LSR on A setting all associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn alr(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 & self.op_val())?;
-        self.lsr_acc()
-    }
-
-    // anc implements the undocumented opcode for ANC. This does AND #i (op_val) and then
-    // sets carry based on bit 7 (sign extend).
-    // Always returns Done since this takes one tick and never returns an error.
-    fn anc(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 & self.op_val())?;
-        self.carry_check(u16::from(self.a().0) << 1);
-        Ok(OpState::Done)
-    }
-
     // and implements the AND instruction on the given memory location in op_addr.
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since this takes one tick and never returns an error.
     fn and(&mut self) -> Result<OpState> {
         self.load_register(Register::A, self.a().0 & self.op_val())
-    }
-
-    // arr implements implements the undocumented opcode for ARR.
-    // This does AND #i (p.opVal) and then ROR except some flags are set differently.
-    // Implemented as described in http://nesdev.com/6502_cpu.txt
-    // Always returns Done since this takes one tick and never returns an error.
-    fn arr(&mut self) -> Result<OpState> {
-        let val = self.a().0 & self.op_val();
-        self.load_register(Register::A, val)?;
-        self.ror_acc()?;
-
-        // Flags are different based on BCD or not (since the ALU acts different).
-        if self.p() & P_DECIMAL != Flags(0x00) {
-            // If bit 6 changed state between AND output and rotate output then set V.
-            if (val ^ self.a().0) & 0x40 == 0x00 {
-                self.p_mut(self.p() & !P_OVERFLOW);
-            } else {
-                self.p_mut(self.p() | P_OVERFLOW);
-            }
-
-            // Now do possible odd BCD fixups and set C
-            let ah = val >> 4;
-            let al = val & 0x0F;
-            if (al + (al & 0x01)) > 5 {
-                self.a_mut(Wrapping((self.a().0 & 0xF0) | ((self.a().0 + 6) & 0x0F)));
-            }
-            if (ah + (ah & 0x01)) > 5 {
-                self.p_mut(self.p() | P_CARRY);
-                self.a_mut(self.a() + Wrapping(0x60));
-            } else {
-                self.p_mut(self.p() & !P_CARRY);
-            }
-            return Ok(OpState::Done);
-        }
-
-        // C is bit 6
-        self.carry_check((u16::from(self.a().0) << 2) & 0x0100);
-        // V is bit 5 ^ bit 6
-        if ((self.a().0 & 0x40) >> 6) ^ ((self.a().0 & 0x20) >> 5) == 0x00 {
-            self.p_mut(self.p() & !P_OVERFLOW);
-        } else {
-            self.p_mut(self.p() | P_OVERFLOW);
-        }
-        Ok(OpState::Done)
     }
 
     // asl implements the ASL instruction on the given memory location in op_addr.
@@ -3044,36 +3250,6 @@ trait CPUInternal<'a>: Chip {
     fn asl_acc(&mut self) -> Result<OpState> {
         self.carry_check(u16::from(self.a().0) << 1);
         self.load_register(Register::A, self.a().0 << 1)
-    }
-
-    // axs implements the undocumented opcode for AXS.
-    // (A AND X) - p.opVal (no borrow) setting all associated flags post SBC.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn axs(&mut self) -> Result<OpState> {
-        // Save A off to restore later
-        let a = self.a().0;
-        self.load_register(Register::A, self.a().0 & self.x().0)?;
-        // Carry is always set
-        self.p_mut(self.p() | P_CARRY);
-
-        // Save D & V state since it's always ignored for this but needs to keep values.
-        let d = self.p() & P_DECIMAL;
-        let v = self.p() & P_OVERFLOW;
-        // Clear D so SBC never uses BCD mode (we'll reset it later from saved state).
-        self.p_mut(self.p() & !P_DECIMAL);
-        self.sbc()?;
-
-        // Clear V now in case SBC set it so we can properly restore it below.
-        self.p_mut(self.p() & !P_OVERFLOW);
-
-        // Save A in a temp so we can load registers in the right order to set flags (based on X, not old A)
-        let x = self.a().0;
-        self.load_register(Register::A, a)?;
-        self.load_register(Register::X, x)?;
-
-        // Restore D & V from our initial state.
-        self.p_mut(self.p() | d | v);
-        Ok(OpState::Done)
     }
 
     // bcc implements the BCC instruction and branches if C is clear.
@@ -3231,15 +3407,6 @@ trait CPUInternal<'a>: Chip {
         self.store_with_flags(self.op_addr(), (Wrapping(self.op_val()) - Wrapping(1)).0)
     }
 
-    // dcp implements the undocumented opcode for DCP.
-    // This decrements the value at op_addr and then does a CMP with A setting associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn dcp(&mut self) -> Result<OpState> {
-        self.op_val_mut((Wrapping(self.op_val()) - Wrapping(1)).0);
-        self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-        self.compare_a()
-    }
-
     // eor implements the EOR instruction which XORs op_val with A.
     // Always returns true since this takes one tick and never returns an error.
     fn eor(&mut self) -> Result<OpState> {
@@ -3250,15 +3417,6 @@ trait CPUInternal<'a>: Chip {
     // Always returns Done since this takes one tick and never returns an error.
     fn inc(&mut self) -> Result<OpState> {
         self.store_with_flags(self.op_addr(), (Wrapping(self.op_val()) + Wrapping(1)).0)
-    }
-
-    // isc implements the undocumented opcode for ISC.
-    // This increments the value at op_addr and then does an SBC and sets associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn isc(&mut self) -> Result<OpState> {
-        self.op_val_mut((Wrapping(self.op_val()) + Wrapping(1)).0);
-        self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-        self.sbc()
     }
 
     // jmp implements the JMP instruction for jumping to a new address.
@@ -3359,23 +3517,6 @@ trait CPUInternal<'a>: Chip {
         }
     }
 
-    // las implements the undocumented opcode for LAS.
-    // This take op_val and ANDs it with S and then stores that in A,X,S setting flags accordingly.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn las(&mut self) -> Result<OpState> {
-        self.s_mut(Wrapping(self.s().0 & self.op_val()));
-        self.load_register(Register::X, self.s().0)?;
-        self.load_register(Register::A, self.s().0)
-    }
-
-    // lax implements the undocumented opcode for LAX.
-    // This loads A and X with the same value and sets all associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn lax(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.op_val())?;
-        self.load_register(Register::X, self.op_val())
-    }
-
     // lsr implements the LSR instruction as a logical shift right on op_addr.
     // Always returns Done since this takes one tick and never returns an error.
     #[allow(clippy::unnecessary_wraps)]
@@ -3397,20 +3538,6 @@ trait CPUInternal<'a>: Chip {
         // the carry position
         self.carry_check(u16::from(self.a().0 & 0x01) << 8);
         self.load_register(Register::A, self.a().0 >> 1)
-    }
-
-    // oal implements the undocumented opcode for OAL.
-    // This one acts a bit randomly. It somtimes does XAA and sometimes
-    // does A=X=A&val.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn oal(&mut self) -> Result<OpState> {
-        let mut rng = rand::thread_rng();
-        if rng.gen::<f64>() > 0.5 {
-            return self.xaa();
-        }
-        let val = self.a().0 & self.op_val();
-        self.load_register(Register::A, val)?;
-        self.load_register(Register::X, val)
     }
 
     // ora implements the ORA instruction which ORs op_val with A.
@@ -3498,16 +3625,6 @@ trait CPUInternal<'a>: Chip {
         Ok(ret)
     }
 
-    // rla implements the undocumented opcode for RLA. This does a ROL on
-    // the contents of op_ddr and then AND's it against A. Sets flags and carry.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn rla(&mut self) -> Result<OpState> {
-        let val = (self.op_val() << 1) | (self.p() & P_CARRY).0;
-        self.ram().borrow_mut().write(self.op_addr(), val);
-        self.carry_check(u16::from(self.op_val()) << 1);
-        self.load_register(Register::A, self.a().0 & val)
-    }
-
     // rol implements the ROL instruction which does a rotate left on op_addr.
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since this takes one tick and never returns an error.
@@ -3556,18 +3673,8 @@ trait CPUInternal<'a>: Chip {
         self.load_register(Register::A, (self.a().0 >> 1) | carry)
     }
 
-    // rra implements the undocumented opcode for RRA. This does a ROR on op_addr
-    // and then ADC's it against A. Sets flags and carry.
-    // Always returns Done since this is one tick and never returns an error.
-    fn rra(&mut self) -> Result<OpState> {
-        let n = ((self.p() & P_CARRY).0 << 7) | (self.op_val() >> 1);
-        self.ram().borrow_mut().write(self.op_addr(), n);
-        // Old bit 0 becomes carry
-        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
-        self.op_val_mut(n);
-        self.adc()
-    }
-
+    // rti implements the RTI instruction for returning out of an interrupt handler.
+    // Returns Done when done and/or errors.
     fn rti(&mut self) -> Result<OpState> {
         match self.op_tick() {
             Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
@@ -3723,92 +3830,6 @@ trait CPUInternal<'a>: Chip {
     fn sei(&mut self) -> Result<OpState> {
         self.p_mut(self.p() | P_INTERRUPT);
         Ok(OpState::Done)
-    }
-
-    // shx_shy_common implements the common logic for SHX and SHY.
-    fn shx_shy_common(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-        v: Wrapping<u8>,
-    ) -> Result<OpState> {
-        // This is a store but we can't use store_instruction since it depends on knowing op_addr
-        // for the final computed value so we have to do the addressing mode ourselves.
-        match self.addr_done() {
-            OpState::Processing => {
-                let ret = address_mode(self, &InstructionMode::Store)?;
-                self.addr_done_mut(ret);
-                Ok(OpState::Processing)
-            }
-            OpState::Done => {
-                let val = (v & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
-                self.ram().borrow_mut().write(self.op_addr(), val);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // shx implements the undocumented SHX instruction based on the addressing mode passed in.
-    // The value stored is (X & (ADDR_HI + 1))
-    // Returns Done and/or errors when complete.
-    fn shx(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-    ) -> Result<OpState> {
-        self.shx_shy_common(address_mode, self.x())
-    }
-
-    // shy implements the undocumented SHY instruction based on the addressing mode passed in.
-    // The value stored is (Y & (ADDR_HI + 1))
-    // Returns Done and/or errors when complete.
-    fn shy(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-    ) -> Result<OpState> {
-        self.shx_shy_common(address_mode, self.y())
-    }
-
-    // slo implements the undocumented opcode for SLO. This does an ASL on the
-    // contents of op_addr and then OR's it against A. Sets flags and carry.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn slo(&mut self) -> Result<OpState> {
-        self.ram()
-            .borrow_mut()
-            .write(self.op_addr(), self.op_val() << 1);
-        self.carry_check(u16::from(self.op_val()) << 1);
-        self.load_register(Register::A, (self.op_val() << 1) | self.a().0)
-    }
-
-    // sre implements the undocumented opcode for SRE. This does a LSR on
-    // op_addr and then XOR's it against A. Sets flags and carry.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn sre(&mut self) -> Result<OpState> {
-        self.ram()
-            .borrow_mut()
-            .write(self.op_addr(), self.op_val() >> 1);
-        // Old bit 0 becomes carry
-        self.carry_check(u16::from(self.op_val()) << 8);
-        self.load_register(Register::A, (self.op_val() >> 1) ^ self.a().0)
-    }
-
-    // tas implements the undocumented opcode for TAS which only has one addressing mode.
-    // This does the same operations as AHX above but then also sets S = A&X
-    // Returns Done and/or errors when complete.
-    fn tas(&mut self) -> Result<OpState> {
-        self.s_mut(self.a() & self.x());
-        self.ahx(Self::addr_absolute_y)
-    }
-
-    // xaa implements the undocumented opcode for XAA.
-    // We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
-    // for implementation and pick 0xEE as the constant. According to VICE this may break so
-    // we might need to change it to 0xFF.
-    // https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
-    // Always returns Done since this takes one tick and never returns an error.
-    fn xaa(&mut self) -> Result<OpState> {
-        self.load_register(
-            Register::A,
-            (self.a().0 | 0xEE) & self.x().0 & self.op_val(),
-        )
     }
 }
 
@@ -4765,7 +4786,158 @@ macro_rules! cpu_impl {
 
 cpu_impl!(CpuNmos);
 cpu_impl!(CpuNmos6510);
-cpu_impl!(CpuRicoh);
+
+// Ricoh has variations in power/reset so need to direct implement vs the macro.
+// However resolve_opcode and opcode_op are consistent across all NMOS so the
+// trait default is fine there.
+impl<'a> CPUImpl<'a> for CpuRicoh<'a> {
+    /// Use this to enable or disable state based debugging dynamically.
+    fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
+        self.debug = d;
+    }
+
+    /// `power_on` will reset the CPU to power on state which isn't well defined.
+    /// Registers are random and stack is at random (though visual 6502 claims it's 0xFD
+    /// due to a push P/PC in reset which gets run at power on).
+    /// P is cleared with interrupts disabled and decimal mode random (for NMOS versions).
+    /// The starting PC value is loaded from the reset vector.
+    ///
+    /// # Errors
+    /// If reset has any issues an error will be returned.
+    fn power_on(&mut self) -> Result<()> {
+        if self.state != State::Off {
+            return Err(eyre!("cannot power on except from an off state"));
+        }
+
+        let mut rng = rand::thread_rng();
+
+        // This is always set and clears the rest.
+        // This includes D which is always off on a Ricoh.
+        self.p = Flags(P_S1);
+
+        // Randomize register contents
+        self.a = rng.gen();
+        self.x = rng.gen();
+        self.y = rng.gen();
+        self.s = rng.gen();
+
+        self.state = State::On;
+
+        // Use reset to get everything else done.
+        loop {
+            match self.reset() {
+                Ok(OpState::Done) => break,
+                Ok(OpState::Processing) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) -> Result<OpState> {
+        if self.state == State::Off {
+            return Err(eyre!("power_on not called before calling reset!"));
+        }
+
+        // If we haven't started a reset sequence start it now.
+        if self.state != State::Reset {
+            self.state = State::Reset;
+            self.op_tick = Tick::Reset;
+            self.reset_tick = Tick::Tick1;
+        }
+        self.op_tick = self.op_tick.next();
+        self.debug();
+        self.clocks += 1;
+
+        match self.reset_tick {
+            Tick::Tick1 | Tick::Tick2 => {
+                // Burn off 2 clocks internally to reset before we start processing.
+                // Technically this runs the next 2 sequences of the current opcode.
+                // We don't bother emulating that and instead just reread the
+                // current PC
+                _ = self.ram().borrow().read(self.pc.0);
+
+                self.reset_tick = self.reset_tick.next();
+
+                // Leave op_tick in reset mode so once we're done here it'll match below
+                // as Tick1.
+                self.op_tick = Tick::Reset;
+
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                match self.op_tick {
+                    Tick::Tick1 => {
+                        // Standard first tick reads current PC value which normally
+                        // is the opcode but we discard.
+                        self.ram().borrow().read(self.pc.0);
+                        self.pc += 1;
+
+                        // Reset our other internal state
+
+                        // If we were halted before, clear that out.
+                        self.halt_opcode = 0x00;
+                        self.halt_pc = 0x0000;
+
+                        // The stack ends up at 0xFD which implies it gets set to 0x00 now
+                        // as we pull 3 bytes off the stack in the end.
+                        self.s = Wrapping(0x00);
+                        Ok(OpState::Processing)
+                    }
+                    Tick::Tick2 => {
+                        // Read another throw away value which is normally the opval but
+                        // discarded as well.
+                        self.ram().borrow().read(self.pc.0);
+                        self.pc += 1;
+                        Ok(OpState::Processing)
+                    }
+                    Tick::Tick3 | Tick::Tick4 => {
+                        // Tick3: Simulate pushing P onto stack but reset holds R/W high so we don't write.
+                        // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
+                        // These reads go nowhere (technically they end up in internal regs but since that's
+                        // not visible externally, who cares?).
+                        let addr: u16 = STACK_START + u16::from(self.s.0);
+                        self.ram().borrow().read(addr);
+                        self.s -= 1;
+                        Ok(OpState::Processing)
+                    }
+                    Tick::Tick5 => {
+                        // Final write to stack (PC high) but actual read due to being in reset.
+                        let addr: u16 = STACK_START + u16::from(self.s.0);
+                        self.ram().borrow().read(addr);
+                        self.s -= 1;
+
+                        // Disable interrupts and make sure decimal is off
+                        self.p |= P_INTERRUPT;
+                        self.p &= !P_DECIMAL;
+                        Ok(OpState::Processing)
+                    }
+                    Tick::Tick6 => {
+                        // Load PCL from reset vector
+                        self.op_val = self.ram().borrow().read(RESET_VECTOR);
+                        Ok(OpState::Processing)
+                    }
+                    Tick::Tick7 => {
+                        // Load PCH from reset vector and go back into normal operations.
+                        self.pc = Wrapping(
+                            u16::from(self.ram().borrow().read(RESET_VECTOR + 1)) << 8
+                                | u16::from(self.op_val),
+                        );
+                        self.reset_tick = Tick::Reset;
+                        self.op_tick = Tick::Reset;
+                        self.state = State::Running;
+                        Ok(OpState::Done)
+                    }
+                    // Technically both this and the reset_tick one below are impossible
+                    // sans bugs here as tick() won't run while we're in reset and it's the only other
+                    // way to modify the sequence.
+                    _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
+                }
+            }
+            _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
+        }
+    }
+}
 
 // CMOS has variations in ops/power/reset so need to direct implement vs the macro.
 impl<'a> CPUImpl<'a> for CpuCmos<'a> {
@@ -7002,8 +7174,8 @@ impl<'a> Cpu<'a> {
         self.debug = d;
     }
 
-    /// debug will emit a filled in value on the start of new instructions.
-    /// If RDY is asserted it will simply repeat the previous state if at Tick1.
+    // debug will emit a filled in value on the start of new instructions.
+    // If RDY is asserted it will simply repeat the previous state if at Tick1.
     fn debug(&self) {
         if let Some(d) = self.debug {
             let (ref_state, full) = d();
