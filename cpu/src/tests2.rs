@@ -1648,7 +1648,6 @@ struct RomTest<'a> {
     filename: &'a str,
     nes: bool,
     start_pc: u16,
-    init: bool,
     load_traces: Option<fn() -> Result<Vec<Verify>>>,
     end_check: fn(u16, u16, &dyn Memory) -> bool,
     success_check: fn(u16, u16, &dyn Memory) -> Result<()>,
@@ -1693,156 +1692,153 @@ macro_rules! rom_test {
                         Ok(())
                     }
 
-#[allow(clippy::too_many_lines)]
-fn $rom(r: &RomTest, dbg: bool) -> Result<()> {
-    let mut cpu: $cpu<'_>;
-    // Initialize as always but then we'll overwrite it with a ROM image.
-    // For this we'll use BRK and a vector which if executed should halt the processor.
-    let d = Debug::<CPUState>::new(128, 1);
-    let debug = { || d.debug() };
+                    #[allow(clippy::too_many_lines)]
+                    fn $rom(r: &RomTest, dbg: bool) -> Result<()> {
+                        let mut cpu: $cpu<'_>;
+                        // Initialize as always but then we'll overwrite it with a ROM image.
+                        // For this we'll use BRK and a vector which if executed should halt the processor.
+                        let d = Debug::<CPUState>::new(128, 1);
+                        let debug = { || d.debug() };
 
-    // If we want debugging setup the debug hook. Otherwise go for faster execution.
-    // Callers should run without debug and then if fails rerun with debug so
-    // normal testing is fast.
-    if dbg {
-        cpu = $setup(0x0202, 0x00, None, None, None, Some(&debug));
-    } else {
-        cpu = $setup(0x0202, 0x00, None, None, None, None);
-    }
-    cpu.power_on()?;
+                        // If we want debugging setup the debug hook. Otherwise go for faster execution.
+                        // Callers should run without debug and then if fails rerun with debug so
+                        // normal testing is fast.
+                        if dbg {
+                            cpu = $setup(0x0202, 0x00, None, None, None, Some(&debug));
+                        } else {
+                            cpu = $setup(0x0202, 0x00, None, None, None, None);
+                        }
+                        cpu.power_on()?;
 
-    // Get the input ROM and poke it into place.
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../testdata")
-        .join(r.filename);
-    println!("path: {}", path.display());
-    let bytes = read(path)?;
+                        // Get the input ROM and poke it into place.
+                        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .join("../testdata")
+                            .join(r.filename);
+                        println!("path: {}", path.display());
+                        let bytes = read(path)?;
 
-    if r.nes {
-        assert!(
-            bytes.len() >= 16_384
-                && bytes[0] == b'N'
-                && bytes[1] == b'E'
-                && bytes[2] == b'S'
-                && bytes[3] == 0x1A,
-            "Bad NES ROM format"
-        );
-        let prg_count = bytes[4];
-        let chr_count = bytes[5];
-        println!("PRG: {prg_count}\nCHR: {chr_count}");
+                        if r.nes {
+                            // The NES test assumes registers are zeroed and SP is FD.
+                            // Easier to do that here than modifying it and it's trace log.
+                            cpu.a = Wrapping(0x00);
+                            cpu.x = Wrapping(0x00);
+                            cpu.y = Wrapping(0x00);
+                            cpu.s = Wrapping(0xFD);
 
-        // Map the first PRG into place
-        for i in 0..16 * 1024 {
-            cpu.ram
-                .borrow_mut()
-                .write(u16::try_from(i)? + 0xC000, bytes[16 + i]);
-        }
-        // Nothing else needs to happen unless we get more extensive NES ROM's
-    } else {
-        for (addr, b) in bytes.iter().enumerate() {
-            cpu.ram.borrow_mut().write(u16::try_from(addr)?, *b);
-        }
-    }
+                            assert!(
+                                bytes.len() >= 16_384
+                                && bytes[0] == b'N'
+                                && bytes[1] == b'E'
+                                && bytes[2] == b'S'
+                                && bytes[3] == 0x1A,
+                                "Bad NES ROM format"
+                            );
+                            let prg_count = bytes[4];
+                            let chr_count = bytes[5];
+                            println!("PRG: {prg_count}\nCHR: {chr_count}");
 
-    if r.init {
-        // The NES test assumes registers are zeroed and SP is FD.
-        // Easier to do that here than modifying it and it's trace log.
-        cpu.a = Wrapping(0x00);
-        cpu.x = Wrapping(0x00);
-        cpu.y = Wrapping(0x00);
-        cpu.s = Wrapping(0xFD);
-    }
+                            // Map the first PRG into place
+                            for i in 0..16 * 1024 {
+                                cpu.ram
+                                    .borrow_mut()
+                                    .write(u16::try_from(i)? + 0xC000, bytes[16 + i]);
+                            }
+                            // Nothing else needs to happen unless we get more extensive NES ROM's
+                        } else {
+                            for (addr, b) in bytes.iter().enumerate() {
+                                cpu.ram.borrow_mut().write(u16::try_from(addr)?, *b);
+                            }
+                        }
 
-    // Load up traces if we need them.
-    let mut traces: Vec<Verify> = Vec::new();
+                        // Load up traces if we need them.
+                        let mut traces: Vec<Verify> = Vec::new();
 
-    if let Some(load_traces) = r.load_traces {
-        traces = load_traces()?;
-    }
+                        if let Some(load_traces) = r.load_traces {
+                            traces = load_traces()?;
+                        }
 
-    // Do reset
-    loop {
-        match cpu.reset() {
-            Ok(OpState::Done) => break,
-            Ok(OpState::Processing) => continue,
-            Err(e) => return Err(e),
-        }
-    }
+                        // Do reset
+                        loop {
+                            match cpu.reset() {
+                                Ok(OpState::Done) => break,
+                                Ok(OpState::Processing) => continue,
+                                Err(e) => return Err(e),
+                            }
+                        }
 
-    cpu.pc = Wrapping(r.start_pc);
+                        cpu.pc = Wrapping(r.start_pc);
 
-    let mut total_cycles: usize = 0;
-    let mut total_instructions: usize = 0;
+                        let mut total_cycles: usize = 0;
+                        let mut total_instructions: usize = 0;
 
-    loop {
-        let old_pc = cpu.pc.0;
+                        loop {
+                            let old_pc = cpu.pc.0;
 
-        if !traces.is_empty() {
-            tester!(
-                total_instructions < traces.len(),
-                d,
-                "Ran out of trace log at PC: {old_pc:04X}"
-            );
+                            if !traces.is_empty() {
+                                tester!(
+                                    total_instructions < traces.len(),
+                                    d,
+                                    "Ran out of trace log at PC: {old_pc:04X}"
+                                );
 
-            let entry = &traces[total_instructions];
-            // The NES executes 3 clocks per cpu clock and rolls every 341 to account for scan lines.
-            // Adjust to match cycle counts if this an nes test cart.
+                                let entry = &traces[total_instructions];
+                                // The NES executes 3 clocks per cpu clock and rolls every 341 to account for scan lines.
+                                // Adjust to match cycle counts if this an nes test cart.
 
-            let test_cycle = if r.nes {
-                (total_cycles * 3) % 341
-            } else {
-                total_cycles
-            };
+                                let test_cycle = if r.nes {
+                                    (total_cycles * 3) % 341
+                                } else {
+                                    total_cycles
+                                };
 
-            if cpu.pc.0 != entry.pc
-                || cpu.p != entry.p
-                || cpu.a.0 != entry.a
-                || cpu.x.0 != entry.x
-                || cpu.y.0 != entry.y
-                || cpu.s.0 != entry.s
-                || test_cycle != entry.cyc
-            {
-                tester!(
-                    false,
-                    d,
-                    "Trace log violation.\nGot CPU: {cpu} cyc: {test_cycle}\nWant entry: {entry}"
-                );
-            }
-        }
+                                if cpu.pc.0 != entry.pc
+                                    || cpu.p != entry.p
+                                    || cpu.a.0 != entry.a
+                                    || cpu.x.0 != entry.x
+                                    || cpu.y.0 != entry.y
+                                    || cpu.s.0 != entry.s
+                                    || test_cycle != entry.cyc
+                                {
+                                    tester!(
+                                        false,
+                                        d,
+                                        "Trace log violation.\nGot CPU: {cpu} cyc: {test_cycle}\nWant entry: {entry}"
+                                    );
+                                }
+                            }
 
-        let cycles = $step(&mut cpu)?;
-        total_cycles += cycles;
-        total_instructions += 1;
+                            let cycles = $step(&mut cpu)?;
+                            total_cycles += cycles;
+                            total_instructions += 1;
 
-        if (r.end_check)(old_pc, cpu.pc.0, cpu.ram.borrow().as_ref()) {
-            let res = (r.success_check)(old_pc, cpu.pc.0, cpu.ram.borrow().as_ref());
-            if let Err(err) = res {
-                tester!(false, d, "{err}");
-            }
-            break;
-        }
-    }
+                            if (r.end_check)(old_pc, cpu.pc.0, cpu.ram.borrow().as_ref()) {
+                                let res = (r.success_check)(old_pc, cpu.pc.0, cpu.ram.borrow().as_ref());
+                                if let Err(err) = res {
+                                    tester!(false, d, "{err}");
+                                }
+                                break;
+                            }
+                        }
 
-    let got = total_cycles;
-    if let Some(want) = r.expected_cycles {
-        tester!(
-            got == want,
-            d,
-            "cycles don't match: got {got} and want {want}"
-        );
-    }
+                        let got = total_cycles;
+                        if let Some(want) = r.expected_cycles {
+                            tester!(
+                                got == want,
+                                d,
+                                "cycles don't match: got {got} and want {want}"
+                            );
+                        }
 
-    let got = total_instructions;
-    if let Some(want) = r.expected_instructions {
-        tester!(
-            got == want,
-            d,
-            "instructions don't match: got {got} and want {want}"
-        );
-    }
-    Ok(())
-}
-
+                        let got = total_instructions;
+                        if let Some(want) = r.expected_instructions {
+                            tester!(
+                                got == want,
+                                d,
+                                "instructions don't match: got {got} and want {want}"
+                            );
+                        }
+                        Ok(())
+                    }
                 )*
             }
         }
@@ -1854,7 +1850,6 @@ rom_test!(
         filename: "6502_functional_test.bin",
         nes: false,
         start_pc: 0x0400,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -1872,7 +1867,6 @@ rom_test!(
         filename: "6502_functional_test.bin",
         nes: false,
         start_pc: 0x0400,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -1890,7 +1884,6 @@ rom_test!(
         filename: "65C02_extended_opcodes_test.bin",
         nes: false,
         start_pc: 0x0400,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -1911,7 +1904,6 @@ rom_test!(
         filename: "dadc.bin",
         nes: false,
         start_pc: 0xD000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -1929,7 +1921,6 @@ rom_test!(
         filename: "dincsbc.bin",
         nes: false,
         start_pc: 0xD000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -1947,7 +1938,6 @@ rom_test!(
         filename: "dincsbc-deccmp.bin",
         nes: false,
         start_pc: 0xD000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -1965,7 +1955,6 @@ rom_test!(
         filename: "droradc.bin",
         nes: false,
         start_pc: 0xD000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -1983,7 +1972,6 @@ rom_test!(
         filename: "dsbc.bin",
         nes: false,
         start_pc: 0xD000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -2001,7 +1989,6 @@ rom_test!(
         filename: "dsbc-cmp-flags.bin",
         nes: false,
         start_pc: 0xD000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -2019,7 +2006,6 @@ rom_test!(
         filename: "sbx.bin",
         nes: false,
         start_pc: 0xD000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             if old == cur {
@@ -2047,7 +2033,6 @@ rom_test!(
         filename: "vsbx.bin",
         nes: false,
         start_pc: 0xD000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             if old == cur {
@@ -2075,7 +2060,6 @@ rom_test!(
         filename: "bcd_test.bin",
         nes: false,
         start_pc: 0xC000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur || old == 0xC04B
@@ -2094,7 +2078,6 @@ rom_test!(
         filename: "bcd_test_cmos.bin",
         nes: false,
         start_pc: 0xC000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur || old == 0xC04B
@@ -2113,7 +2096,6 @@ rom_test!(
         filename: "undocumented.bin",
         nes: false,
         start_pc: 0xC000,
-        init: false,
         load_traces: None,
         end_check: |old, cur, _ram| {
             old == cur
@@ -2132,7 +2114,6 @@ rom_test!(
       filename: "nestest.nes",
       nes: true,
       start_pc: 0xC000,
-      init: true,
       load_traces: Some(|| -> Result<Vec<Verify>> {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/nestest.log");
         println!("trace path: {}", path.display());
