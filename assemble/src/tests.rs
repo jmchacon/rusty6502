@@ -5,6 +5,7 @@ use std::{
     io::{self, BufRead},
     path::Path,
 };
+use strum_macros::{Display, EnumString};
 
 struct AssembleTest<'a> {
     asm: &'a str,
@@ -13,6 +14,27 @@ struct AssembleTest<'a> {
 }
 
 use crate::parse;
+
+// Type defines the various implementations of the 6502 available.
+#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, EnumString)]
+#[allow(clippy::upper_case_acronyms)]
+enum Type {
+    /// Basic NMOS 6502 including all undocumented opcodes.
+    NMOS,
+
+    /// Ricoh version used in the NES which is identical to NMOS except BCD mode is unimplemented.
+    #[strum(to_string = "NMOS_RICOH")]
+    RICOH,
+
+    /// NMOS 6501 variant (used in c64) which includes I/O ports mapped at addresses 0x00 and 0x01.
+    #[strum(to_string = "NMOS_6510")]
+    NMOS6510,
+
+    /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
+    /// This is an implementation of the later WDC spec so will include support
+    /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
+    CMOS,
+}
 
 macro_rules! assemble_test {
     ($suite:ident, $($name:ident: $assemble_test:expr)*) => {
@@ -37,7 +59,19 @@ macro_rules! assemble_test {
 
                       let file = File::open(path)?;
                       let lines = io::BufReader::new(file).lines();
-                      let asm = parse(*t, lines, true)?;
+
+                      let nmos = CpuNmos::new(ChipDef::default());
+                      let ricoh = CpuRicoh::new(ChipDef::default());
+                      let c6510 = CpuNmos6510::new(ChipDef::default(), None);
+                      let cmos = CpuCmos::new(ChipDef::default());
+                      let cpu: &dyn CPUImpl = match t {
+                          Type::NMOS => &nmos,
+                          Type::RICOH => &ricoh,
+                          Type::NMOS6510 => &c6510,
+                          Type::CMOS => &cmos,
+                      };
+
+                      let asm = parse(cpu, lines, true)?;
 
                       let diff = image
                           .iter()
@@ -100,7 +134,8 @@ macro_rules! bad_assemble_test {
                     let file = File::open(path)?;
                     let lines = io::BufReader::new(file).lines();
 
-                    let asm = parse(Type::NMOS, lines, true);
+                    let nmos = CpuNmos::new(ChipDef::default());
+                    let asm = parse(&nmos, lines, true);
                     assert!(asm.is_err(), "Didn't get error for {}", a.asm);
                     let e = asm.err().unwrap();
                     assert!(e.to_string().contains(a.error), "Missing error string {} for {e:?}", a.error);

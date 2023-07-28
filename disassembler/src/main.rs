@@ -6,6 +6,7 @@ use clap::Parser;
 use color_eyre::eyre::Result;
 use rusty6502::prelude::*;
 use std::{ffi::OsStr, fs::read, num::Wrapping, path::Path};
+use strum_macros::{Display, EnumString};
 
 /// disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
 /// and disassemble it.
@@ -30,6 +31,28 @@ struct Args {
     start_pc: u16,
 }
 
+// Type defines the various implementations of the 6502 available.
+#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, EnumString)]
+#[allow(clippy::upper_case_acronyms)]
+enum Type {
+    /// Basic NMOS 6502 including all undocumented opcodes.
+    NMOS,
+
+    /// Ricoh version used in the NES which is identical to NMOS except BCD mode is unimplemented.
+    #[strum(to_string = "NMOS_RICOH")]
+    RICOH,
+
+    /// NMOS 6501 variant (used in c64) which includes I/O ports mapped at addresses 0x00 and 0x01.
+    #[strum(to_string = "NMOS_6510")]
+    NMOS6510,
+
+    /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
+    /// This is an implementation of the later WDC spec so will include support
+    /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
+    CMOS,
+}
+
+#[allow(clippy::similar_names)]
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args: Args = Args::parse();
@@ -58,7 +81,7 @@ fn main() -> Result<()> {
 
     let mut start = Wrapping::<u16>(args.start_pc);
     let mut addr = Wrapping::<u16>(args.offset);
-    let mut pc = Wrapping::<u16>(0);
+    let mut pc = 0;
 
     if c64 {
         // The load addr is actually the first 2 bytes and then data goes there.
@@ -89,7 +112,7 @@ fn main() -> Result<()> {
             addr += 1;
         }
     }
-    pc += start;
+    pc = (Wrapping(pc) + start).0;
 
     println!("{:#06X} bytes at pc: {pc:#06X}\n", bytes.len());
 
@@ -103,7 +126,7 @@ fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             };
-            if res.1 .0 == 0x0000 {
+            if res.1 == 0x0000 {
                 // Account for 3 NULs indicating end of program
                 pc += 2;
                 println!("PC: {pc:04X}");
@@ -114,14 +137,26 @@ fn main() -> Result<()> {
         }
     }
     let mut dis;
-    let mut newpc: Wrapping<u16>;
+    let mut newpc: u16;
     println!("start: {start:04X} len {:04X}", bytes.len());
     // Set the most we'll do. If start was moved this will limit further.
     #[allow(clippy::cast_possible_truncation)]
-    let limit = Wrapping((usize::from(start.0) + bytes.len() - 1) as u16);
+    let limit = Wrapping((usize::from(start.0) + bytes.len() - 1) as u16).0;
     println!("limit {limit:04X}");
+
+    let nmos = CpuNmos::new(ChipDef::default());
+    let ricoh = CpuRicoh::new(ChipDef::default());
+    let c6510 = CpuNmos6510::new(ChipDef::default(), None);
+    let cmos = CpuCmos::new(ChipDef::default());
+    let cpu: &dyn CPUImpl = match args.cpu_type {
+        Type::NMOS => &nmos,
+        Type::RICOH => &ricoh,
+        Type::NMOS6510 => &c6510,
+        Type::CMOS => &cmos,
+    };
+
     loop {
-        (dis, newpc) = disassemble::step(args.cpu_type, pc, &ram);
+        (dis, newpc) = cpu.disassemble(pc, &ram);
         println!("{dis}");
         // Check if we went off the end, or the newpc wrapped
         // as step() can overflow.

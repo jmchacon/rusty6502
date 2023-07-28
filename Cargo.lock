@@ -34,6 +34,8 @@ dependencies = [
  "proc-macro2",
  "regex",
  "rusty6502",
+ "strum",
+ "strum_macros",
 ]
 
 [[package]]
@@ -45,6 +47,8 @@ dependencies = [
  "color-eyre",
  "proc-macro2",
  "rusty6502",
+ "strum",
+ "strum_macros",
 ]
 
 [[package]]
@@ -183,6 +187,8 @@ dependencies = [
  "color-eyre",
  "proc-macro2",
  "rusty6502",
+ "strum",
+ "strum_macros",
 ]
 
 [[package]]

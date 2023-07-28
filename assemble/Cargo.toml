@@ -11,3 +11,5 @@ rusty6502  = { path = "../", version = "~0.1" }
 color-eyre = { workspace = true }
 proc-macro2 = { workspace = true }
 regex = { workspace = true }
+strum_macros = { workspace = true }
+strum = { workspace = true }

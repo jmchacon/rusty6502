@@ -123,7 +123,7 @@ struct ASTOutput {
 // that has references to both fully defined labels (EQU) and references
 // to location labels (either defs or refs).
 #[allow(clippy::too_many_lines)]
-fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
+fn pass1(cpu: &dyn CPUImpl, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
     let mut ret = ASTOutput {
         ast: Vec::<Vec<Token>>::new(),
         labels: HashMap::new(),
@@ -295,7 +295,10 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         l.push(Token::Op(operation));
                         State::Comment(String::from(&token[1..]))
                     } else {
-                        if resolve_opcode(ty, &operation.op, &AddressMode::Relative).is_ok() {
+                        if cpu
+                            .resolve_opcode(&operation.op, &AddressMode::Relative)
+                            .is_ok()
+                        {
                             // Ops which are relative only have this mode so we can just assign
                             // and parse the val which must be 8 bit.
                             // Can't validate value now as while it's 8 bit this can be 16 bit
@@ -423,9 +426,10 @@ fn pass1(ty: Type, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
 // known until all labels are fully cross referenced. That will be handled during
 // byte code generation.
 #[allow(clippy::too_many_lines)]
-fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
+fn compute_refs(cpu: &dyn CPUImpl, ast_output: &mut ASTOutput) -> Result<()> {
     let mut pc: u16 = 0;
     for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
+        #[allow(clippy::explicit_iter_loop)] // false negative
         for t in line.iter_mut() {
             match t {
                 Token::Label(s) => {
@@ -439,7 +443,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                 Token::Op(o) => {
                     let op = &o.op;
                     let width: u16;
-                    if o.mode != AddressMode::Implied && resolve_opcode(ty, op, &o.mode).is_err() {
+                    if o.mode != AddressMode::Implied && cpu.resolve_opcode(op, &o.mode).is_err() {
                         return Err(eyre!(
                             "Error parsing line {}: opcode {op} doesn't support mode {}",
                             line_num + 1,
@@ -473,7 +477,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
                             };
                             // Check mode here since it was either implied, ZP, or Absolute and didn't get
                             // checked yet for this opcode.
-                            if resolve_opcode(ty, op, &o.mode).is_err() {
+                            if cpu.resolve_opcode(op, &o.mode).is_err() {
                                 return Err(eyre!(
                                     "Error parsing line {}: opcode {op} doesn't support mode - {}",
                                     line_num + 1,
@@ -578,7 +582,7 @@ fn compute_refs(ty: Type, ast_output: &mut ASTOutput) -> Result<()> {
 // the previously generated AST. This must be mutable as final relative addresses
 // are computed before byte codes are generated for a given operation.
 #[allow(clippy::too_many_lines)]
-fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
+fn generate_output(cpu: &dyn CPUImpl, ast_output: &mut ASTOutput) -> Result<Assembly> {
     // Always emit 64k so just allocate a block.
     let mut res = Assembly {
         bin: [0; 1 << 16],
@@ -616,7 +620,7 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
                     write!(output, "{c}").unwrap();
                 }
                 Token::Op(o) => {
-                    let modes = resolve_opcode(ty, &o.op, &o.mode).unwrap_or_else(|err| {
+                    let modes = cpu.resolve_opcode(&o.op, &o.mode).unwrap_or_else(|err| {
                         panic!("Internal error on line {}: {err}", line_num + 1)
                     });
 
@@ -778,7 +782,7 @@ fn generate_output(ty: Type, ast_output: &mut ASTOutput) -> Result<Assembly> {
 ///
 /// # Errors
 /// Any parsing error of the input stream can be returned in Result.
-pub fn parse(ty: Type, lines: Lines<BufReader<File>>, debug: bool) -> Result<Assembly> {
+pub fn parse(cpu: &dyn CPUImpl, lines: Lines<BufReader<File>>, debug: bool) -> Result<Assembly> {
     // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
     // while filling in a label mapping. The 2nd one does actual assembly over
     // the tokens with labels getting filled in from the map or computed as needed.
@@ -786,11 +790,11 @@ pub fn parse(ty: Type, lines: Lines<BufReader<File>>, debug: bool) -> Result<Ass
     // Pass one, read over the file line by line generating a set of tokens per line
     // for our AST. The labels map that comes back is complete so referencing keys
     // we lookup in later passes can use get_label to resolve them.
-    let mut ast_output = pass1(ty, lines)?;
+    let mut ast_output = pass1(cpu, lines)?;
 
     // Do another run so we can fill in label references.
     // Also compute addressing mode, validate and set pc.
-    compute_refs(ty, &mut ast_output)?;
+    compute_refs(cpu, &mut ast_output)?;
 
     // Verify all the labels defined got values (EQU and location definitions/references line up)
     let mut errors = String::new();
@@ -829,7 +833,7 @@ pub fn parse(ty: Type, lines: Lines<BufReader<File>>, debug: bool) -> Result<Ass
     }
 
     // Finally generate the output
-    generate_output(ty, &mut ast_output)
+    generate_output(cpu, &mut ast_output)
 }
 
 // Given a labels map (label->LabelDef) return the labeldef directly w/o checking.
