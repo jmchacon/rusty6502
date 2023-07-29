@@ -6,6 +6,7 @@ members = [
     "./chip",
     "./convertprg",
     "./cpu",
+    "./cpu_proc_macros",
     "./disassembler",
     "./handasm",
     "./io",
@@ -19,6 +20,7 @@ default-members = [
     "./chip",
     "./convertprg",
     "./cpu",
+    "./cpu_proc_macros",
     "./disassembler",
     "./handasm",
     "./io",
@@ -40,7 +42,7 @@ clap = { version = "~4.0", features = ["derive", "wrap_help"] }
 color-eyre = { version = "0.6.2", default-features = false }
 # Force bind proc-macro2 as the default most people are on (1.0.58) doesn't
 # work on nightly after 2023-06-27
-proc-macro2 = { version = "=1.0.60", features=["default", "proc-macro"] }
+proc-macro2 = { version = "=1.0.66", features=["default", "proc-macro"] }
 rand = "0.8.5"
 regex = "1"
 strum_macros = "0.24.1"

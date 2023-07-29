@@ -2,14 +2,12 @@ use super::{list, BASIC_LOAD_ADDR};
 use rusty6502::prelude::*;
 use std::fmt::Write as _;
 use std::fs::read;
-use std::num::Wrapping;
 use std::path::Path;
 
 macro_rules! list_test {
         ($suite:ident, $($name:ident: $file:literal,)*) => {
             mod $suite {
                 use std::error::Error;
-                use std::num::Wrapping;
 
                 use super::*;
                 $(
@@ -23,7 +21,6 @@ macro_rules! list_test {
                         });
                         r.power_on();
 
-
                         let bytes = read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/").join($file))?;
 
                         assert!(bytes[0] == (BASIC_LOAD_ADDR&0xFF) as u8 && bytes[1] == ((BASIC_LOAD_ADDR >> 8)&0xFF) as u8, "{} doesn't appear to be a valid Basic PRG file. Start address not 0x0801 but: {:#04X}{:02X}", $file, bytes[1], bytes[0]);
@@ -34,13 +31,13 @@ macro_rules! list_test {
                         }
 
                         let mut got = String::new();
-                        let mut pc = Wrapping::<u16>(BASIC_LOAD_ADDR);
+                        let mut pc = u16::from(BASIC_LOAD_ADDR);
                         loop {
                             let res = list(pc, &r).unwrap_or_else(|_| panic!("error from list"));
                             println!("{}", res.0);
 
                             // A 0 PC means we're done.
-                            if res.1.0 == 0x0000 {
+                            if res.1 == 0x0000 {
                                 break;
                             }
                             _ = write!(got, "{}", res.0);
@@ -102,7 +99,7 @@ fn bad_token() {
     r.write(BASIC_LOAD_ADDR + 6, 0x00);
     r.write(BASIC_LOAD_ADDR + 7, 0x00);
 
-    let res = list(Wrapping(BASIC_LOAD_ADDR), &r);
+    let res = list(BASIC_LOAD_ADDR, &r);
     assert!(res.is_err());
     if let Err(e) = res {
         println!("{e:?} - {e}");

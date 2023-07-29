@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 chip  = { path = "../chip", version = "~0.1" }
+cpu_proc_macros = { path = "../cpu_proc_macros", version = "~0.1" }
 io  = { path = "../io", version = "~0.1" }
 irq  = { path = "../irq", version = "~0.1" }
 memory  = { path = "../memory", version = "~0.1" }

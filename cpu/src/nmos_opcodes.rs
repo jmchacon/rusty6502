@@ -593,7 +593,7 @@ pub(crate) fn nmos_opcodes_values() -> &'static Vec<Operation> {
         let sl = m.as_mut_slice();
         let mut hs = HashSet::new();
 
-        for (op, hm) in nmos_opcodes().iter() {
+        for (op, hm) in nmos_opcodes() {
             for (am, opbytes) in hm {
                 for opbyte in opbytes {
                     assert!(!hs.contains(opbyte),"NMOS_OPCODES contains multiple entries for {opbyte:#04X} found in opcode {op} but we already have {:?}", sl[usize::from(*opbyte)]);

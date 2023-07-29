@@ -757,17 +757,17 @@ pub enum Keyword {
 /// # Errors
 ///
 /// Can return errors for invalid tokens (not all u8 values are valid tokens)
-pub fn list(pc: Wrapping<u16>, r: &impl Memory) -> Result<(String, Wrapping<u16>)> {
-    let new_pc = read_addr(r, pc.0);
-    let mut working_pc = pc + Wrapping(2);
+pub fn list(pc: u16, r: &impl Memory) -> Result<(String, u16)> {
+    let new_pc = read_addr(r, pc);
+    let mut working_pc = (Wrapping(pc) + Wrapping(2)).0;
 
     // Return an empty string and PC = 0x0000 for end of program.
     if new_pc == 0x0000 {
-        return Ok((String::new(), Wrapping(0x0000)));
+        return Ok((String::new(), 0x0000));
     }
 
     // Next 2 are line number also stored in little endian so we can just use readAddr again.
-    let line_num = read_addr(r, working_pc.0);
+    let line_num = read_addr(r, working_pc);
     working_pc += 2;
 
     let mut output_string = String::new();
@@ -780,7 +780,7 @@ pub fn list(pc: Wrapping<u16>, r: &impl Memory) -> Result<(String, Wrapping<u16>
 
     // Read until we reach a NUL indicating EOL.
     loop {
-        let tok = r.read(working_pc.0);
+        let tok = r.read(working_pc);
         working_pc += 1;
         let tmp: String;
 
