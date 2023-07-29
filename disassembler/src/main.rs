@@ -144,10 +144,10 @@ fn main() -> Result<()> {
     let limit = Wrapping((usize::from(start.0) + bytes.len() - 1) as u16).0;
     println!("limit {limit:04X}");
 
-    let nmos = CpuNmos::new(ChipDef::default());
-    let ricoh = CpuRicoh::new(ChipDef::default());
-    let c6510 = CpuNmos6510::new(ChipDef::default(), None);
-    let cmos = CpuCmos::new(ChipDef::default());
+    let nmos = CPU6502::new(ChipDef::default());
+    let ricoh = CPURicoh::new(ChipDef::default());
+    let c6510 = CPU6510::new(ChipDef::default(), None);
+    let cmos = CPU65C02::new(ChipDef::default());
     let cpu: &dyn CPUImpl = match args.cpu_type {
         Type::NMOS => &nmos,
         Type::RICOH => &ricoh,

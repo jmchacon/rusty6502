@@ -1,8 +1,8 @@
 use crate::{
-    AddressMode, CPUError, CPUImpl, CPUInternal, CPUNmosInternal, CPUState, ChipDef, CpuCmos,
-    CpuNmos, CpuNmos6510, CpuRicoh, Flags, FlatRAM, InstructionMode, InterruptState,
-    InterruptStyle, OpState, Opcode, Register, State, Tick, Vectors, P_B, P_CARRY, P_DECIMAL,
-    P_INTERRUPT, P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
+    AddressMode, CPUError, CPUImpl, CPUInternal, CPUNmosInternal, CPURicoh, CPUState, ChipDef,
+    Flags, FlatRAM, InstructionMode, InterruptState, InterruptStyle, OpState, Opcode, Register,
+    State, Tick, Vectors, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
+    P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
 use chip::Chip;
 use color_eyre::eyre::{eyre, Result};
@@ -19,7 +19,7 @@ use std::panic;
 use std::path::Path;
 use std::rc::Rc;
 
-// Debug provides a way to capture debug output from a Cpu
+// Debug provides a way to capture debug output from a CPU
 // without having to grab everything. Normally a few recent
 // instructions is all one needs. The functional test below for
 // instance runs millions of instructions which can lead to very
@@ -145,9 +145,9 @@ macro_rules! setup_cpu {
     };
 }
 
-setup_cpu!(CpuNmos, setup_cpu_nmos);
-setup_cpu!(CpuRicoh, setup_cpu_ricoh);
-setup_cpu!(CpuCmos, setup_cpu_cmos);
+setup_cpu!(CPU6502, setup_cpu_nmos);
+setup_cpu!(CPURicoh, setup_cpu_ricoh);
+setup_cpu!(CPU65C02, setup_cpu_cmos);
 
 fn setup_cpu_nmos_6510<'a>(
     hlt: u16,
@@ -156,7 +156,7 @@ fn setup_cpu_nmos_6510<'a>(
     nmi: Option<&'a dyn Sender>,
     rdy: Option<&'a dyn Sender>,
     debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
-) -> CpuNmos6510<'a> {
+) -> CPU6510<'a> {
     // This should halt the cpu if a test goes off the rails since
     // endless execution will eventually end up at the NMI vector (it's the first
     // one) which contains HLT instructions.
@@ -177,7 +177,7 @@ fn setup_cpu_nmos_6510<'a>(
         rdy,
     };
 
-    let mut cpu = CpuNmos6510::new(def, None);
+    let mut cpu = CPU6510::new(def, None);
     cpu.set_debug(debug);
     cpu
 }
@@ -199,9 +199,9 @@ macro_rules! step {
     };
 }
 
-step!(CpuNmos, step_cpu_nmos);
-step!(CpuRicoh, step_cpu_ricoh);
-step!(CpuCmos, step_cpu_cmos);
+step!(CPU6502, step_cpu_nmos);
+step!(CPURicoh, step_cpu_ricoh);
+step!(CPU65C02, step_cpu_cmos);
 
 #[test]
 fn tick_next() {
@@ -649,7 +649,7 @@ fn c6510_io_tests() {
         rdy: None,
     };
 
-    let mut cpu = CpuNmos6510::new(
+    let mut cpu = CPU6510::new(
         def,
         Some([
             io::Style::In(&io::Pullup {}),
@@ -825,7 +825,7 @@ macro_rules! init_test {
                             // Now we should get an error but it's from HLT itself.
                             let res = cpu.tick();
                             assert!(res.is_err(), "Tick didn't produce a halted error? {cpu}");
-                            assert!(cpu.state == State::Halted, "Cpu isn't halted?");
+                            assert!(cpu.state == State::Halted, "CPU isn't halted?");
 
                             // This next error should be a halt error from tick itself since state
                             // is halted now.
@@ -1868,7 +1868,7 @@ rom_test!(
         },
         expected_cycles: Some(96_241_367),
         expected_instructions: Some(30_646_177),
-    }, rom_functional_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_functional_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     functional_cmos_test: RomTest{
         filename: "6502_functional_test.bin",
         nes: false,
@@ -1885,7 +1885,7 @@ rom_test!(
         },
         expected_cycles: Some(96_561_360),
         expected_instructions: Some(30_646_177),
-    }, rom_functional_cmos_test, CpuCmos, setup_cpu_cmos, step_cpu_cmos,
+    }, rom_functional_cmos_test, CPU65C02, setup_cpu_cmos, step_cpu_cmos,
     functional_extended_cmos_test: RomTest{
         filename: "65C02_extended_opcodes_test.bin",
         nes: false,
@@ -1902,7 +1902,7 @@ rom_test!(
         },
         expected_cycles: Some(66_907_092),
         expected_instructions: Some(21_986_986),
-    }, rom_functional_extended_cmos_test, CpuCmos, setup_cpu_cmos, step_cpu_cmos,
+    }, rom_functional_extended_cmos_test, CPU65C02, setup_cpu_cmos, step_cpu_cmos,
     // The next tests (up to and including vsbx.bin) all come from http://nesdev.com/6502_cpu.txt
     // NOTE: They are hard to debug even with the ring buffer since the test is self modifying code...
     // So you'll have to use the register values and dumps to infer state along the way.
@@ -1922,7 +1922,7 @@ rom_test!(
         },
         expected_cycles: Some(21_230_741),
         expected_instructions: Some(8_109_022),
-    }, rom_dadc_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_dadc_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     dincsbc_test: RomTest{
         filename: "dincsbc.bin",
         nes: false,
@@ -1939,7 +1939,7 @@ rom_test!(
         },
         expected_cycles: Some(18_939_481),
         expected_instructions: Some(6_781_980),
-    }, rom_dincsbc_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_dincsbc_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     dincsbc_deccmp_test: RomTest{
         filename: "dincsbc-deccmp.bin",
         nes: false,
@@ -1956,7 +1956,7 @@ rom_test!(
         },
         expected_cycles: Some(18_095_480),
         expected_instructions: Some(5_507_189),
-    }, rom_dincsbc_deccmp_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_dincsbc_deccmp_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     droradc_test: RomTest{
         filename: "droradc.bin",
         nes: false,
@@ -1973,7 +1973,7 @@ rom_test!(
         },
         expected_cycles: Some(22_148_245),
         expected_instructions: Some(8_240_094),
-    }, rom_droradc_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_droradc_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     dsbc_test: RomTest{
         filename: "dsbc.bin",
         nes: false,
@@ -1990,7 +1990,7 @@ rom_test!(
         },
         expected_cycles: Some(18_021_977),
         expected_instructions: Some(6_650_908),
-    }, rom_dsbc_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_dsbc_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     dsbc_cmp_flags_test: RomTest{
         filename: "dsbc-cmp-flags.bin",
         nes: false,
@@ -2007,7 +2007,7 @@ rom_test!(
         },
         expected_cycles: Some(14_425_356),
         expected_instructions: Some(4_982_869),
-    }, rom_dsbc_cmp_flags_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_dsbc_cmp_flags_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     sbx_test: RomTest{
         filename: "sbx.bin",
         nes: false,
@@ -2034,7 +2034,7 @@ rom_test!(
         },
         expected_cycles: Some(6_044_288_253),
         expected_instructions: Some(2_081_694_800),
-    }, rom_sbx_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_sbx_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     vsbx_test: RomTest{
         filename: "vsbx.bin",
         nes: false,
@@ -2061,7 +2061,7 @@ rom_test!(
         },
         expected_cycles: Some(7_525_173_529),
         expected_instructions: Some(2_552_776_790),
-    }, rom_vsbx_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_vsbx_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     bcd_test: RomTest{
         filename: "bcd_test.bin",
         nes: false,
@@ -2079,7 +2079,7 @@ rom_test!(
         },
         expected_cycles: Some(53_953_828),
         expected_instructions: Some(17_609_916),
-    }, rom_bcd_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_bcd_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     bcd_cmos_test: RomTest{
         filename: "bcd_test_cmos.bin",
         nes: false,
@@ -2097,7 +2097,7 @@ rom_test!(
         },
         expected_cycles: Some(56_640_804),
         expected_instructions: Some(18_396_348),
-    }, rom_bcd_cmos_test, CpuCmos, setup_cpu_cmos, step_cpu_cmos,
+    }, rom_bcd_cmos_test, CPU65C02, setup_cpu_cmos, step_cpu_cmos,
     undocumented_opcodes_test: RomTest{
         filename: "undocumented.bin",
         nes: false,
@@ -2115,7 +2115,7 @@ rom_test!(
         // No expected cycles/instructions because OAL can generate different paths.
         expected_cycles: None,
         expected_instructions: None,
-    }, rom_undocumented_opcodes_test, CpuNmos, setup_cpu_nmos, step_cpu_nmos,
+    }, rom_undocumented_opcodes_test, CPU6502, setup_cpu_nmos, step_cpu_nmos,
     nes_functional_test: RomTest{
       filename: "nestest.nes",
       nes: true,
@@ -2154,5 +2154,5 @@ rom_test!(
       },
       expected_cycles: Some(26553),
       expected_instructions: Some(8991),
-    }, rom_nes_functional_test, CpuRicoh, setup_cpu_ricoh, step_cpu_ricoh,
+    }, rom_nes_functional_test, CPURicoh, setup_cpu_ricoh, step_cpu_ricoh,
 );

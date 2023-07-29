@@ -60,10 +60,10 @@ macro_rules! assemble_test {
                       let file = File::open(path)?;
                       let lines = io::BufReader::new(file).lines();
 
-                      let nmos = CpuNmos::new(ChipDef::default());
-                      let ricoh = CpuRicoh::new(ChipDef::default());
-                      let c6510 = CpuNmos6510::new(ChipDef::default(), None);
-                      let cmos = CpuCmos::new(ChipDef::default());
+                      let nmos = CPU6502::new(ChipDef::default());
+                      let ricoh = CPURicoh::new(ChipDef::default());
+                      let c6510 = CPU6510::new(ChipDef::default(), None);
+                      let cmos = CPU65C02::new(ChipDef::default());
                       let cpu: &dyn CPUImpl = match t {
                           Type::NMOS => &nmos,
                           Type::RICOH => &ricoh,
@@ -134,7 +134,7 @@ macro_rules! bad_assemble_test {
                     let file = File::open(path)?;
                     let lines = io::BufReader::new(file).lines();
 
-                    let nmos = CpuNmos::new(ChipDef::default());
+                    let nmos = CPU6502::new(ChipDef::default());
                     let asm = parse(&nmos, lines, true);
                     assert!(asm.is_err(), "Didn't get error for {}", a.asm);
                     let e = asm.err().unwrap();

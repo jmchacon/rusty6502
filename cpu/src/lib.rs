@@ -992,7 +992,7 @@ macro_rules! cpu_common {
             // Program counter
             pc: Wrapping<u16>,
 
-            // If set `debug` will be passed a raw `CpuState` on each instruction.
+            // If set `debug` will be passed a raw `CPUState` on each instruction.
             // The boolean returns indicates whether to include a full memory dump (slow)
             // or just to fill in the current PC values so dissembly can function.
             debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
@@ -1060,8 +1060,8 @@ macro_rules! cpu_common {
 }
 
 cpu_common!(
-    CpuNmos,
-    "The NMOS 6510 implementation for the 6502 architecture"
+    CPU6502,
+    "The NMOS 6502 implementation for the 6502 architecture"
 );
 
 /// The NMOS 6510 implementation for the 6502 architecture.
@@ -1069,7 +1069,7 @@ cpu_common!(
 /// at locations 0x0000 and 0x0001
 /// TODO(jchacon): Replace this with a proc macro so we can do all 4 CPU's
 ///                without duplicating.
-pub struct CpuNmos6510<'a> {
+pub struct CPU6510<'a> {
     // Accumulator register
     a: Wrapping<u8>,
 
@@ -1088,7 +1088,7 @@ pub struct CpuNmos6510<'a> {
     // Program counter
     pc: Wrapping<u16>,
 
-    // If set `debug` will be passed a raw `CpuState` on each instruction.
+    // If set `debug` will be passed a raw `CPUState` on each instruction.
     // The boolean returns indicates whether to include a full memory dump (slow)
     // or just to fill in the current PC values so dissembly can function.
     debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
@@ -1156,13 +1156,13 @@ pub struct CpuNmos6510<'a> {
 }
 
 cpu_common!(
-    CpuRicoh,
+    CPURicoh,
     "The Richo implementation for the 6502 architecture.
 /// The same as an NMOS 6502 except it doesn't have BCD support for ADC/SBC."
 );
 
 cpu_common!(
-    CpuCmos,
+    CPU65C02,
     "The CMOS implementation for the 65C02 architecture.
 /// Fixes many bugs from the 6502 (no more undocumented opcodes) and adds
 /// additional instructions.
@@ -1211,10 +1211,10 @@ macro_rules! common_cpu_funcs {
   };
 }
 
-common_cpu_funcs!(CpuNmos, "NMOS");
-common_cpu_funcs!(CpuNmos6510, "6510");
-common_cpu_funcs!(CpuRicoh, "Ricoh");
-common_cpu_funcs!(CpuCmos, "CMOS");
+common_cpu_funcs!(CPU6502, "NMOS");
+common_cpu_funcs!(CPU6510, "6510");
+common_cpu_funcs!(CPURicoh, "Ricoh");
+common_cpu_funcs!(CPU65C02, "CMOS");
 
 /// Common implementations which are NMOS only specific (undocumented opcodes
 /// and opcode processing). CMOS can implement `process_opcode` directly and
@@ -2297,9 +2297,9 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> {
     }
 }
 
-impl<'a> CPUNmosInternal<'a> for CpuNmos<'a> {}
-impl<'a> CPUNmosInternal<'a> for CpuNmos6510<'a> {}
-impl<'a> CPUNmosInternal<'a> for CpuRicoh<'a> {}
+impl<'a> CPUNmosInternal<'a> for CPU6502<'a> {}
+impl<'a> CPUNmosInternal<'a> for CPU6510<'a> {}
+impl<'a> CPUNmosInternal<'a> for CPURicoh<'a> {}
 
 /// The common implementation definitions for all 6502 chips but done as a private
 /// crate only trait so the default implementations can get at all the internal
@@ -3980,13 +3980,13 @@ macro_rules! cpu_internal {
     };
 }
 
-impl<'a> CPUInternal<'a> for CpuNmos<'a> {
+impl<'a> CPUInternal<'a> for CPU6502<'a> {
     cpu_internal!();
 }
-impl<'a> CPUInternal<'a> for CpuNmos6510<'a> {
+impl<'a> CPUInternal<'a> for CPU6510<'a> {
     cpu_internal!();
 }
-impl<'a> CPUInternal<'a> for CpuRicoh<'a> {
+impl<'a> CPUInternal<'a> for CPURicoh<'a> {
     cpu_internal!();
 
     // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
@@ -4020,7 +4020,7 @@ impl<'a> CPUInternal<'a> for CpuRicoh<'a> {
     }
 }
 
-impl<'a> CPUInternal<'a> for CpuCmos<'a> {
+impl<'a> CPUInternal<'a> for CPU65C02<'a> {
     cpu_internal!();
 
     // load_instruction abstracts all load instruction opcodes. The address mode function is
@@ -4809,13 +4809,13 @@ macro_rules! cpu_impl {
     };
 }
 
-cpu_impl!(CpuNmos);
-cpu_impl!(CpuNmos6510);
+cpu_impl!(CPU6502);
+cpu_impl!(CPU6510);
 
 // Ricoh has variations in power/reset so need to direct implement vs the macro.
 // However resolve_opcode and opcode_op are consistent across all NMOS so the
 // trait default is fine there.
-impl<'a> CPUImpl<'a> for CpuRicoh<'a> {
+impl<'a> CPUImpl<'a> for CPURicoh<'a> {
     /// Use this to enable or disable state based debugging dynamically.
     fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
         self.debug = d;
@@ -4965,7 +4965,7 @@ impl<'a> CPUImpl<'a> for CpuRicoh<'a> {
 }
 
 // CMOS has variations in ops/power/reset so need to direct implement vs the macro.
-impl<'a> CPUImpl<'a> for CpuCmos<'a> {
+impl<'a> CPUImpl<'a> for CPU65C02<'a> {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
     ///
@@ -5346,12 +5346,12 @@ macro_rules! chip_impl_nmos {
     };
 }
 
-chip_impl_nmos!(CpuNmos);
-chip_impl_nmos!(CpuNmos6510);
-chip_impl_nmos!(CpuRicoh);
+chip_impl_nmos!(CPU6502);
+chip_impl_nmos!(CPU6510);
+chip_impl_nmos!(CPURicoh);
 
 // CMOS is slightly different so needs a direct impl and can't use the macro.
-impl<'a> Chip for CpuCmos<'a> {
+impl<'a> Chip for CPU65C02<'a> {
     /// `tick` is used to move the clock forward one tick and either start processing
     /// a new opcode or continue on one already started.
     ///
@@ -5569,7 +5569,7 @@ impl<'a> Chip for CpuCmos<'a> {
 
 macro_rules! cpu_new {
     () => {
-        /// Build a new Cpu.
+        /// Build a new CPU.
         /// NOTE: This is not usable at this point. Call `power_on` to begin
         /// operation. Anything else will return errors.
         #[must_use]
@@ -5605,15 +5605,15 @@ macro_rules! cpu_new {
     };
 }
 
-impl<'a> CpuNmos<'a> {
+impl<'a> CPU6502<'a> {
     cpu_new!();
 }
 
-impl<'a> CpuRicoh<'a> {
+impl<'a> CPURicoh<'a> {
     cpu_new!();
 }
 
-impl<'a> CpuNmos6510<'a> {
+impl<'a> CPU6510<'a> {
     /// Build a new Cpu. Optionally pass input states for the I/O pins. If
     /// nothing is passed these will all be tied to pulldowns.
     /// If the io pins are not input style this will panic as it's intended
@@ -5673,7 +5673,7 @@ impl<'a> CpuNmos6510<'a> {
     }
 }
 
-impl<'a> CpuCmos<'a> {
+impl<'a> CPU65C02<'a> {
     cpu_new!();
 
     // CMOS has a different process_opcode so we override the trait default impl.
