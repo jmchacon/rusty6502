@@ -4716,7 +4716,7 @@ macro_rules! cpu_impl {
                         // Technically this runs the next 2 sequences of the current opcode.
                         // We don't bother emulating that and instead just reread the
                         // current PC
-                        _ = self.ram().borrow().read(self.pc.0);
+                        _ = self.ram.borrow().read(self.pc.0);
 
                         self.reset_tick = self.reset_tick.next();
 
@@ -4731,7 +4731,7 @@ macro_rules! cpu_impl {
                             Tick::Tick1 => {
                                 // Standard first tick reads current PC value which normally
                                 // is the opcode but we discard.
-                                self.ram().borrow().read(self.pc.0);
+                                self.ram.borrow().read(self.pc.0);
                                 self.pc += 1;
 
                                 // Reset our other internal state
@@ -4748,7 +4748,7 @@ macro_rules! cpu_impl {
                             Tick::Tick2 => {
                                 // Read another throw away value which is normally the opval but
                                 // discarded as well.
-                                self.ram().borrow().read(self.pc.0);
+                                self.ram.borrow().read(self.pc.0);
                                 self.pc += 1;
                                 Ok(OpState::Processing)
                             }
@@ -4758,14 +4758,14 @@ macro_rules! cpu_impl {
                                 // These reads go nowhere (technically they end up in internal regs but since that's
                                 // not visible externally, who cares?).
                                 let addr: u16 = STACK_START + u16::from(self.s.0);
-                                self.ram().borrow().read(addr);
+                                self.ram.borrow().read(addr);
                                 self.s -= 1;
                                 Ok(OpState::Processing)
                             }
                             Tick::Tick5 => {
                                 // Final write to stack (PC high) but actual read due to being in reset.
                                 let addr: u16 = STACK_START + u16::from(self.s.0);
-                                self.ram().borrow().read(addr);
+                                self.ram.borrow().read(addr);
                                 self.s -= 1;
 
                                 // Disable interrupts
@@ -4782,13 +4782,13 @@ macro_rules! cpu_impl {
                             }
                             Tick::Tick6 => {
                                 // Load PCL from reset vector
-                                self.op_val = self.ram().borrow().read(RESET_VECTOR);
+                                self.op_val = self.ram.borrow().read(RESET_VECTOR);
                                 Ok(OpState::Processing)
                             }
                             Tick::Tick7 => {
                                 // Load PCH from reset vector and go back into normal operations.
                                 self.pc = Wrapping(
-                                    u16::from(self.ram().borrow().read(RESET_VECTOR + 1)) << 8
+                                    u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
                                         | u16::from(self.op_val),
                                 );
                                 self.reset_tick = Tick::Reset;
@@ -4880,7 +4880,7 @@ impl<'a> CPUImpl<'a> for CPURicoh<'a> {
                 // Technically this runs the next 2 sequences of the current opcode.
                 // We don't bother emulating that and instead just reread the
                 // current PC
-                _ = self.ram().borrow().read(self.pc.0);
+                _ = self.ram.borrow().read(self.pc.0);
 
                 self.reset_tick = self.reset_tick.next();
 
@@ -4895,7 +4895,7 @@ impl<'a> CPUImpl<'a> for CPURicoh<'a> {
                     Tick::Tick1 => {
                         // Standard first tick reads current PC value which normally
                         // is the opcode but we discard.
-                        self.ram().borrow().read(self.pc.0);
+                        self.ram.borrow().read(self.pc.0);
                         self.pc += 1;
 
                         // Reset our other internal state
@@ -4912,7 +4912,7 @@ impl<'a> CPUImpl<'a> for CPURicoh<'a> {
                     Tick::Tick2 => {
                         // Read another throw away value which is normally the opval but
                         // discarded as well.
-                        self.ram().borrow().read(self.pc.0);
+                        self.ram.borrow().read(self.pc.0);
                         self.pc += 1;
                         Ok(OpState::Processing)
                     }
@@ -4922,14 +4922,14 @@ impl<'a> CPUImpl<'a> for CPURicoh<'a> {
                         // These reads go nowhere (technically they end up in internal regs but since that's
                         // not visible externally, who cares?).
                         let addr: u16 = STACK_START + u16::from(self.s.0);
-                        self.ram().borrow().read(addr);
+                        self.ram.borrow().read(addr);
                         self.s -= 1;
                         Ok(OpState::Processing)
                     }
                     Tick::Tick5 => {
                         // Final write to stack (PC high) but actual read due to being in reset.
                         let addr: u16 = STACK_START + u16::from(self.s.0);
-                        self.ram().borrow().read(addr);
+                        self.ram.borrow().read(addr);
                         self.s -= 1;
 
                         // Disable interrupts and make sure decimal is off
@@ -4939,13 +4939,13 @@ impl<'a> CPUImpl<'a> for CPURicoh<'a> {
                     }
                     Tick::Tick6 => {
                         // Load PCL from reset vector
-                        self.op_val = self.ram().borrow().read(RESET_VECTOR);
+                        self.op_val = self.ram.borrow().read(RESET_VECTOR);
                         Ok(OpState::Processing)
                     }
                     Tick::Tick7 => {
                         // Load PCH from reset vector and go back into normal operations.
                         self.pc = Wrapping(
-                            u16::from(self.ram().borrow().read(RESET_VECTOR + 1)) << 8
+                            u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
                                 | u16::from(self.op_val),
                         );
                         self.reset_tick = Tick::Reset;
@@ -5057,7 +5057,7 @@ impl<'a> CPUImpl<'a> for CPU65C02<'a> {
                 // Technically this runs the next 2 sequences of the current opcode.
                 // We don't bother emulating that and instead just reread the
                 // current PC
-                _ = self.ram().borrow().read(self.pc.0);
+                _ = self.ram.borrow().read(self.pc.0);
 
                 self.reset_tick = self.reset_tick.next();
 
@@ -5072,7 +5072,7 @@ impl<'a> CPUImpl<'a> for CPU65C02<'a> {
                     Tick::Tick1 => {
                         // Standard first tick reads current PC value which normally
                         // is the opcode but we discard.
-                        self.ram().borrow().read(self.pc.0);
+                        self.ram.borrow().read(self.pc.0);
                         self.pc += 1;
 
                         // Reset our other internal state
@@ -5089,7 +5089,7 @@ impl<'a> CPUImpl<'a> for CPU65C02<'a> {
                     Tick::Tick2 => {
                         // Read another throw away value which is normally the opval but
                         // discarded as well.
-                        self.ram().borrow().read(self.pc.0);
+                        self.ram.borrow().read(self.pc.0);
                         self.pc += 1;
                         Ok(OpState::Processing)
                     }
@@ -5099,14 +5099,14 @@ impl<'a> CPUImpl<'a> for CPU65C02<'a> {
                         // These reads go nowhere (technically they end up in internal regs but since that's
                         // not visible externally, who cares?).
                         let addr: u16 = STACK_START + u16::from(self.s.0);
-                        self.ram().borrow().read(addr);
+                        self.ram.borrow().read(addr);
                         self.s -= 1;
                         Ok(OpState::Processing)
                     }
                     Tick::Tick5 => {
                         // Final write to stack (PC high) but actual read due to being in reset.
                         let addr: u16 = STACK_START + u16::from(self.s.0);
-                        self.ram().borrow().read(addr);
+                        self.ram.borrow().read(addr);
                         self.s -= 1;
 
                         // Disable interrupts and make sure decimal is off
@@ -5116,13 +5116,13 @@ impl<'a> CPUImpl<'a> for CPU65C02<'a> {
                     }
                     Tick::Tick6 => {
                         // Load PCL from reset vector
-                        self.op_val = self.ram().borrow().read(RESET_VECTOR);
+                        self.op_val = self.ram.borrow().read(RESET_VECTOR);
                         Ok(OpState::Processing)
                     }
                     Tick::Tick7 => {
                         // Load PCH from reset vector and go back into normal operations.
                         self.pc = Wrapping(
-                            u16::from(self.ram().borrow().read(RESET_VECTOR + 1)) << 8
+                            u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
                                 | u16::from(self.op_val),
                         );
                         self.reset_tick = Tick::Reset;
@@ -5222,7 +5222,7 @@ macro_rules! chip_impl_nmos {
                     Tick::Tick1 => {
                         // If we're in Tick1 this means start a new instruction based on the PC value so grab
                         // the opcode now and look it up.
-                        self.op_raw = self.ram().borrow().read(self.pc.0);
+                        self.op_raw = self.ram.borrow().read(self.pc.0);
                         self.op = self.opcode_op(self.op_raw);
 
                         // If one is raised and we're not skipping and interrupts
@@ -5256,7 +5256,7 @@ macro_rules! chip_impl_nmos {
                         // We keep it since some instructions such as absolute addr then require getting one
                         // more byte. So cache at this stage since we no idea if it's needed.
                         // NOTE: the PC doesn't increment here as that's dependent on addressing mode which will handle it.
-                        self.op_val = self.ram().borrow().read(self.pc.0);
+                        self.op_val = self.ram.borrow().read(self.pc.0);
 
                         // We've started a new instruction so no longer skipping interrupt processing.
                         if self.skip_interrupt == SkipInterrupt::Skip {
@@ -5439,7 +5439,7 @@ impl<'a> Chip for CPU65C02<'a> {
             Tick::Tick1 => {
                 // If we're in Tick1 this means start a new instruction based on the PC value so grab
                 // the opcode now and look it up.
-                self.op_raw = self.ram().borrow().read(self.pc.0);
+                self.op_raw = self.ram.borrow().read(self.pc.0);
                 self.op = self.opcode_op(self.op_raw);
 
                 // Special case the 1 cycle NOP for CMOS. This just burns a cycle and ignores interrupts.
@@ -5479,7 +5479,7 @@ impl<'a> Chip for CPU65C02<'a> {
                 // We keep it since some instructions such as absolute addr then require getting one
                 // more byte. So cache at this stage since we no idea if it's needed.
                 // NOTE: the PC doesn't increment here as that's dependent on addressing mode which will handle it.
-                self.op_val = self.ram().borrow().read(self.pc.0);
+                self.op_val = self.ram.borrow().read(self.pc.0);
 
                 // We've started a new instruction so no longer skipping interrupt processing.
                 if self.skip_interrupt == SkipInterrupt::Skip {
