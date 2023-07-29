@@ -564,57 +564,57 @@ fn disassemble_test() -> Result<()> {
 #[test]
 fn flags_test() {
     let mut f = Flags::default();
-    assert!(f == Flags(P_S1), "Flags default not S1");
+    assert!(f == P_S1, "Flags default not S1");
 
-    let b = P_B;
-    let flags_b = Flags(P_B);
+    let b = P_B.0;
+    let flags_b = P_B;
 
-    assert!(f | flags_b == Flags(P_S1 | P_B), "Flags not BitOr Self");
+    assert!(f | flags_b == (P_S1 | P_B), "Flags not BitOr Self");
     #[allow(clippy::op_ref)]
     let x = f | &b;
-    assert!(x == Flags(P_S1 | P_B), "Flags not BitOr &u8");
-    assert!(f | b == Flags(P_S1 | P_B), "Flags not BitOr u8");
-    assert!(b | f == Flags(P_S1 | P_B), "u8 not BitOr Flags");
+    assert!(x == (P_S1 | P_B), "Flags not BitOr &u8");
+    assert!(f | b == (P_S1 | P_B), "Flags not BitOr u8");
+    assert!(b | f == (P_S1 | P_B), "u8 not BitOr Flags");
 
     f |= flags_b;
-    assert!(f == Flags(P_S1 | P_B), "Flags BitOrAssign Self");
+    assert!(f == (P_S1 | P_B), "Flags BitOrAssign Self");
     f = Flags::default();
 
     f |= &b;
-    assert!(f == Flags(P_S1 | P_B), "Flags BitOrAssign &u8");
+    assert!(f == (P_S1 | P_B), "Flags BitOrAssign &u8");
     f = Flags::default();
 
     f |= b;
-    assert!(f == Flags(P_S1 | P_B), "Flags BitOrAssign u8");
+    assert!(f == (P_S1 | P_B), "Flags BitOrAssign u8");
     f = Flags::default();
 
-    let carry = P_CARRY;
-    let flags_carry = Flags(P_CARRY);
+    let carry = P_CARRY.0;
+    let flags_carry = P_CARRY;
 
     f |= b | carry;
-    assert!(f & flags_carry == Flags(P_CARRY), "Flags not BitAnd Self");
+    assert!(f & flags_carry == P_CARRY, "Flags not BitAnd Self");
     #[allow(clippy::op_ref)]
     let x = f & &carry;
-    assert!(x == Flags(P_CARRY), "Flags not BitAnd &u8");
-    assert!(f & carry == Flags(P_CARRY), "Flags not BitAnd u8");
-    assert!(carry & f == Flags(P_CARRY), "u8 not BitAnd Flags");
+    assert!(x == P_CARRY, "Flags not BitAnd &u8");
+    assert!(f & carry == P_CARRY, "Flags not BitAnd u8");
+    assert!(carry & f == P_CARRY, "u8 not BitAnd Flags");
 
     f &= flags_carry;
-    assert!(f == Flags(P_CARRY), "Flags BitAndAssign Self");
+    assert!(f == P_CARRY, "Flags BitAndAssign Self");
     f = Flags::default();
 
     f |= b | carry;
     f &= &carry;
-    assert!(f == Flags(P_CARRY), "Flags BitAndAssign &u8");
+    assert!(f == P_CARRY, "Flags BitAndAssign &u8");
     f = Flags::default();
 
     f |= b | carry;
     f &= carry;
-    assert!(f == Flags(P_CARRY), "Flags BitAndAssign u8");
+    assert!(f == P_CARRY, "Flags BitAndAssign u8");
     f = Flags::default();
 
     f |= b | carry;
-    assert!(!f == Flags(P_NEGATIVE | P_OVERFLOW | P_DECIMAL | P_INTERRUPT | P_ZERO));
+    assert!(!f == (P_NEGATIVE | P_OVERFLOW | P_DECIMAL | P_INTERRUPT | P_ZERO));
 
     f = Flags::default();
     println!("Flags: {f} - debug - {f:?}");
@@ -784,7 +784,7 @@ macro_rules! init_test {
 
                             // Now it should work.
                             cpu.power_on()?;
-                            if cpu.p&P_DECIMAL == Flags(P_DECIMAL) {
+                            if cpu.p&P_DECIMAL == P_DECIMAL {
                                 track.insert(true);
                             } else {
                                 track.insert(false);
@@ -1361,7 +1361,7 @@ macro_rules! irq_and_nmi_test {
                     );
                     // Verify P still has S1 and D set
                     let got = wrapped_cpu.borrow().p;
-                    let want = Flags(P_S1 | P_DECIMAL);
+                    let want = P_S1 | P_DECIMAL;
                     tester!(got == want, d, wrapped_cpu.borrow().deref(), "{state}: got wrong flags {got} want {want}");
 
                     // Don't assert IRQ anymore as should be cached state. Also this should take 7 cycles.
@@ -1382,9 +1382,9 @@ macro_rules! irq_and_nmi_test {
                     let got = wrapped_cpu.borrow().p;
                     let want;
                     if $cmos {
-                        want = Flags(P_S1 | P_INTERRUPT);
+                        want = P_S1 | P_INTERRUPT;
                     } else {
-                        want = Flags(P_S1 | P_INTERRUPT | P_DECIMAL);
+                        want = P_S1 | P_INTERRUPT | P_DECIMAL;
                     }
                     tester!(got == want, d, wrapped_cpu.borrow().deref(), "{state}: got wrong flags {got} want {want}");
                     tester!(

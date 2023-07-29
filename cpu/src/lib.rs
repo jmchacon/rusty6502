@@ -565,7 +565,7 @@ pub struct Flags(u8);
 impl Default for Flags {
     fn default() -> Self {
         // S1 is always set.
-        Self(P_S1)
+        P_S1
     }
 }
 
@@ -678,14 +678,16 @@ impl Not for Flags {
 }
 
 // The bitmasks for all of the Flags bits.
-const P_NEGATIVE: u8 = 0x80;
-const P_OVERFLOW: u8 = 0x40;
-const P_S1: u8 = 0x20; // Always on
-const P_B: u8 = 0x10; // Only set when pushing onto the stack during BRK.
-const P_DECIMAL: u8 = 0x08;
-const P_INTERRUPT: u8 = 0x04;
-const P_ZERO: u8 = 0x02;
-const P_CARRY: u8 = 0x01;
+const P_NEGATIVE: Flags = Flags(0x80);
+const P_OVERFLOW: Flags = Flags(0x40);
+const P_S1: Flags = Flags(0x20); // Always on
+const P_B: Flags = Flags(0x10); // Only set when pushing onto the stack during BRK.
+const P_DECIMAL: Flags = Flags(0x08);
+const P_INTERRUPT: Flags = Flags(0x04);
+const P_ZERO: Flags = Flags(0x02);
+const P_CARRY: Flags = Flags(0x01);
+
+const P_NONE: Flags = Flags(0x00);
 
 impl fmt::Display for Flags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -791,7 +793,7 @@ impl Default for CPUState {
             x: 0x00,
             y: 0x00,
             s: 0x00,
-            p: Flags(0x00),
+            p: P_NONE,
             pc: 0x0000,
             clocks: 0,
             op_val: 0x00,
@@ -2073,7 +2075,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> {
         self.ror_acc()?;
 
         // Flags are different based on BCD or not (since the ALU acts different).
-        if self.p() & P_DECIMAL != Flags(0x00) {
+        if self.p() & P_DECIMAL != P_NONE {
             // If bit 6 changed state between AND output and rotate output then set V.
             if (val ^ self.a().0) & 0x40 == 0x00 {
                 self.p_mut(self.p() & !P_OVERFLOW);
@@ -2558,7 +2560,7 @@ trait CPUInternal<'a>: Chip {
     fn negative_check(&mut self, val: u8) {
         let mut new = self.p();
         new &= !P_NEGATIVE;
-        if (val & P_NEGATIVE) == 0x80 {
+        if (val & P_NEGATIVE) == P_NEGATIVE {
             new |= P_NEGATIVE;
         }
         self.p_mut(new);
@@ -3209,7 +3211,7 @@ trait CPUInternal<'a>: Chip {
         let carry = (self.p() & P_CARRY).0;
 
         // Do BCD mode.
-        if (self.p() & P_DECIMAL) != Flags(0x00) {
+        if (self.p() & P_DECIMAL) != P_NONE {
             // BCD details - http://6502.org/tutorials/decimal_mode.html
             // Also http://nesdev.com/6502_cpu.txt but it has errors
             let mut al =
@@ -3278,7 +3280,7 @@ trait CPUInternal<'a>: Chip {
     // bcc implements the BCC instruction and branches if C is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bcc(&mut self) -> Result<OpState> {
-        if self.p() & P_CARRY == Flags(0x00) {
+        if self.p() & P_CARRY == P_NONE {
             self.perform_branch()
         } else {
             self.branch_nop()
@@ -3288,7 +3290,7 @@ trait CPUInternal<'a>: Chip {
     // bcs implements the BCS instruction and branches if C is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bcs(&mut self) -> Result<OpState> {
-        if self.p() & P_CARRY == Flags(0x00) {
+        if self.p() & P_CARRY == P_NONE {
             self.branch_nop()
         } else {
             self.perform_branch()
@@ -3298,7 +3300,7 @@ trait CPUInternal<'a>: Chip {
     // beq implements the BEQ instruction and branches is Z is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn beq(&mut self) -> Result<OpState> {
-        if self.p() & P_ZERO == Flags(0x00) {
+        if self.p() & P_ZERO == P_NONE {
             self.branch_nop()
         } else {
             self.perform_branch()
@@ -3314,7 +3316,7 @@ trait CPUInternal<'a>: Chip {
         self.negative_check(self.op_val());
         // Copy V from bit 6
         self.p_mut(self.p() & !P_OVERFLOW);
-        if self.op_val() & P_OVERFLOW != 0x00 {
+        if self.op_val() & P_OVERFLOW != P_NONE {
             self.p_mut(self.p() | P_OVERFLOW);
         }
 
@@ -3324,7 +3326,7 @@ trait CPUInternal<'a>: Chip {
     // bmi implements the BMI instruction and branches if N is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bmi(&mut self) -> Result<OpState> {
-        if self.p() & P_NEGATIVE == Flags(0x00) {
+        if self.p() & P_NEGATIVE == P_NONE {
             self.branch_nop()
         } else {
             self.perform_branch()
@@ -3334,7 +3336,7 @@ trait CPUInternal<'a>: Chip {
     // bne implements the BNE instruction and branches is Z is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bne(&mut self) -> Result<OpState> {
-        if self.p() & P_ZERO == Flags(0x00) {
+        if self.p() & P_ZERO == P_NONE {
             self.perform_branch()
         } else {
             self.branch_nop()
@@ -3344,7 +3346,7 @@ trait CPUInternal<'a>: Chip {
     // bpl implements the BPL instruction and branches if N is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bpl(&mut self) -> Result<OpState> {
-        if self.p() & P_NEGATIVE == Flags(0x00) {
+        if self.p() & P_NEGATIVE == P_NONE {
             self.perform_branch()
         } else {
             self.branch_nop()
@@ -3354,7 +3356,7 @@ trait CPUInternal<'a>: Chip {
     // bvc implements the BVC instruction and branches if V is clear.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bvc(&mut self) -> Result<OpState> {
-        if self.p() & P_OVERFLOW == Flags(0x00) {
+        if self.p() & P_OVERFLOW == P_NONE {
             self.perform_branch()
         } else {
             self.branch_nop()
@@ -3364,7 +3366,7 @@ trait CPUInternal<'a>: Chip {
     // bvs implements the BVS instruction and branches if V is set.
     // Returns Done when the branch has set the correct PC and/or an error.
     fn bvs(&mut self) -> Result<OpState> {
-        if self.p() & P_OVERFLOW == Flags(0x00) {
+        if self.p() & P_OVERFLOW == P_NONE {
             self.branch_nop()
         } else {
             self.perform_branch()
@@ -3780,7 +3782,7 @@ trait CPUInternal<'a>: Chip {
     // Always returns Done since this takes one tick and never returns an error.
     fn sbc(&mut self) -> Result<OpState> {
         // Do BCD mode.
-        if (self.p() & P_DECIMAL) != Flags(0x00) {
+        if (self.p() & P_DECIMAL) != P_NONE {
             // Pull the carry bit out which thankfully is the low bit so can be
             // used directly.
             let carry = (self.p() & P_CARRY).0;
@@ -4042,7 +4044,7 @@ impl<'a> CPUInternal<'a> for CpuCmos<'a> {
             OpState::Processing => Ok(OpState::Processing),
             OpState::Done => {
                 if skip_done
-                    && self.p & P_DECIMAL != Flags(0x00)
+                    && self.p & P_DECIMAL != P_NONE
                     && (self.op.op == Opcode::ADC || self.op.op == Opcode::SBC)
                 {
                     // Do another read cycle to account for SBC/ADC needing this
@@ -4489,7 +4491,7 @@ impl<'a> CPUInternal<'a> for CpuCmos<'a> {
         let carry = (self.p & P_CARRY).0;
 
         // Do BCD.
-        if (self.p & P_DECIMAL) != Flags(0x00) {
+        if (self.p & P_DECIMAL) != P_NONE {
             // BCD details - http://6502.org/tutorials/decimal_mode.html
             // Also http://nesdev.com/6502_cpu.txt but it has errors
             let mut al = Wrapping(self.a.0 & 0x0F) + Wrapping(self.op_val & 0x0F) + Wrapping(carry);
@@ -4537,7 +4539,7 @@ impl<'a> CPUInternal<'a> for CpuCmos<'a> {
             self.negative_check(self.op_val);
             // Copy V from bit 6
             self.p &= !P_OVERFLOW;
-            if self.op_val & P_OVERFLOW != 0x00 {
+            if self.op_val & P_OVERFLOW != P_NONE {
                 self.p |= P_OVERFLOW;
             }
         }
@@ -4593,7 +4595,7 @@ impl<'a> CPUInternal<'a> for CpuCmos<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     fn sbc(&mut self) -> Result<OpState> {
         // Do BCD
-        if (self.p & P_DECIMAL) != Flags(0x00) {
+        if (self.p & P_DECIMAL) != P_NONE {
             // Pull the carry bit out which thankfully is the low bit so can be
             // used directly.
             let carry = (self.p & P_CARRY).0;
@@ -4667,7 +4669,7 @@ macro_rules! cpu_impl {
                 let mut rng = rand::thread_rng();
 
                 // This is always set and clears the rest.
-                self.p = Flags(P_S1);
+                self.p = P_S1;
 
                 // Randomize decimal mode
                 if rng.gen::<f64>() > 0.5 {
@@ -4836,7 +4838,7 @@ impl<'a> CPUImpl<'a> for CpuRicoh<'a> {
 
         // This is always set and clears the rest.
         // This includes D which is always off on a Ricoh.
-        self.p = Flags(P_S1);
+        self.p = P_S1;
 
         // Randomize register contents
         self.a = rng.gen();
@@ -5013,7 +5015,7 @@ impl<'a> CPUImpl<'a> for CpuCmos<'a> {
 
         // This is always set and clears the rest.
         // This includes D which is always off on CMOS.
-        self.p = Flags(P_S1);
+        self.p = P_S1;
 
         // Randomize register contents
         self.a = rng.gen();
@@ -5229,7 +5231,7 @@ macro_rules! chip_impl_nmos {
                         if self.irq_raised != InterruptStyle::None
                             && self.skip_interrupt != SkipInterrupt::Skip
                         {
-                            if self.p & P_INTERRUPT == Flags(P_INTERRUPT)
+                            if self.p & P_INTERRUPT == P_INTERRUPT
                                 && self.irq_raised == InterruptStyle::IRQ
                             {
                                 self.irq_raised = InterruptStyle::None;
@@ -5453,8 +5455,7 @@ impl<'a> Chip for CpuCmos<'a> {
                 if self.irq_raised != InterruptStyle::None
                     && self.skip_interrupt != SkipInterrupt::Skip
                 {
-                    if self.p & P_INTERRUPT == Flags(P_INTERRUPT)
-                        && self.irq_raised == InterruptStyle::IRQ
+                    if self.p & P_INTERRUPT == P_INTERRUPT && self.irq_raised == InterruptStyle::IRQ
                     {
                         self.irq_raised = InterruptStyle::None;
                         self.interrupt_state = InterruptState::None;
@@ -5578,7 +5579,7 @@ macro_rules! cpu_new {
                 x: Wrapping(0x00),
                 y: Wrapping(0x00),
                 s: Wrapping(0x00),
-                p: Flags(0x00),
+                p: P_NONE,
                 pc: Wrapping(0x0000),
                 debug: None,
                 state: State::Off,
@@ -5635,7 +5636,7 @@ impl<'a> CpuNmos6510<'a> {
             x: Wrapping(0x00),
             y: Wrapping(0x00),
             s: Wrapping(0x00),
-            p: Flags(0x00),
+            p: P_NONE,
             pc: Wrapping(0x0000),
             debug: None,
             state: State::Off,
