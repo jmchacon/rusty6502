@@ -21,6 +21,8 @@ use color_eyre::eyre::{eyre, ErrReport, Result};
 use rand::Rng;
 use strum_macros::{Display, EnumIter, EnumString};
 
+use cpu_proc_macros::cpu_base_struct;
+
 #[cfg(test)]
 mod tests;
 
@@ -803,6 +805,7 @@ impl Default for CPUState {
         }
     }
 }
+
 impl fmt::Display for CPUState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -817,7 +820,7 @@ impl fmt::Display for CPUState {
 }
 
 /// The interface any 6502 implementation must conform to.
-pub trait CPUImpl<'a>: Chip {
+pub trait CPU<'a>: Chip {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
     ///
@@ -970,204 +973,33 @@ pub trait CPUImpl<'a>: Chip {
     }
 }
 
-macro_rules! cpu_common {
-    ($cpu:ident, $doc:stmt) => {
-        /// $doc
-        pub struct $cpu<'a> {
-            // Accumulator register
-            a: Wrapping<u8>,
+// NOTE: All of the 65xx implementations below generate their base struct from
+// the attribute attached to them. Use cargo-expand or read the proc macro for
+// the description of all the members.
 
-            // X register
-            x: Wrapping<u8>,
-
-            // Y register
-            y: Wrapping<u8>,
-
-            // Stack pointer
-            s: Wrapping<u8>,
-
-            // Status register
-            p: Flags,
-
-            // Program counter
-            pc: Wrapping<u16>,
-
-            // If set `debug` will be passed a raw `CPUState` on each instruction.
-            // The boolean returns indicates whether to include a full memory dump (slow)
-            // or just to fill in the current PC values so dissembly can function.
-            debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
-
-            // Initialized or not.
-            state: State,
-
-            // State of IRQ line
-            irq_raised: InterruptStyle,
-
-            // Whether IRQ is asserted
-            irq: Option<&'a dyn irq::Sender>,
-
-            // Whether NMI is asserted
-            nmi: Option<&'a dyn irq::Sender>,
-
-            // Whether RDY is asserted
-            rdy: Option<&'a dyn irq::Sender>,
-
-            // Whether we're currently running an interrupt
-            interrupt_state: InterruptState,
-
-            // If true we're skipping starting an interrupt for one clock cycle.
-            skip_interrupt: SkipInterrupt,
-
-            // Tracking for reset when we need to clear the extra clocks
-            // up front before simulating BRK. If `tick` is called and this
-            // isn't in Tick::Reset an error will result.
-            reset_tick: Tick,
-
-            // Total number of clock cycles since start.
-            clocks: usize,
-
-            // Memory implementation used for all RAM access
-            ram: Rc<RefCell<Box<dyn Memory>>>,
-
-            // The current working opcode
-            op: Operation,
-            op_raw: u8,
-
-            // The 1st byte argument after the opcode (all instruction have this).
-            // Often used as a temp value while building the whole instruction.
-            op_val: u8,
-
-            // Tick number for internal operation of opcode.
-            op_tick: Tick,
-
-            // Address computed during opcode to be used for read/write (indirect, etc modes).
-            op_addr: u16,
-
-            // Stays OpState::Processing until the current opcode has completed any addressing mode ticks.
-            // NOTE: This is instruction dependent as to whether it gets updated. i.e. NOP may just run through
-            //       addressing mode cycles and complete without bothering to set this since nothing else in that
-            //       instruction will care. Constrast to a RMW instruction which has to run a cycle one past when
-            //       this is marked Done.
-            addr_done: OpState,
-
-            // The opcode value used to halt the CPU
-            halt_opcode: u8,
-
-            // The PC value of the halt instruction
-            halt_pc: u16,
-        }
-    };
-}
-
-cpu_common!(
-    CPU6502,
-    "The NMOS 6502 implementation for the 6502 architecture"
-);
+/// The NMOS 6502 implementation for the 6502 architecture
+#[cpu_base_struct]
+pub struct CPU6502<'a> {}
 
 /// The NMOS 6510 implementation for the 6502 architecture.
 /// Includes the 6 I/O pins and support for their memory mapped behavior
 /// at locations 0x0000 and 0x0001
-/// TODO(jchacon): Replace this with a proc macro so we can do all 4 CPU's
-///                without duplicating.
+#[cpu_base_struct]
 pub struct CPU6510<'a> {
-    // Accumulator register
-    a: Wrapping<u8>,
-
-    // X register
-    x: Wrapping<u8>,
-
-    // Y register
-    y: Wrapping<u8>,
-
-    // Stack pointer
-    s: Wrapping<u8>,
-
-    // Status register
-    p: Flags,
-
-    // Program counter
-    pc: Wrapping<u16>,
-
-    // If set `debug` will be passed a raw `CPUState` on each instruction.
-    // The boolean returns indicates whether to include a full memory dump (slow)
-    // or just to fill in the current PC values so dissembly can function.
-    debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
-
-    // Initialized or not.
-    state: State,
-
-    // State of IRQ line
-    irq_raised: InterruptStyle,
-
-    // Whether IRQ is asserted
-    irq: Option<&'a dyn irq::Sender>,
-
-    // Whether NMI is asserted
-    nmi: Option<&'a dyn irq::Sender>,
-
-    // Whether RDY is asserted
-    rdy: Option<&'a dyn irq::Sender>,
-
-    // Whether we're currently running an interrupt
-    interrupt_state: InterruptState,
-
-    // If true we're skipping starting an interrupt for one clock cycle.
-    skip_interrupt: SkipInterrupt,
-
-    // Tracking for reset when we need to clear the extra clocks
-    // up front before simulating BRK. If `tick` is called and this
-    // isn't in Tick::Reset an error will result.
-    reset_tick: Tick,
-
-    // Total number of clock cycles since start.
-    clocks: usize,
-
-    // Memory implementation used for all RAM access
-    ram: Rc<RefCell<Box<dyn Memory>>>,
-
-    // The current working opcode
-    op: Operation,
-    op_raw: u8,
-
-    // The 1st byte argument after the opcode (all instruction have this).
-    // Often used as a temp value while building the whole instruction.
-    op_val: u8,
-
-    // Tick number for internal operation of opcode.
-    op_tick: Tick,
-
-    // Address computed during opcode to be used for read/write (indirect, etc modes).
-    op_addr: u16,
-
-    // Stays OpState::Processing until the current opcode has completed any addressing mode ticks.
-    // NOTE: This is instruction dependent as to whether it gets updated. i.e. NOP may just run through
-    //       addressing mode cycles and complete without bothering to set this since nothing else in that
-    //       instruction will care. Constrast to a RMW instruction which has to run a cycle one past when
-    //       this is marked Done.
-    addr_done: OpState,
-
-    // The opcode value used to halt the CPU
-    halt_opcode: u8,
-
-    // The PC value of the halt instruction
-    halt_pc: u16,
-
     io: Rc<RefCell<[io::Style; 6]>>,
 }
 
-cpu_common!(
-    CPURicoh,
-    "The Richo implementation for the 6502 architecture.
+/// The Richo implementation for the 6502 architecture.
 /// The same as an NMOS 6502 except it doesn't have BCD support for ADC/SBC."
-);
+#[cpu_base_struct]
+pub struct CPURicoh<'a> {}
 
-cpu_common!(
-    CPU65C02,
-    "The CMOS implementation for the 65C02 architecture.
+/// The CMOS implementation for the 65C02 architecture.
 /// Fixes many bugs from the 6502 (no more undocumented opcodes) and adds
 /// additional instructions.
 /// This implementation is the Rockwell + WDC additions including WAI and STP."
-);
+#[cpu_base_struct]
+pub struct CPU65C02<'a> {}
 
 macro_rules! common_cpu_funcs {
   ($cpu:ident, $t:expr) => {
@@ -1216,9 +1048,9 @@ common_cpu_funcs!(CPU6510, "6510");
 common_cpu_funcs!(CPURicoh, "Ricoh");
 common_cpu_funcs!(CPU65C02, "CMOS");
 
-/// Common implementations which are NMOS only specific (undocumented opcodes
-/// and opcode processing). CMOS can implement `process_opcode` directly and
-/// doesn't need the rest.
+// Common implementations which are NMOS only specific (undocumented opcodes
+// and opcode processing). CMOS can implement `process_opcode` directly and
+// doesn't need the rest.
 trait CPUNmosInternal<'a>: CPUInternal<'a> {
     #[allow(clippy::too_many_lines)]
     fn process_opcode(&mut self) -> Result<OpState> {
@@ -2301,9 +2133,9 @@ impl<'a> CPUNmosInternal<'a> for CPU6502<'a> {}
 impl<'a> CPUNmosInternal<'a> for CPU6510<'a> {}
 impl<'a> CPUNmosInternal<'a> for CPURicoh<'a> {}
 
-/// The common implementation definitions for all 6502 chips but done as a private
-/// crate only trait so the default implementations can get at all the internal
-/// cpu entries.
+// The common implementation definitions for all 6502 chips but done as a private
+// crate only trait so the default implementations can get at all the internal
+// cpu entries without having to expose those publicly.
 trait CPUInternal<'a>: Chip {
     // The following methods are all ones which cannot be defaulted
     // and must be implmented by the relevant struct in order to provide
@@ -2317,44 +2149,76 @@ trait CPUInternal<'a>: Chip {
     // state_mut sets the current CPU state.
     fn state_mut(&mut self, new: State);
 
-    // a return the contents of the A register.
+    // a returns the contents of the A register.
     fn a(&self) -> Wrapping<u8>;
     // a_mut sets the contents of the A register.
     fn a_mut(&mut self, new: Wrapping<u8>);
 
-    // x return the contents of the X register.
+    // x returns the contents of the X register.
     fn x(&self) -> Wrapping<u8>;
     // x_mut sets the contents of the X register.
     fn x_mut(&mut self, new: Wrapping<u8>);
 
-    // y return the contents of the Y register.
+    // y returns the contents of the Y register.
     fn y(&self) -> Wrapping<u8>;
     // y_mut sets the contents of the Y register.
     fn y_mut(&mut self, new: Wrapping<u8>);
 
-    // S return the contents of the S register.
+    // s returns the contents of the S register.
     fn s(&self) -> Wrapping<u8>;
     // s_mut sets the contents of the S register.
     fn s_mut(&mut self, new: Wrapping<u8>);
+
+    // p returns the current Flags from the P register.
     fn p(&self) -> Flags;
+    // p_mut sets the P register to the given Flags.
     fn p_mut(&mut self, new: Flags);
+
+    // pc returns the current PC value.
     fn pc(&self) -> Wrapping<u16>;
+    // pc_muts sets PC to the given address.
     fn pc_mut(&mut self, new: Wrapping<u16>);
+
+    // clocks returns the number of clock cycles since startup.
     fn clocks(&self) -> usize;
+
+    // op_val returns the internal op_val register.
     fn op_val(&self) -> u8;
+    // op_val_mut sets the internal op_val register.
     fn op_val_mut(&mut self, new: u8);
+
+    // op_addr returns the internal op_addr register.
+
     fn op_addr(&self) -> u16;
+    // op_addr_mut sets the internal op_addr register.
     fn op_addr_mut(&mut self, new: u16);
+
+    // ram returns a reference to the Memory implementation.
     fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>>;
-    fn op(&self) -> Operation;
-    fn addr_done(&self) -> OpState;
-    fn addr_done_mut(&mut self, new: OpState);
-    fn op_tick(&self) -> Tick;
-    fn skip_interrupt(&self) -> SkipInterrupt;
-    fn skip_interrupt_mut(&mut self, new: SkipInterrupt);
-    fn irq_raised(&self) -> InterruptStyle;
-    fn irq_raised_mut(&mut self, new: InterruptStyle);
+
+    // op_raw returns the current opcode byte.
     fn op_raw(&self) -> u8;
+
+    // op returns the current decoded Operation.
+    fn op(&self) -> Operation;
+
+    // addr_done returns the internal addr_done state.
+    fn addr_done(&self) -> OpState;
+    // addr_done_mut sets the internal addr_done state.
+    fn addr_done_mut(&mut self, new: OpState);
+
+    // op_tick returns the current Tick value for the operation in progress.
+    fn op_tick(&self) -> Tick;
+
+    // skip_interrupt returns the current SkipInterrupt state.
+    fn skip_interrupt(&self) -> SkipInterrupt;
+    // skip_interrupt_mut sets the SkipInterrupt state.
+    fn skip_interrupt_mut(&mut self, new: SkipInterrupt);
+
+    // irq_raised returns the current InterruptStyle state.
+    fn irq_raised(&self) -> InterruptStyle;
+    // irq_raised_mut sets the InterruptStyle state.
+    fn irq_raised_mut(&mut self, new: InterruptStyle);
 
     // debug will emit a filled in value on the start of new instructions.
     // If RDY is asserted it will simply repeat the previous state if at Tick1.
@@ -3860,122 +3724,142 @@ trait CPUInternal<'a>: Chip {
 
 macro_rules! cpu_internal {
     () => {
+        // debug_hook returns the optional debug function callback.
         fn debug_hook(&self) -> Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)> {
             self.debug
         }
 
+        // state returns the current CPU state.
         fn state(&self) -> State {
             self.state
         }
-
+        // state_mut sets the current CPU state.
         fn state_mut(&mut self, new: State) {
             self.state = new;
         }
 
+        // a returns the contents of the A register.
         fn a(&self) -> Wrapping<u8> {
             self.a
         }
-
+        // a_mut sets the contents of the A register.
         fn a_mut(&mut self, new: Wrapping<u8>) {
             self.a = new;
         }
 
+        // x returns the contents of the X register.
         fn x(&self) -> Wrapping<u8> {
             self.x
         }
-
+        // x_mut sets the contents of the X register.
         fn x_mut(&mut self, new: Wrapping<u8>) {
             self.x = new;
         }
 
+        // y returns the contents of the Y register.
         fn y(&self) -> Wrapping<u8> {
             self.y
         }
-
+        // y_mut sets the contents of the Y register.
         fn y_mut(&mut self, new: Wrapping<u8>) {
             self.y = new;
         }
 
+        // s returns the contents of the S register.
         fn s(&self) -> Wrapping<u8> {
             self.s
         }
-
+        // s_mut sets the contents of the S register.
         fn s_mut(&mut self, new: Wrapping<u8>) {
             self.s = new;
         }
 
+        // p returns the current Flags from the P register.
         fn p(&self) -> Flags {
             self.p
         }
-
+        // p_mut sets the P register to the given Flags.
         fn p_mut(&mut self, new: Flags) {
             self.p = new;
         }
 
+        // pc returns the current PC value.
         fn pc(&self) -> Wrapping<u16> {
             self.pc
         }
-
+        // pc_muts sets PC to the given address.
         fn pc_mut(&mut self, new: Wrapping<u16>) {
             self.pc = new;
         }
 
+        // clocks returns the number of clock cycles since startup.
         fn clocks(&self) -> usize {
             self.clocks
         }
 
+        // op_val returns the internal op_val register.
         fn op_val(&self) -> u8 {
             self.op_val
         }
-
+        // op_val_mut sets the internal op_val register.
         fn op_val_mut(&mut self, new: u8) {
             self.op_val = new;
         }
 
+        // op_addr returns the internal op_addr register.
         fn op_addr(&self) -> u16 {
             self.op_addr
         }
-
+        // op_addr_mut sets the internal op_addr register.
         fn op_addr_mut(&mut self, new: u16) {
             self.op_addr = new;
         }
 
+        // ram returns a reference to the Memory implementation.
         fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
             self.ram.clone()
         }
 
+        // op_raw returns the current opcode byte.
+        fn op_raw(&self) -> u8 {
+            self.op_raw
+        }
+
+        // op returns the current decoded Operation.
         fn op(&self) -> Operation {
             self.op
         }
 
+        // addr_done returns the internal addr_done state.
         fn addr_done(&self) -> OpState {
             self.addr_done
         }
-
+        // addr_done_mut sets the internal addr_done state.
         fn addr_done_mut(&mut self, new: OpState) {
             self.addr_done = new;
         }
 
+        // op_tick returns the current Tick value for the operation in progress.
         fn op_tick(&self) -> Tick {
             self.op_tick
         }
 
+        // skip_interrupt returns the current SkipInterrupt state.
         fn skip_interrupt(&self) -> SkipInterrupt {
             self.skip_interrupt
         }
+        // skip_interrupt_mut sets the SkipInterrupt state.
         fn skip_interrupt_mut(&mut self, new: SkipInterrupt) {
             self.skip_interrupt = new;
         }
 
+        // irq_raised returns the current InterruptStyle state.
         fn irq_raised(&self) -> InterruptStyle {
             self.irq_raised
         }
+        // irq_raised_mut sets the InterruptStyle state.
         fn irq_raised_mut(&mut self, new: InterruptStyle) {
             self.irq_raised = new;
-        }
-
-        fn op_raw(&self) -> u8 {
-            self.op_raw
         }
     };
 }
@@ -4647,7 +4531,7 @@ impl<'a> CPUInternal<'a> for CPU65C02<'a> {
 
 macro_rules! cpu_impl {
     ($cpu:ident) => {
-        impl<'a> CPUImpl<'a> for $cpu<'a> {
+        impl<'a> CPU<'a> for $cpu<'a> {
             /// Use this to enable or disable state based debugging dynamically.
             fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
                 self.debug = d;
@@ -4695,6 +4579,18 @@ macro_rules! cpu_impl {
                 Ok(())
             }
 
+            /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
+            /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
+            /// changes. Flags are not disturbed except for interrupts being disabled
+            /// and the PC is loaded from the reset vector.
+            /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
+            /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
+            /// Visual 6502 simulation shows this all in detail.
+            /// This takes 7 cycles once triggered (same as interrupts).
+            /// Will return true when reset is complete and errors if any occur.
+            ///
+            /// # Errors
+            /// Internal problems (getting into the wrong state) can result in errors.
             fn reset(&mut self) -> Result<OpState> {
                 if self.state == State::Off {
                     return Err(eyre!("power_on not called before calling reset!"));
@@ -4815,7 +4711,7 @@ cpu_impl!(CPU6510);
 // Ricoh has variations in power/reset so need to direct implement vs the macro.
 // However resolve_opcode and opcode_op are consistent across all NMOS so the
 // trait default is fine there.
-impl<'a> CPUImpl<'a> for CPURicoh<'a> {
+impl<'a> CPU<'a> for CPURicoh<'a> {
     /// Use this to enable or disable state based debugging dynamically.
     fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
         self.debug = d;
@@ -4859,6 +4755,18 @@ impl<'a> CPUImpl<'a> for CPURicoh<'a> {
         Ok(())
     }
 
+    /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
+    /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
+    /// changes. Flags are not disturbed except for interrupts being disabled
+    /// and the PC is loaded from the reset vector.
+    /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
+    /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
+    /// Visual 6502 simulation shows this all in detail.
+    /// This takes 7 cycles once triggered (same as interrupts).
+    /// Will return true when reset is complete and errors if any occur.
+    ///
+    /// # Errors
+    /// Internal problems (getting into the wrong state) can result in errors.
     fn reset(&mut self) -> Result<OpState> {
         if self.state == State::Off {
             return Err(eyre!("power_on not called before calling reset!"));
@@ -4965,7 +4873,7 @@ impl<'a> CPUImpl<'a> for CPURicoh<'a> {
 }
 
 // CMOS has variations in ops/power/reset so need to direct implement vs the macro.
-impl<'a> CPUImpl<'a> for CPU65C02<'a> {
+impl<'a> CPU<'a> for CPU65C02<'a> {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
     ///
@@ -5036,6 +4944,18 @@ impl<'a> CPUImpl<'a> for CPU65C02<'a> {
         Ok(())
     }
 
+    /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
+    /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
+    /// changes. Flags are not disturbed except for interrupts being disabled
+    /// and the PC is loaded from the reset vector.
+    /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
+    /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
+    /// Visual 6502 simulation shows this all in detail.
+    /// This takes 7 cycles once triggered (same as interrupts).
+    /// Will return true when reset is complete and errors if any occur.
+    ///
+    /// # Errors
+    /// Internal problems (getting into the wrong state) can result in errors.
     fn reset(&mut self) -> Result<OpState> {
         if self.state == State::Off {
             return Err(eyre!("power_on not called before calling reset!"));
@@ -5626,7 +5546,7 @@ impl<'a> CPU6510<'a> {
             Some(io) => io,
             None => [io::Style::In(&io::Pulldown {}); 6],
         };
-        let mut r = Box::new(C6510ram::new(def.ram, input));
+        let mut r = Box::new(C6510RAM::new(def.ram, input));
         r.power_on();
         let io = r.io_state.clone();
         let ram: std::rc::Rc<std::cell::RefCell<std::boxed::Box<(dyn memory::Memory + 'static)>>> =
@@ -6471,6 +6391,7 @@ impl<'a> CPU65C02<'a> {
             Tick::Tick7 => self.branch_taken2(),
         }
     }
+
     // bbr implements support for all BBR x,d instructions which will branch
     // if bit x is clear in the given ZP location.
     fn bbr(&mut self, pos: u8) -> Result<OpState> {
@@ -6736,16 +6657,27 @@ pub enum CPUError {
         op: u8,
     },
 }
-struct C6510ram {
+// A C6510RAM handles the I/O port mapped in as address 0x0000 and 0x0001
+// while maintaining the underlying Memory implementation as a pass through
+// for all other addresses.
+struct C6510RAM {
+    // The current state of address 0x0000
     output_0x00: u8,
+
+    // The current state of address 0x0001
     output_0x01: u8,
+
     // Use interior mutability so the caller can get a reference
     // to this to return state but we can also update from the port addresses
     // get updated.
     io_state: Rc<RefCell<[io::Style; 6]>>,
+
+    // The input state as passed in on construction (generally pullup/down).
     input_io: [io::Style; 6],
+
     // The underlying RAM implementation.
     ram: Box<dyn Memory>,
+
     // A memory block we can return. Need interior mutability to avoid
     // allocating a new one each time but `ram` is not a mut function so
     // to build this requires mutating there by combining our 2 bytes plus
@@ -6753,7 +6685,8 @@ struct C6510ram {
     memory: RefCell<[u8; MAX_SIZE]>,
 }
 
-impl C6510ram {
+impl C6510RAM {
+    // Create a new RAM impl for a 6510 with the given hard coded input lines.
     fn new(ram: Box<dyn Memory>, input_dest: [io::Style; 6]) -> Self {
         Self {
             // Defaults to ports set to input.
@@ -6767,7 +6700,10 @@ impl C6510ram {
     }
 }
 
-impl Memory for C6510ram {
+impl Memory for C6510RAM {
+    // `read` will pass through to the underlying Memory except for the first
+    // 2 addresses which are maintained internally. This means without another
+    // reference to that Memory implementation those 2 locations are forever hidden.
     fn read(&self, addr: u16) -> u8 {
         match addr {
             // This means by default both of these locations are not accessible
@@ -6778,6 +6714,8 @@ impl Memory for C6510ram {
         }
     }
 
+    // `write` either writes to the underlying Memory or if addresses 0x0000 or 0x0001
+    // are chosen will change the state of the I/O lines in response.
     fn write(&mut self, addr: u16, val: u8) {
         match addr {
             // This means by default both of these locations are not accessible
@@ -6870,6 +6808,7 @@ pub struct Vectors {
 }
 
 impl Memory for FlatRAM {
+    /// `read` returns the value at the given address.
     fn read(&self, addr: u16) -> u8 {
         if self.debug {
             println!("read: {addr:04X}: {:02X}", self.memory[usize::from(addr)]);
@@ -6877,6 +6816,7 @@ impl Memory for FlatRAM {
         self.memory[usize::from(addr)]
     }
 
+    /// `write` sets the value at the given address.
     fn write(&mut self, addr: u16, val: u8) {
         if self.debug {
             println!("write: {addr:04X}: {val:02X}");

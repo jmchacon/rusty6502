@@ -64,7 +64,7 @@ macro_rules! assemble_test {
                       let ricoh = CPURicoh::new(ChipDef::default());
                       let c6510 = CPU6510::new(ChipDef::default(), None);
                       let cmos = CPU65C02::new(ChipDef::default());
-                      let cpu: &dyn CPUImpl = match t {
+                      let cpu: &dyn CPU = match t {
                           Type::NMOS => &nmos,
                           Type::RICOH => &ricoh,
                           Type::NMOS6510 => &c6510,

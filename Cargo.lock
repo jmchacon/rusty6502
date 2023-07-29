@@ -168,6 +168,7 @@ version = "0.1.0"
 dependencies = [
  "chip",
  "color-eyre",
+ "cpu_proc_macros",
  "io",
  "irq",
  "memory",
@@ -176,6 +177,15 @@ dependencies = [
  "strum",
  "strum_macros",
  "thiserror",
+]
+
+[[package]]
+name = "cpu_proc_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]

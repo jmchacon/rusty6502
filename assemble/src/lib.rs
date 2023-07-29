@@ -123,7 +123,7 @@ struct ASTOutput {
 // that has references to both fully defined labels (EQU) and references
 // to location labels (either defs or refs).
 #[allow(clippy::too_many_lines)]
-fn pass1(cpu: &dyn CPUImpl, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
+fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
     let mut ret = ASTOutput {
         ast: Vec::<Vec<Token>>::new(),
         labels: HashMap::new(),
@@ -426,7 +426,7 @@ fn pass1(cpu: &dyn CPUImpl, lines: Lines<BufReader<File>>) -> Result<ASTOutput> 
 // known until all labels are fully cross referenced. That will be handled during
 // byte code generation.
 #[allow(clippy::too_many_lines)]
-fn compute_refs(cpu: &dyn CPUImpl, ast_output: &mut ASTOutput) -> Result<()> {
+fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
     let mut pc: u16 = 0;
     for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
         #[allow(clippy::explicit_iter_loop)] // false negative
@@ -582,7 +582,7 @@ fn compute_refs(cpu: &dyn CPUImpl, ast_output: &mut ASTOutput) -> Result<()> {
 // the previously generated AST. This must be mutable as final relative addresses
 // are computed before byte codes are generated for a given operation.
 #[allow(clippy::too_many_lines)]
-fn generate_output(cpu: &dyn CPUImpl, ast_output: &mut ASTOutput) -> Result<Assembly> {
+fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly> {
     // Always emit 64k so just allocate a block.
     let mut res = Assembly {
         bin: [0; 1 << 16],
@@ -782,7 +782,7 @@ fn generate_output(cpu: &dyn CPUImpl, ast_output: &mut ASTOutput) -> Result<Asse
 ///
 /// # Errors
 /// Any parsing error of the input stream can be returned in Result.
-pub fn parse(cpu: &dyn CPUImpl, lines: Lines<BufReader<File>>, debug: bool) -> Result<Assembly> {
+pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Result<Assembly> {
     // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
     // while filling in a label mapping. The 2nd one does actual assembly over
     // the tokens with labels getting filled in from the map or computed as needed.

@@ -1,7 +1,7 @@
 use crate::{
-    AddressMode, CPUError, CPUImpl, CPUInternal, CPUNmosInternal, CPURicoh, CPUState, ChipDef,
-    Flags, FlatRAM, InstructionMode, InterruptState, InterruptStyle, OpState, Opcode, Register,
-    State, Tick, Vectors, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
+    AddressMode, CPUError, CPUInternal, CPUNmosInternal, CPURicoh, CPUState, ChipDef, Flags,
+    FlatRAM, InstructionMode, InterruptState, InterruptStyle, OpState, Opcode, Register, State,
+    Tick, Vectors, CPU, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
     P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
 use chip::Chip;
@@ -61,13 +61,15 @@ impl<T: Display + std::default::Default> Debug<T> {
 }
 
 impl Debug<CPUState> {
-    fn dump(&self, s: &str, cpu: &dyn CPUImpl) -> String {
+    fn dump(&self, s: &str, cpu: &dyn CPU) -> String {
         let mut out = String::new();
         writeln!(out, "\nFAIL: {s}\n\nExecution buffer:\n").unwrap();
         if *self.wrapped.borrow() {
             for i in *self.cur.borrow()..self.state.len() {
                 let s;
                 {
+                    // Late bind disassembly since this is expensive to
+                    // generate the String. So only do it on actual dumps.
                     let pc = self.state[i].borrow().pc;
                     let r = &self.state[i].borrow().ram;
                     (s, _) = cpu.disassemble(pc, r);

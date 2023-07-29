@@ -148,7 +148,7 @@ fn main() -> Result<()> {
     let ricoh = CPURicoh::new(ChipDef::default());
     let c6510 = CPU6510::new(ChipDef::default(), None);
     let cmos = CPU65C02::new(ChipDef::default());
-    let cpu: &dyn CPUImpl = match args.cpu_type {
+    let cpu: &dyn CPU = match args.cpu_type {
         Type::NMOS => &nmos,
         Type::RICOH => &ricoh,
         Type::NMOS6510 => &c6510,
