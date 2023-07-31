@@ -47,7 +47,7 @@ rand = "0.8.5"
 regex = "1"
 strum_macros = "0.24.1"
 strum = "0.24.1"
-thiserror = "1.0.37"
+thiserror = "1.0.44"
 
 [workspace.package]
 edition = "2021"
