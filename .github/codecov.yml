@@ -19,6 +19,7 @@ ignore:
   - "convertprg/src/main.rs"
   - "disassembler/src/main.rs"
   - "handasm/src/main.rs"
+  - "monitor/src/*.rs"
 
 # Make comments less noisy
 comment:
