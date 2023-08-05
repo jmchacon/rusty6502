@@ -520,25 +520,32 @@ enum InstructionMode {
     Store,
 }
 
-// Clock ticks
+/// Clock tick state during a given instruction/reset sequence.
 #[derive(Debug, Default, Display, Copy, Clone, PartialEq, EnumString)]
-enum Tick {
-    // The reset state. Used to start a new instruction assuming all
-    // processing immediately calls `next` before evaluatin.
+pub enum Tick {
+    /// The reset state. Used to start a new instruction assuming all
+    /// processing immediately calls `next` before evaluatin.
     #[default]
     Reset,
 
-    // This is the normal start case for a new instruction.
+    /// This is the normal start case for a new instruction.
     Tick1,
+    /// All instructions take this long so this always reads the 2nd byte
+    /// which is a throw away for single byte instructions.
     Tick2,
+    /// Optional 3rd tick.
     Tick3,
+    /// Optional 4th tick.
     Tick4,
+    /// Optional 5th tick.
     Tick5,
+    /// Optional 6th tick.
     Tick6,
+    /// Optional 7th tick.
     Tick7,
 
-    // Technically documented 6502 instructions take no more than 7 cycles.
-    // But a RMW indirect X/Y will take 8.
+    /// Technically documented 6502 instructions take no more than 7 cycles.
+    /// But a RMW indirect X/Y will take 8.
     Tick8,
 }
 
@@ -749,6 +756,7 @@ enum Register {
 /// `CPUState` is the public information about the CPU and RAM
 /// at a point in time. This is generally used through the debug Option
 /// in the Cpu below.
+#[derive(Clone, Debug)]
 pub struct CPUState {
     /// CPU state
     pub state: State,
@@ -785,6 +793,9 @@ pub struct CPUState {
 
     /// The dissasembly of the current instruction at PC
     pub dis: String,
+
+    /// The current op_tick
+    pub op_tick: Tick,
 }
 
 impl Default for CPUState {
@@ -802,6 +813,7 @@ impl Default for CPUState {
             op_addr: 0x0000,
             ram: [0; MAX_SIZE],
             dis: String::new(),
+            op_tick: Tick::default(),
         }
     }
 }
@@ -810,8 +822,8 @@ impl fmt::Display for CPUState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "{:>6} {:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X}",
-            self.clocks, self.dis, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr
+            "{:>6} {:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {}",
+            self.clocks, self.dis, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr, self.op_tick,
         )?;
         writeln!(f, "Memory:")?;
         writeln!(f)?;
@@ -854,6 +866,10 @@ pub trait CPU<'a>: Chip {
     /// Use this to enable or disable state based debugging dynamically.
     fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>);
 
+    /// If the debug hook is set with `set_debug` then when this is called it
+    /// will call that hook to get and then fill in a `CPUState`
+    fn debug(&self);
+
     /// `power_on` will reset the CPU to power on state. This state is dependent
     /// on implementation as the various flavors (NMOS, CMOS, etc) have
     /// differences. When done it will then run the reset sequence for the chip
@@ -877,6 +893,14 @@ pub trait CPU<'a>: Chip {
     /// # Errors
     /// Internal problems (getting into the wrong state) can result in errors.
     fn reset(&mut self) -> Result<OpState>;
+
+    /// ram returns a reference to the Memory implementation.
+    fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>>;
+
+    /// pc returns the current PC value.
+    fn pc(&self) -> u16;
+    /// `pc_mut` sets PC to the given address.
+    fn pc_mut(&mut self, new: u16);
 
     /// disassemble will take the given pc and Memory implementation and disassemble the segment
     /// at that location. It will return a string of the dissembly as well as the next pc
@@ -906,44 +930,48 @@ pub trait CPU<'a>: Chip {
 
         match mode {
             AddressMode::Immediate => {
-                write!(out, "{pc1:02X}      {opcode} #{pc1:02X}").unwrap();
+                write!(out, "{pc1:02X}      {opcode} #${pc1:02X}").unwrap();
             }
             AddressMode::ZeroPage => {
-                write!(out, "{pc1:02X}      {opcode} {pc1:02X}").unwrap();
+                write!(out, "{pc1:02X}      {opcode} ${pc1:02X}").unwrap();
             }
             AddressMode::ZeroPageX => {
-                write!(out, "{pc1:02X}      {opcode} {pc1:02X},X").unwrap();
+                write!(out, "{pc1:02X}      {opcode} ${pc1:02X},X").unwrap();
             }
             AddressMode::ZeroPageY => {
-                write!(out, "{pc1:02X}      {opcode} {pc1:02X},Y").unwrap();
+                write!(out, "{pc1:02X}      {opcode} ${pc1:02X},Y").unwrap();
             }
             AddressMode::Indirect => {
-                write!(out, "{pc1:02X}      {opcode} ({pc1:02X})").unwrap();
+                write!(out, "{pc1:02X}      {opcode} (${pc1:02X})").unwrap();
             }
             AddressMode::IndirectX => {
-                write!(out, "{pc1:02X}      {opcode} ({pc1:02X},X)",).unwrap();
+                write!(out, "{pc1:02X}      {opcode} (${pc1:02X},X)",).unwrap();
             }
             AddressMode::IndirectY => {
-                write!(out, "{pc1:02X}      {opcode} ({pc1:02X}),Y").unwrap();
+                write!(out, "{pc1:02X}      {opcode} (${pc1:02X}),Y").unwrap();
             }
             AddressMode::Absolute | AddressMode::AbsoluteNOP => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X}",).unwrap();
+                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X}",).unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteX => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},X",).unwrap();
+                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X},X",).unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteY => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} {pc2:02X}{pc1:02X},Y",).unwrap();
+                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X},Y",).unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteIndirect => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X})",).unwrap();
+                write!(out, "{pc1:02X} {pc2:02X}   {opcode} (${pc2:02X}{pc1:02X})",).unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteIndirectX => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ({pc2:02X}{pc1:02X},X)",).unwrap();
+                write!(
+                    out,
+                    "{pc1:02X} {pc2:02X}   {opcode} (${pc2:02X}{pc1:02X},X)",
+                )
+                .unwrap();
                 count += 1;
             }
             AddressMode::Implied | AddressMode::NOPCmos => {
@@ -953,7 +981,7 @@ pub trait CPU<'a>: Chip {
             AddressMode::Relative => {
                 write!(
                     out,
-                    "{pc1:02X}      {opcode} {pc1:02X} ({:04X})",
+                    "{pc1:02X}      {opcode} ${pc1:02X} (${:04X})",
                     Wrapping(pc) + pc116 + Wrapping(2u16)
                 )
                 .unwrap();
@@ -961,7 +989,7 @@ pub trait CPU<'a>: Chip {
             AddressMode::ZeroPageRelative => {
                 write!(
                     out,
-                    "{pc1:02X} {pc2:02X}   {opcode} {},{pc1:02X},{pc2:02X} ({:04X})",
+                    "{pc1:02X} {pc2:02X}   {opcode} {},${pc1:02X},${pc2:02X} (${:04X})",
                     (op & 0xF0) >> 4,
                     Wrapping(pc) + pc216 + Wrapping(2u16)
                 )
@@ -1051,7 +1079,7 @@ common_cpu_funcs!(CPU65C02, "CMOS");
 // Common implementations which are NMOS only specific (undocumented opcodes
 // and opcode processing). CMOS can implement `process_opcode` directly and
 // doesn't need the rest.
-trait CPUNmosInternal<'a>: CPUInternal<'a> {
+trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     #[allow(clippy::too_many_lines)]
     fn process_opcode(&mut self) -> Result<OpState> {
         match (self.op().op, self.op().mode) {
@@ -2136,7 +2164,7 @@ impl<'a> CPUNmosInternal<'a> for CPURicoh<'a> {}
 // The common implementation definitions for all 6502 chips but done as a private
 // crate only trait so the default implementations can get at all the internal
 // cpu entries without having to expose those publicly.
-trait CPUInternal<'a>: Chip {
+trait CPUInternal<'a>: Chip + CPU<'a> {
     // The following methods are all ones which cannot be defaulted
     // and must be implmented by the relevant struct in order to provide
     // access and mutability for the default trait methods below.
@@ -2174,11 +2202,6 @@ trait CPUInternal<'a>: Chip {
     // p_mut sets the P register to the given Flags.
     fn p_mut(&mut self, new: Flags);
 
-    // pc returns the current PC value.
-    fn pc(&self) -> Wrapping<u16>;
-    // pc_muts sets PC to the given address.
-    fn pc_mut(&mut self, new: Wrapping<u16>);
-
     // clocks returns the number of clock cycles since startup.
     fn clocks(&self) -> usize;
 
@@ -2192,9 +2215,6 @@ trait CPUInternal<'a>: Chip {
     fn op_addr(&self) -> u16;
     // op_addr_mut sets the internal op_addr register.
     fn op_addr_mut(&mut self, new: u16);
-
-    // ram returns a reference to the Memory implementation.
-    fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>>;
 
     // op_raw returns the current opcode byte.
     fn op_raw(&self) -> u8;
@@ -2220,41 +2240,6 @@ trait CPUInternal<'a>: Chip {
     // irq_raised_mut sets the InterruptStyle state.
     fn irq_raised_mut(&mut self, new: InterruptStyle);
 
-    // debug will emit a filled in value on the start of new instructions.
-    // If RDY is asserted it will simply repeat the previous state if at Tick1.
-    fn debug(&self) {
-        if let Some(d) = self.debug_hook() {
-            let (ref_state, full) = d();
-            let mut state = ref_state.borrow_mut();
-            state.state = self.state();
-            state.a = self.a().0;
-            state.x = self.x().0;
-            state.y = self.y().0;
-            state.s = self.s().0;
-            state.p = self.p();
-            state.pc = self.pc().0;
-            state.clocks = self.clocks();
-            state.op_val = self.op_val();
-            state.op_addr = self.op_addr();
-
-            let ram = self.ram();
-            let ram = ram.borrow();
-            if full {
-                // Do a full copy. This is expensive for every instruction.
-                ram.ram(&mut state.ram);
-            } else {
-                // We don't need to memcpy 64k. We just need
-                // the 3 possible instructions bytes at PC.
-                state.ram[usize::from(self.pc().0)] = ram.read(self.pc().0);
-                // These could wrap around so make sure we don't go out of range.
-                let pc1 = (self.pc() + Wrapping(1)).0;
-                state.ram[usize::from(pc1)] = ram.read(pc1);
-                let pc2 = (self.pc() + Wrapping(2)).0;
-                state.ram[usize::from(pc2)] = ram.read(pc2);
-            }
-        }
-    }
-
     // run_interrupt does all the heavy lifting for any interrupt processing.
     // i.e. pushing values onto the stack and loading PC with the right address.
     // Pass in the vector to be used for loading the PC (which means for BRK
@@ -2270,20 +2255,20 @@ trait CPUInternal<'a>: Chip {
             Tick::Tick2 => {
                 // Increment the PC on a non IRQ (i.e. BRK) since that changes where returns happen.
                 if !irq {
-                    self.pc_mut(self.pc() + Wrapping(1));
+                    self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 }
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
                 // There is no truncation as we mask and shift into 8 bits.
                 #[allow(clippy::cast_possible_truncation)]
-                self.push_stack(((self.pc().0 & 0xFF00) >> 8) as u8);
+                self.push_stack(((self.pc() & 0xFF00) >> 8) as u8);
                 Ok(OpState::Processing)
             }
             Tick::Tick4 => {
                 // There is no truncation as we mask into 8 bits.
                 #[allow(clippy::cast_possible_truncation)]
-                self.push_stack((self.pc().0 & 0x00FF) as u8);
+                self.push_stack((self.pc() & 0x00FF) as u8);
                 Ok(OpState::Processing)
             }
             Tick::Tick5 => {
@@ -2310,9 +2295,9 @@ trait CPUInternal<'a>: Chip {
             }
             Tick::Tick7 => {
                 // Compute the new PC from the 2nd vector component and the previous val read.
-                self.pc_mut(Wrapping(
+                self.pc_mut(
                     (u16::from(self.ram().borrow().read(vec + 1)) << 8) | u16::from(self.op_val()),
-                ));
+                );
 
                 // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
                 // a handler before firing again.
@@ -2526,12 +2511,12 @@ trait CPUInternal<'a>: Chip {
             Tick::Tick2 => {
                 // op_val has the first start of the address so start computing it.
                 self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.pc().0));
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 self.op_addr_mut(self.op_addr() | u16::from(self.op_val()) << 8);
                 match mode {
                     // For a store we're done since the opcode can decide what to store.
@@ -2587,11 +2572,11 @@ trait CPUInternal<'a>: Chip {
             Tick::Tick2 => {
                 // op_val has the first start of the address so start computing it.
                 self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.pc().0));
+                self.op_val_mut(self.ram().borrow().read(self.pc()));
                 self.op_addr_mut(self.op_addr() | u16::from(self.op_val()) << 8);
                 // Add reg but do it in a way which won't page wrap (if needed).
                 let a = (self.op_addr() & 0xFF00)
@@ -2616,7 +2601,7 @@ trait CPUInternal<'a>: Chip {
                 if self.op_val() == 0 {
                     // Advance the PC since we didn't earlier as down below CMOS
                     // can reread this value.
-                    self.pc_mut(self.pc() + Wrapping(1));
+                    self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                     self.op_val_mut(self.ram().borrow().read(self.op_addr()));
                     if mode == &InstructionMode::Rmw {
                         return Ok(OpState::Processing);
@@ -2629,7 +2614,7 @@ trait CPUInternal<'a>: Chip {
                 // Leave op_val as it was so the next tick can tell we had to
                 // do a fixup (for RMW since it always gets there).
                 _ = self.ram().borrow().read(self.op_addr());
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
 
                 // We computed the wrong addr before so fix it now by page wrapping.
                 self.op_addr_mut((Wrapping(self.op_addr()) + Wrapping(0x0100)).0);
@@ -2686,8 +2671,8 @@ trait CPUInternal<'a>: Chip {
                 // since this mode consumes op_val.
                 // Set op_addr in case ADC/SBC need an extra bus cycle and a place
                 // to read.
-                self.op_addr_mut(self.pc().0);
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.op_addr_mut(self.pc());
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Done)
             }
         }
@@ -2710,7 +2695,7 @@ trait CPUInternal<'a>: Chip {
                 // and assign it into op_addr so the throw away read in
                 // tick3 reads the right place.
                 self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
@@ -2777,7 +2762,7 @@ trait CPUInternal<'a>: Chip {
                 // and assign it into op_addr so the throw away read in
                 // tick3 reads the right place.
                 self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
@@ -2863,7 +2848,7 @@ trait CPUInternal<'a>: Chip {
             Tick::Tick2 => {
                 // Already read the value but need to bump the PC
                 self.op_addr_mut(u16::from(self.op_val()));
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 match mode {
                     // For a store we're done since we have the address needed.
                     &InstructionMode::Store => Ok(OpState::Done),
@@ -2917,7 +2902,7 @@ trait CPUInternal<'a>: Chip {
             Tick::Tick2 => {
                 // Already read the value but need to bump the PC.
                 self.op_addr_mut(u16::from(self.op_val()));
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
@@ -2961,7 +2946,7 @@ trait CPUInternal<'a>: Chip {
                 ))
             }
             Tick::Tick2 => {
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
@@ -2987,13 +2972,15 @@ trait CPUInternal<'a>: Chip {
 
         // Now compute the new PC but possibly wrong page.
         // Stash the old one in p.opAddr so we can use in tick 4 if needed.
-        self.op_addr_mut(self.pc().0);
-        self.pc_mut(Wrapping(
-            (self.pc().0 & 0xFF00)
-                | u16::from((Wrapping((self.pc().0 & 0x00FF) as u8) + Wrapping(self.op_val())).0),
-        ));
-        // It always triggers a bus read of the newly computed PC.
-        _ = self.ram().borrow().read(self.pc().0);
+        self.op_addr_mut(self.pc());
+        self.pc_mut(
+            Wrapping(
+                (self.pc() & 0xFF00)
+                    | u16::from((Wrapping((self.pc() & 0x00FF) as u8) + Wrapping(self.op_val())).0),
+            )
+            .0,
+        ); // It always triggers a bus read of the newly computed PC.
+        _ = self.ram().borrow().read(self.pc());
         // Now check the pc against one which didn't truncate for page by sign extending
         // op_val and adding it to op_addr.
         // NOTE: We don't lose the sign here since Wrapping will do the right thing.
@@ -3002,7 +2989,7 @@ trait CPUInternal<'a>: Chip {
             clippy::cast_lossless,
             clippy::cast_possible_wrap
         )]
-        if self.pc() == Wrapping(self.op_addr()) + Wrapping(self.op_val() as i8 as i16 as u16) {
+        if self.pc() == (Wrapping(self.op_addr()) + Wrapping(self.op_val() as i8 as i16 as u16)).0 {
             return Ok(OpState::Done);
         }
         Ok(OpState::Processing)
@@ -3020,9 +3007,9 @@ trait CPUInternal<'a>: Chip {
             clippy::cast_possible_wrap
         )]
         let val = Wrapping(self.op_addr()) + Wrapping(self.op_val() as i8 as i16 as u16);
-        self.pc_mut(val);
+        self.pc_mut(val.0);
         // Always read the next opcode now.
-        _ = self.ram().borrow().read(self.pc().0);
+        _ = self.ram().borrow().read(self.pc());
         Ok(OpState::Done)
     }
 
@@ -3039,7 +3026,7 @@ trait CPUInternal<'a>: Chip {
             | Tick::Tick7
             | Tick::Tick8 => Err(eyre!("branch_nop invalid op_tick: {:?}", self.op_tick())),
             Tick::Tick2 => {
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Done)
             }
         }
@@ -3323,16 +3310,16 @@ trait CPUInternal<'a>: Chip {
             | Tick::Tick8 => Err(eyre!("jmp: invalid op_tick: {:?}", self.op_tick())),
             Tick::Tick2 => {
                 // We've already read op_val which is the new PCL so increment PC only.
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
                 // Read PCH and assemble the PC
                 self.op_addr_mut(
-                    (u16::from(self.ram().borrow().read(self.pc().0)) << 8)
+                    (u16::from(self.ram().borrow().read(self.pc())) << 8)
                         | u16::from(self.op_val()),
                 );
-                self.pc_mut(Wrapping(self.op_addr()));
+                self.pc_mut(self.op_addr());
                 Ok(OpState::Done)
             }
         }
@@ -3360,7 +3347,7 @@ trait CPUInternal<'a>: Chip {
                     | u16::from((Wrapping((self.op_addr() & 0x00FF) as u8) + Wrapping(1)).0);
                 let val = self.ram().borrow().read(addr);
                 self.op_addr_mut((u16::from(val) << 8) | u16::from(self.op_val()));
-                self.pc_mut(Wrapping(self.op_addr()));
+                self.pc_mut(self.op_addr());
                 Ok(OpState::Done)
             }
         }
@@ -3377,7 +3364,7 @@ trait CPUInternal<'a>: Chip {
                 // Nothing happens here except to make the PC correct.
                 // NOTE: This means the PC pushed below is actually off by one.
                 //       RTS handles this by adding one to the popped PC.
-                self.pc_mut(self.pc() + Wrapping(1));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
@@ -3389,18 +3376,18 @@ trait CPUInternal<'a>: Chip {
                 Ok(OpState::Processing)
             }
             Tick::Tick4 => {
-                self.push_stack(((self.pc().0 & 0xFF00) >> 8) as u8);
+                self.push_stack(((self.pc() & 0xFF00) >> 8) as u8);
                 Ok(OpState::Processing)
             }
             Tick::Tick5 => {
-                self.push_stack((self.pc().0 & 0x00FF) as u8);
+                self.push_stack((self.pc() & 0x00FF) as u8);
                 Ok(OpState::Processing)
             }
             Tick::Tick6 => {
-                self.pc_mut(Wrapping(
-                    (u16::from(self.ram().borrow().read(self.pc().0)) << 8)
+                self.pc_mut(
+                    (u16::from(self.ram().borrow().read(self.pc())) << 8)
                         | u16::from(self.op_val()),
-                ));
+                );
                 Ok(OpState::Done)
             }
         }
@@ -3597,7 +3584,7 @@ trait CPUInternal<'a>: Chip {
             Tick::Tick6 => {
                 // Pop PCH and set PC
                 let o = self.pop_stack();
-                self.pc_mut(Wrapping((u16::from(o) << 8) | u16::from(self.op_val())));
+                self.pc_mut((u16::from(o) << 8) | u16::from(self.op_val()));
                 Ok(OpState::Done)
             }
         }
@@ -3629,13 +3616,13 @@ trait CPUInternal<'a>: Chip {
             Tick::Tick5 => {
                 // PCH
                 let o = self.pop_stack();
-                self.pc_mut(Wrapping((u16::from(o) << 8) | u16::from(self.op_val())));
+                self.pc_mut((u16::from(o) << 8) | u16::from(self.op_val()));
                 Ok(OpState::Processing)
             }
             Tick::Tick6 => {
                 // Read the current PC value then increment PC so we're pointing at the right addr.
-                _ = self.ram().borrow().read(self.pc().0);
-                self.pc_mut(self.pc() + Wrapping(1));
+                _ = self.ram().borrow().read(self.pc());
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Done)
             }
         }
@@ -3783,15 +3770,6 @@ macro_rules! cpu_internal {
             self.p = new;
         }
 
-        // pc returns the current PC value.
-        fn pc(&self) -> Wrapping<u16> {
-            self.pc
-        }
-        // pc_muts sets PC to the given address.
-        fn pc_mut(&mut self, new: Wrapping<u16>) {
-            self.pc = new;
-        }
-
         // clocks returns the number of clock cycles since startup.
         fn clocks(&self) -> usize {
             self.clocks
@@ -3813,11 +3791,6 @@ macro_rules! cpu_internal {
         // op_addr_mut sets the internal op_addr register.
         fn op_addr_mut(&mut self, new: u16) {
             self.op_addr = new;
-        }
-
-        // ram returns a reference to the Memory implementation.
-        fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
-            self.ram.clone()
         }
 
         // op_raw returns the current opcode byte.
@@ -4537,6 +4510,42 @@ macro_rules! cpu_impl {
                 self.debug = d;
             }
 
+            /// debug will emit a filled in value when called. If called from `tick` this
+            /// will only happen at the start of an opcode.
+            /// If RDY is asserted it will simply repeat the previous state if at Tick1.
+            fn debug(&self) {
+                if let Some(d) = self.debug {
+                    let (ref_state, full) = d();
+                    let mut state = ref_state.borrow_mut();
+                    state.state = self.state;
+                    state.a = self.a.0;
+                    state.x = self.x.0;
+                    state.y = self.y.0;
+                    state.s = self.s.0;
+                    state.p = self.p;
+                    state.pc = self.pc.0;
+                    state.clocks = self.clocks;
+                    state.op_val = self.op_val;
+                    state.op_addr = self.op_addr;
+                    state.op_tick = self.op_tick;
+
+                    let ram = self.ram.borrow();
+                    if full {
+                        // Do a full copy. This is expensive for every instruction.
+                        ram.ram(&mut state.ram);
+                    } else {
+                        // We don't need to memcpy 64k. We just need
+                        // the 3 possible instructions bytes at PC.
+                        state.ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
+                        // These could wrap around so make sure we don't go out of range.
+                        let pc1 = (self.pc + Wrapping(1)).0;
+                        state.ram[usize::from(pc1)] = ram.read(pc1);
+                        let pc2 = (self.pc + Wrapping(2)).0;
+                        state.ram[usize::from(pc2)] = ram.read(pc2);
+                    }
+                }
+            }
+
             /// `power_on` will reset the CPU to power on state which isn't well defined.
             /// Registers are random and stack is at random (though visual 6502 claims it's 0xFD
             /// due to a push P/PC in reset which gets run at power on).
@@ -4701,6 +4710,20 @@ macro_rules! cpu_impl {
                     _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
                 }
             }
+
+            /// ram returns a reference to the Memory implementation.
+            fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
+                self.ram.clone()
+            }
+
+            // pc returns the current PC value.
+            fn pc(&self) -> u16 {
+                self.pc.0
+            }
+            // pc_muts sets PC to the given address.
+            fn pc_mut(&mut self, new: u16) {
+                self.pc = Wrapping(new);
+            }
         }
     };
 }
@@ -4715,6 +4738,42 @@ impl<'a> CPU<'a> for CPURicoh<'a> {
     /// Use this to enable or disable state based debugging dynamically.
     fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
         self.debug = d;
+    }
+
+    /// debug will emit a filled in value when called. If called from `tick` this
+    /// will only happen at the start of an opcode.
+    /// If RDY is asserted it will simply repeat the previous state if at Tick1.
+    fn debug(&self) {
+        if let Some(d) = self.debug {
+            let (ref_state, full) = d();
+            let mut state = ref_state.borrow_mut();
+            state.state = self.state;
+            state.a = self.a.0;
+            state.x = self.x.0;
+            state.y = self.y.0;
+            state.s = self.s.0;
+            state.p = self.p;
+            state.pc = self.pc.0;
+            state.clocks = self.clocks;
+            state.op_val = self.op_val;
+            state.op_addr = self.op_addr;
+            state.op_tick = self.op_tick;
+
+            let ram = self.ram.borrow();
+            if full {
+                // Do a full copy. This is expensive for every instruction.
+                ram.ram(&mut state.ram);
+            } else {
+                // We don't need to memcpy 64k. We just need
+                // the 3 possible instructions bytes at PC.
+                state.ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
+                // These could wrap around so make sure we don't go out of range.
+                let pc1 = (self.pc + Wrapping(1)).0;
+                state.ram[usize::from(pc1)] = ram.read(pc1);
+                let pc2 = (self.pc + Wrapping(2)).0;
+                state.ram[usize::from(pc2)] = ram.read(pc2);
+            }
+        }
     }
 
     /// `power_on` will reset the CPU to power on state which isn't well defined.
@@ -4870,6 +4929,20 @@ impl<'a> CPU<'a> for CPURicoh<'a> {
             _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
         }
     }
+
+    /// ram returns a reference to the Memory implementation.
+    fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
+        self.ram.clone()
+    }
+
+    // pc returns the current PC value.
+    fn pc(&self) -> u16 {
+        self.pc.0
+    }
+    // pc_muts sets PC to the given address.
+    fn pc_mut(&mut self, new: u16) {
+        self.pc = Wrapping(new);
+    }
 }
 
 // CMOS has variations in ops/power/reset so need to direct implement vs the macro.
@@ -4904,6 +4977,42 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
     /// Use this to enable or disable state based debugging dynamically.
     fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
         self.debug = d;
+    }
+
+    /// debug will emit a filled in value when called. If called from `tick` this
+    /// will only happen at the start of an opcode.
+    /// If RDY is asserted it will simply repeat the previous state if at Tick1.
+    fn debug(&self) {
+        if let Some(d) = self.debug {
+            let (ref_state, full) = d();
+            let mut state = ref_state.borrow_mut();
+            state.state = self.state;
+            state.a = self.a.0;
+            state.x = self.x.0;
+            state.y = self.y.0;
+            state.s = self.s.0;
+            state.p = self.p;
+            state.pc = self.pc.0;
+            state.clocks = self.clocks;
+            state.op_val = self.op_val;
+            state.op_addr = self.op_addr;
+            state.op_tick = self.op_tick;
+
+            let ram = self.ram.borrow();
+            if full {
+                // Do a full copy. This is expensive for every instruction.
+                ram.ram(&mut state.ram);
+            } else {
+                // We don't need to memcpy 64k. We just need
+                // the 3 possible instructions bytes at PC.
+                state.ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
+                // These could wrap around so make sure we don't go out of range.
+                let pc1 = (self.pc + Wrapping(1)).0;
+                state.ram[usize::from(pc1)] = ram.read(pc1);
+                let pc2 = (self.pc + Wrapping(2)).0;
+                state.ram[usize::from(pc2)] = ram.read(pc2);
+            }
+        }
     }
 
     /// `power_on` will reset the CPU to power on state which isn't well defined.
@@ -5058,6 +5167,20 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
             }
             _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
         }
+    }
+
+    /// ram returns a reference to the Memory implementation.
+    fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
+        self.ram.clone()
+    }
+
+    /// pc returns the current PC value.
+    fn pc(&self) -> u16 {
+        self.pc.0
+    }
+    /// `pc_mut` sets PC to the given address.
+    fn pc_mut(&mut self, new: u16) {
+        self.pc = Wrapping(new);
     }
 }
 

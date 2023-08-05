@@ -12,6 +12,7 @@ members = [
     "./io",
     "./irq",
     "./memory",
+    "./monitor",
 ]
 default-members = [
     "./assemble",
@@ -26,6 +27,7 @@ default-members = [
     "./io",
     "./irq",
     "./memory",
+    "./monitor",
 ]
 
 [profile.test]

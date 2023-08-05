@@ -123,7 +123,7 @@ macro_rules! setup_cpu {
             // This should halt the cpu if a test goes off the rails since
             // endless execution will eventually end up at the NMI vector (it's the first
             // one) which contains HLT instructions.
-            let r = FlatRAM::new()
+            let r = FlatRAM::default()
                 .vectors(Vectors {
                     nmi: hlt,
                     reset: RESET,
@@ -295,20 +295,40 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for addr mode func addr_absolute"
     );
+    let ret = nmos.addr_absolute(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_absolute"
+    );
     let ret = cpu.addr_absolute_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_absolute_x"
+    );
+    let ret = nmos.addr_absolute_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_absolute_x"
     );
     let ret = cpu.addr_immediate(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_immediate"
     );
+    let ret = nmos.addr_immediate(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_immediate"
+    );
     let ret = cpu.addr_indirect_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_indirect_x"
+    );
+    let ret = nmos.addr_indirect_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_indirect_x"
     );
     let ret = cpu.addr_indirect(&InstructionMode::Load);
     assert!(
@@ -320,15 +340,30 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for addr mode func addr_indirect_y"
     );
+    let ret = nmos.addr_indirect_y(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_indirect_y"
+    );
     let ret = cpu.addr_zp(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_zp"
     );
+    let ret = nmos.addr_zp(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_zp"
+    );
     let ret = cpu.addr_zp_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_zp_x"
+    );
+    let ret = nmos.addr_zp_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_zp_x"
     );
 
     let ret = cpu.perform_branch();
@@ -337,6 +372,8 @@ fn invalid_states() -> Result<()> {
     assert!(ret.is_err(), "didn't get an error for branch_nop");
     let ret = cpu.run_interrupt(0x1234, false);
     assert!(ret.is_err(), "didn't get an error for run_interrupt");
+    let ret = nmos.run_interrupt(0x1234, false);
+    assert!(ret.is_err(), "didn't get an error for NMOS run_interrupt");
 
     let ret = cpu.bbr(1);
     assert!(ret.is_err(), "didn't get an error for bbr1");
@@ -345,6 +382,8 @@ fn invalid_states() -> Result<()> {
     assert!(ret.is_err(), "didn't get an error for jmp");
     let ret = cpu.jmp_indirect();
     assert!(ret.is_err(), "didn't get an error for jmp_indirect");
+    let ret = nmos.jmp_indirect();
+    assert!(ret.is_err(), "didn't get an error for NMOS jmp_indirect");
     let ret = cpu.jmp_indirect_x();
     assert!(ret.is_err(), "didn't get an error for jmp_indirect_x");
     let ret = cpu.jsr();
@@ -518,23 +557,23 @@ fn disassemble_test() -> Result<()> {
 
     // All of our tests use CMOS since it's the superset of all modes
     let tests = [
-        (vec![0xA9, 0x69], "LDA #69"),                  // Immediate
-        (vec![0xA5, 0x69], "LDA 69"),                   // ZP
-        (vec![0xB5, 0x69], "LDA 69,X"),                 // ZPX
-        (vec![0xB6, 0x69], "LDX 69,Y"),                 // ZPY
-        (vec![0xB2, 0x69], "LDA (69)"),                 // Indirect
-        (vec![0xA1, 0x69], "LDA (69,X)"),               // Indirect X
-        (vec![0xB1, 0x69], "LDA (69),Y"),               // Indirect Y
-        (vec![0xAD, 0x69, 0x55], "LDA 5569"),           // Absolute
-        (vec![0xBD, 0x69, 0x55], "LDA 5569,X"),         // Absolute X
-        (vec![0xB9, 0x69, 0x55], "LDA 5569,Y"),         // Absolute Y
-        (vec![0x6C, 0x69, 0x55], "JMP (5569)"),         // Absolute Indirect
-        (vec![0x7C, 0x69, 0x55], "JMP (5569,X)"),       // Absolute Indirect
-        (vec![0x1A], "INC"),                            // Implied
-        (vec![0x03], "NOP"),                            // NOPCmos
-        (vec![0x5C, 0x34, 0x12], "NOP 1234"),           // AbsoluteNOP
-        (vec![0x80, 0x69], "BRA 69 (006A)"),            // Relative,
-        (vec![0x1F, 0x55, 0x69], "BBR 1,55,69 (006A)"), // Zero Page Relative
+        (vec![0xA9, 0x69], "LDA #$69"),                    // Immediate
+        (vec![0xA5, 0x69], "LDA $69"),                     // ZP
+        (vec![0xB5, 0x69], "LDA $69,X"),                   // ZPX
+        (vec![0xB6, 0x69], "LDX $69,Y"),                   // ZPY
+        (vec![0xB2, 0x69], "LDA ($69)"),                   // Indirect
+        (vec![0xA1, 0x69], "LDA ($69,X)"),                 // Indirect X
+        (vec![0xB1, 0x69], "LDA ($69),Y"),                 // Indirect Y
+        (vec![0xAD, 0x69, 0x55], "LDA $5569"),             // Absolute
+        (vec![0xBD, 0x69, 0x55], "LDA $5569,X"),           // Absolute X
+        (vec![0xB9, 0x69, 0x55], "LDA $5569,Y"),           // Absolute Y
+        (vec![0x6C, 0x69, 0x55], "JMP ($5569)"),           // Absolute Indirect
+        (vec![0x7C, 0x69, 0x55], "JMP ($5569,X)"),         // Absolute Indirect
+        (vec![0x1A], "INC"),                               // Implied
+        (vec![0x03], "NOP"),                               // NOPCmos
+        (vec![0x5C, 0x34, 0x12], "NOP $1234"),             // AbsoluteNOP
+        (vec![0x80, 0x69], "BRA $69 ($006A)"),             // Relative,
+        (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
     ];
 
     // Set addr at end of RAM to test wrapping.
