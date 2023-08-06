@@ -4502,450 +4502,415 @@ impl<'a> CPUInternal<'a> for CPU65C02<'a> {
     }
 }
 
-macro_rules! cpu_impl {
-    ($cpu:ident) => {
-        impl<'a> CPU<'a> for $cpu<'a> {
-            /// Use this to enable or disable state based debugging dynamically.
-            fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
-                self.debug = d;
+macro_rules! cpu_nmos_power_reset {
+    () => {
+        /// `power_on` will reset the CPU to power on state which isn't well defined.
+        /// Registers are random and stack is at random (though visual 6502 claims it's 0xFD
+        /// due to a push P/PC in reset which gets run at power on).
+        /// P is cleared with interrupts disabled and decimal mode random (for NMOS versions).
+        /// The starting PC value is loaded from the reset vector.
+        ///
+        /// # Errors
+        /// If reset has any issues an error will be returned.
+        fn power_on(&mut self) -> Result<()> {
+            if self.state != State::Off {
+                return Err(eyre!("cannot power on except from an off state"));
             }
 
-            /// debug will emit a filled in value when called. If called from `tick` this
-            /// will only happen at the start of an opcode.
-            /// If RDY is asserted it will simply repeat the previous state if at Tick1.
-            fn debug(&self) {
-                if let Some(d) = self.debug {
-                    let (ref_state, full) = d();
-                    let mut state = ref_state.borrow_mut();
-                    state.state = self.state;
-                    state.a = self.a.0;
-                    state.x = self.x.0;
-                    state.y = self.y.0;
-                    state.s = self.s.0;
-                    state.p = self.p;
-                    state.pc = self.pc.0;
-                    state.clocks = self.clocks;
-                    state.op_val = self.op_val;
-                    state.op_addr = self.op_addr;
-                    state.op_tick = self.op_tick;
+            let mut rng = rand::thread_rng();
 
-                    let ram = self.ram.borrow();
-                    if full {
-                        // Do a full copy. This is expensive for every instruction.
-                        ram.ram(&mut state.ram);
-                    } else {
-                        // We don't need to memcpy 64k. We just need
-                        // the 3 possible instructions bytes at PC.
-                        state.ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
-                        // These could wrap around so make sure we don't go out of range.
-                        let pc1 = (self.pc + Wrapping(1)).0;
-                        state.ram[usize::from(pc1)] = ram.read(pc1);
-                        let pc2 = (self.pc + Wrapping(2)).0;
-                        state.ram[usize::from(pc2)] = ram.read(pc2);
-                    }
-                }
+            // This is always set and clears the rest.
+            self.p = P_S1;
+
+            // Randomize decimal mode
+            if rng.gen::<f64>() > 0.5 {
+                self.p |= P_DECIMAL;
             }
 
-            /// `power_on` will reset the CPU to power on state which isn't well defined.
-            /// Registers are random and stack is at random (though visual 6502 claims it's 0xFD
-            /// due to a push P/PC in reset which gets run at power on).
-            /// P is cleared with interrupts disabled and decimal mode random (for NMOS versions).
-            /// The starting PC value is loaded from the reset vector.
-            ///
-            /// # Errors
-            /// If reset has any issues an error will be returned.
-            fn power_on(&mut self) -> Result<()> {
-                if self.state != State::Off {
-                    return Err(eyre!("cannot power on except from an off state"));
+            // Randomize register contents
+            self.a = rng.gen();
+            self.x = rng.gen();
+            self.y = rng.gen();
+            self.s = rng.gen();
+
+            self.state = State::On;
+
+            // Use reset to get everything else done.
+            loop {
+                match self.reset() {
+                    Ok(OpState::Done) => break,
+                    Ok(OpState::Processing) => continue,
+                    Err(e) => return Err(e),
                 }
+            }
+            Ok(())
+        }
 
-                let mut rng = rand::thread_rng();
-
-                // This is always set and clears the rest.
-                self.p = P_S1;
-
-                // Randomize decimal mode
-                if rng.gen::<f64>() > 0.5 {
-                    self.p |= P_DECIMAL;
-                }
-
-                // Randomize register contents
-                self.a = rng.gen();
-                self.x = rng.gen();
-                self.y = rng.gen();
-                self.s = rng.gen();
-
-                self.state = State::On;
-
-                // Use reset to get everything else done.
-                loop {
-                    match self.reset() {
-                        Ok(OpState::Done) => break,
-                        Ok(OpState::Processing) => continue,
-                        Err(e) => return Err(e),
-                    }
-                }
-                Ok(())
+        /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
+        /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
+        /// changes. Flags are not disturbed except for interrupts being disabled
+        /// and the PC is loaded from the reset vector.
+        /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
+        /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
+        /// Visual 6502 simulation shows this all in detail.
+        /// This takes 7 cycles once triggered (same as interrupts).
+        /// Will return true when reset is complete and errors if any occur.
+        ///
+        /// # Errors
+        /// Internal problems (getting into the wrong state) can result in errors.
+        fn reset(&mut self) -> Result<OpState> {
+            if self.state == State::Off {
+                return Err(eyre!("power_on not called before calling reset!"));
             }
 
-            /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
-            /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
-            /// changes. Flags are not disturbed except for interrupts being disabled
-            /// and the PC is loaded from the reset vector.
-            /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
-            /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
-            /// Visual 6502 simulation shows this all in detail.
-            /// This takes 7 cycles once triggered (same as interrupts).
-            /// Will return true when reset is complete and errors if any occur.
-            ///
-            /// # Errors
-            /// Internal problems (getting into the wrong state) can result in errors.
-            fn reset(&mut self) -> Result<OpState> {
-                if self.state == State::Off {
-                    return Err(eyre!("power_on not called before calling reset!"));
-                }
+            // If we haven't started a reset sequence start it now.
+            if self.state != State::Reset {
+                self.state = State::Reset;
+                self.op_tick = Tick::Reset;
+                self.reset_tick = Tick::Tick1;
+            }
+            self.op_tick = self.op_tick.next();
+            self.debug();
+            self.clocks += 1;
 
-                // If we haven't started a reset sequence start it now.
-                if self.state != State::Reset {
-                    self.state = State::Reset;
+            match self.reset_tick {
+                Tick::Tick1 | Tick::Tick2 => {
+                    // Burn off 2 clocks internally to reset before we start processing.
+                    // Technically this runs the next 2 sequences of the current opcode.
+                    // We don't bother emulating that and instead just reread the
+                    // current PC
+                    _ = self.ram.borrow().read(self.pc.0);
+
+                    self.reset_tick = self.reset_tick.next();
+
+                    // Leave op_tick in reset mode so once we're done here it'll match below
+                    // as Tick1.
                     self.op_tick = Tick::Reset;
-                    self.reset_tick = Tick::Tick1;
+
+                    Ok(OpState::Processing)
                 }
-                self.op_tick = self.op_tick.next();
-                self.debug();
-                self.clocks += 1;
+                Tick::Tick3 => {
+                    match self.op_tick {
+                        Tick::Tick1 => {
+                            // Standard first tick reads current PC value which normally
+                            // is the opcode but we discard.
+                            self.ram.borrow().read(self.pc.0);
+                            self.pc += 1;
 
-                match self.reset_tick {
-                    Tick::Tick1 | Tick::Tick2 => {
-                        // Burn off 2 clocks internally to reset before we start processing.
-                        // Technically this runs the next 2 sequences of the current opcode.
-                        // We don't bother emulating that and instead just reread the
-                        // current PC
-                        _ = self.ram.borrow().read(self.pc.0);
+                            // Reset our other internal state
 
-                        self.reset_tick = self.reset_tick.next();
+                            // If we were halted before, clear that out.
+                            self.halt_opcode = 0x00;
+                            self.halt_pc = 0x0000;
 
-                        // Leave op_tick in reset mode so once we're done here it'll match below
-                        // as Tick1.
-                        self.op_tick = Tick::Reset;
-
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick3 => {
-                        match self.op_tick {
-                            Tick::Tick1 => {
-                                // Standard first tick reads current PC value which normally
-                                // is the opcode but we discard.
-                                self.ram.borrow().read(self.pc.0);
-                                self.pc += 1;
-
-                                // Reset our other internal state
-
-                                // If we were halted before, clear that out.
-                                self.halt_opcode = 0x00;
-                                self.halt_pc = 0x0000;
-
-                                // The stack ends up at 0xFD which implies it gets set to 0x00 now
-                                // as we pull 3 bytes off the stack in the end.
-                                self.s = Wrapping(0x00);
-                                Ok(OpState::Processing)
-                            }
-                            Tick::Tick2 => {
-                                // Read another throw away value which is normally the opval but
-                                // discarded as well.
-                                self.ram.borrow().read(self.pc.0);
-                                self.pc += 1;
-                                Ok(OpState::Processing)
-                            }
-                            Tick::Tick3 | Tick::Tick4 => {
-                                // Tick3: Simulate pushing P onto stack but reset holds R/W high so we don't write.
-                                // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
-                                // These reads go nowhere (technically they end up in internal regs but since that's
-                                // not visible externally, who cares?).
-                                let addr: u16 = STACK_START + u16::from(self.s.0);
-                                self.ram.borrow().read(addr);
-                                self.s -= 1;
-                                Ok(OpState::Processing)
-                            }
-                            Tick::Tick5 => {
-                                // Final write to stack (PC high) but actual read due to being in reset.
-                                let addr: u16 = STACK_START + u16::from(self.s.0);
-                                self.ram.borrow().read(addr);
-                                self.s -= 1;
-
-                                // Disable interrupts
-                                self.p |= P_INTERRUPT;
-
-                                // On NMOS D is random after reset.
-                                let mut rng = rand::thread_rng();
-                                self.p &= !P_DECIMAL;
-
-                                if rng.gen::<f64>() > 0.5 {
-                                    self.p |= P_DECIMAL;
-                                }
-                                Ok(OpState::Processing)
-                            }
-                            Tick::Tick6 => {
-                                // Load PCL from reset vector
-                                self.op_val = self.ram.borrow().read(RESET_VECTOR);
-                                Ok(OpState::Processing)
-                            }
-                            Tick::Tick7 => {
-                                // Load PCH from reset vector and go back into normal operations.
-                                self.pc = Wrapping(
-                                    u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
-                                        | u16::from(self.op_val),
-                                );
-                                self.reset_tick = Tick::Reset;
-                                self.op_tick = Tick::Reset;
-                                self.state = State::Running;
-                                Ok(OpState::Done)
-                            }
-                            // Technically both this and the reset_tick one below are impossible
-                            // sans bugs here as tick() won't run while we're in reset and it's the only other
-                            // way to modify the sequence.
-                            _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
+                            // The stack ends up at 0xFD which implies it gets set to 0x00 now
+                            // as we pull 3 bytes off the stack in the end.
+                            self.s = Wrapping(0x00);
+                            Ok(OpState::Processing)
                         }
+                        Tick::Tick2 => {
+                            // Read another throw away value which is normally the opval but
+                            // discarded as well.
+                            self.ram.borrow().read(self.pc.0);
+                            self.pc += 1;
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick3 | Tick::Tick4 => {
+                            // Tick3: Simulate pushing P onto stack but reset holds R/W high so we don't write.
+                            // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
+                            // These reads go nowhere (technically they end up in internal regs but since that's
+                            // not visible externally, who cares?).
+                            let addr: u16 = STACK_START + u16::from(self.s.0);
+                            self.ram.borrow().read(addr);
+                            self.s -= 1;
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick5 => {
+                            // Final write to stack (PC high) but actual read due to being in reset.
+                            let addr: u16 = STACK_START + u16::from(self.s.0);
+                            self.ram.borrow().read(addr);
+                            self.s -= 1;
+
+                            // Disable interrupts
+                            self.p |= P_INTERRUPT;
+
+                            // On NMOS D is random after reset.
+                            let mut rng = rand::thread_rng();
+                            self.p &= !P_DECIMAL;
+
+                            if rng.gen::<f64>() > 0.5 {
+                                self.p |= P_DECIMAL;
+                            }
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick6 => {
+                            // Load PCL from reset vector
+                            self.op_val = self.ram.borrow().read(RESET_VECTOR);
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick7 => {
+                            // Load PCH from reset vector and go back into normal operations.
+                            self.pc = Wrapping(
+                                u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
+                                    | u16::from(self.op_val),
+                            );
+                            self.reset_tick = Tick::Reset;
+                            self.op_tick = Tick::Reset;
+                            self.state = State::Running;
+                            Ok(OpState::Done)
+                        }
+                        // Technically both this and the reset_tick one below are impossible
+                        // sans bugs here as tick() won't run while we're in reset and it's the only other
+                        // way to modify the sequence.
+                        _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
                     }
-                    _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
                 }
-            }
-
-            /// ram returns a reference to the Memory implementation.
-            fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
-                self.ram.clone()
-            }
-
-            // pc returns the current PC value.
-            fn pc(&self) -> u16 {
-                self.pc.0
-            }
-            // pc_muts sets PC to the given address.
-            fn pc_mut(&mut self, new: u16) {
-                self.pc = Wrapping(new);
+                _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
             }
         }
     };
 }
 
-cpu_impl!(CPU6502);
-cpu_impl!(CPU6510);
+macro_rules! cpu_impl {
+    () => {
+        /// Use this to enable or disable state based debugging dynamically.
+        fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
+            self.debug = d;
+        }
 
-// Ricoh has variations in power/reset so need to direct implement vs the macro.
+        /// debug will emit a filled in value when called. If called from `tick` this
+        /// will only happen at the start of an opcode.
+        /// If RDY is asserted it will simply repeat the previous state if at Tick1.
+        fn debug(&self) {
+            if let Some(d) = self.debug {
+                let (ref_state, full) = d();
+                let mut state = ref_state.borrow_mut();
+                state.state = self.state;
+                state.a = self.a.0;
+                state.x = self.x.0;
+                state.y = self.y.0;
+                state.s = self.s.0;
+                state.p = self.p;
+                state.pc = self.pc.0;
+                state.clocks = self.clocks;
+                state.op_val = self.op_val;
+                state.op_addr = self.op_addr;
+                state.op_tick = self.op_tick;
+
+                let ram = self.ram.borrow();
+                if full {
+                    // Do a full copy. This is expensive for every instruction.
+                    ram.ram(&mut state.ram);
+                } else {
+                    // We don't need to memcpy 64k. We just need
+                    // the 3 possible instructions bytes at PC.
+                    state.ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
+                    // These could wrap around so make sure we don't go out of range.
+                    let pc1 = (self.pc + Wrapping(1)).0;
+                    state.ram[usize::from(pc1)] = ram.read(pc1);
+                    let pc2 = (self.pc + Wrapping(2)).0;
+                    state.ram[usize::from(pc2)] = ram.read(pc2);
+                }
+            }
+        }
+
+        /// ram returns a reference to the Memory implementation.
+        fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
+            self.ram.clone()
+        }
+
+        // pc returns the current PC value.
+        fn pc(&self) -> u16 {
+            self.pc.0
+        }
+        // pc_muts sets PC to the given address.
+        fn pc_mut(&mut self, new: u16) {
+            self.pc = Wrapping(new);
+        }
+    };
+}
+
+impl<'a> CPU<'a> for CPU6502<'a> {
+    cpu_impl!();
+    cpu_nmos_power_reset!();
+}
+
+impl<'a> CPU<'a> for CPU6510<'a> {
+    cpu_impl!();
+    cpu_nmos_power_reset!();
+}
+
+// The Richo and CMOS while technically very different actually share the same
+// power_on/reset functions since the main difference from NMOS is a defined
+// D state (CMOS sets it to off and Richo disables it so the same effect).
+macro_rules! cpu_cmos_ricoh_power_reset {
+    () => {
+        /// `power_on` will reset the CPU to power on state which isn't well defined.
+        /// Registers are random and stack is at random (though visual 6502 claims it's 0xFD
+        /// due to a push P/PC in reset which gets run at power on).
+        /// P is cleared with interrupts disabled and decimal mode random (for NMOS versions).
+        /// The starting PC value is loaded from the reset vector.
+        ///
+        /// # Errors
+        /// If reset has any issues an error will be returned.
+        fn power_on(&mut self) -> Result<()> {
+            if self.state != State::Off {
+                return Err(eyre!("cannot power on except from an off state"));
+            }
+
+            let mut rng = rand::thread_rng();
+
+            // This is always set and clears the rest.
+            // This includes D which is always off.
+            self.p = P_S1;
+
+            // Randomize register contents
+            self.a = rng.gen();
+            self.x = rng.gen();
+            self.y = rng.gen();
+            self.s = rng.gen();
+
+            self.state = State::On;
+
+            // Use reset to get everything else done.
+            loop {
+                match self.reset() {
+                    Ok(OpState::Done) => break,
+                    Ok(OpState::Processing) => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
+        }
+
+        /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
+        /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
+        /// changes. Flags are not disturbed except for interrupts being disabled
+        /// and the PC is loaded from the reset vector.
+        /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
+        /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
+        /// Visual 6502 simulation shows this all in detail.
+        /// This takes 7 cycles once triggered (same as interrupts).
+        /// Will return true when reset is complete and errors if any occur.
+        ///
+        /// # Errors
+        /// Internal problems (getting into the wrong state) can result in errors.
+        fn reset(&mut self) -> Result<OpState> {
+            if self.state == State::Off {
+                return Err(eyre!("power_on not called before calling reset!"));
+            }
+
+            // If we haven't started a reset sequence start it now.
+            if self.state != State::Reset {
+                self.state = State::Reset;
+                self.op_tick = Tick::Reset;
+                self.reset_tick = Tick::Tick1;
+            }
+            self.op_tick = self.op_tick.next();
+            self.debug();
+            self.clocks += 1;
+
+            match self.reset_tick {
+                Tick::Tick1 | Tick::Tick2 => {
+                    // Burn off 2 clocks internally to reset before we start processing.
+                    // Technically this runs the next 2 sequences of the current opcode.
+                    // We don't bother emulating that and instead just reread the
+                    // current PC
+                    _ = self.ram.borrow().read(self.pc.0);
+
+                    self.reset_tick = self.reset_tick.next();
+
+                    // Leave op_tick in reset mode so once we're done here it'll match below
+                    // as Tick1.
+                    self.op_tick = Tick::Reset;
+
+                    Ok(OpState::Processing)
+                }
+                Tick::Tick3 => {
+                    match self.op_tick {
+                        Tick::Tick1 => {
+                            // Standard first tick reads current PC value which normally
+                            // is the opcode but we discard.
+                            self.ram.borrow().read(self.pc.0);
+                            self.pc += 1;
+
+                            // Reset our other internal state
+
+                            // If we were halted before, clear that out.
+                            self.halt_opcode = 0x00;
+                            self.halt_pc = 0x0000;
+
+                            // The stack ends up at 0xFD which implies it gets set to 0x00 now
+                            // as we pull 3 bytes off the stack in the end.
+                            self.s = Wrapping(0x00);
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick2 => {
+                            // Read another throw away value which is normally the opval but
+                            // discarded as well.
+                            self.ram.borrow().read(self.pc.0);
+                            self.pc += 1;
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick3 | Tick::Tick4 => {
+                            // Tick3: Simulate pushing P onto stack but reset holds R/W high so we don't write.
+                            // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
+                            // These reads go nowhere (technically they end up in internal regs but since that's
+                            // not visible externally, who cares?).
+                            let addr: u16 = STACK_START + u16::from(self.s.0);
+                            self.ram.borrow().read(addr);
+                            self.s -= 1;
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick5 => {
+                            // Final write to stack (PC high) but actual read due to being in reset.
+                            let addr: u16 = STACK_START + u16::from(self.s.0);
+                            self.ram.borrow().read(addr);
+                            self.s -= 1;
+
+                            // Disable interrupts and make sure decimal is off
+                            self.p |= P_INTERRUPT;
+                            self.p &= !P_DECIMAL;
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick6 => {
+                            // Load PCL from reset vector
+                            self.op_val = self.ram.borrow().read(RESET_VECTOR);
+                            Ok(OpState::Processing)
+                        }
+                        Tick::Tick7 => {
+                            // Load PCH from reset vector and go back into normal operations.
+                            self.pc = Wrapping(
+                                u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
+                                    | u16::from(self.op_val),
+                            );
+                            self.reset_tick = Tick::Reset;
+                            self.op_tick = Tick::Reset;
+                            self.state = State::Running;
+                            Ok(OpState::Done)
+                        }
+                        // Technically both this and the reset_tick one below are impossible
+                        // sans bugs here as tick() won't run while we're in reset and it's the only other
+                        // way to modify the sequence.
+                        _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
+                    }
+                }
+                _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
+            }
+        }
+    };
+}
+
+// Ricoh has variations in power/reset so need different macros since CMOS shares this impl.
 // However resolve_opcode and opcode_op are consistent across all NMOS so the
 // trait default is fine there.
 impl<'a> CPU<'a> for CPURicoh<'a> {
-    /// Use this to enable or disable state based debugging dynamically.
-    fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
-        self.debug = d;
-    }
-
-    /// debug will emit a filled in value when called. If called from `tick` this
-    /// will only happen at the start of an opcode.
-    /// If RDY is asserted it will simply repeat the previous state if at Tick1.
-    fn debug(&self) {
-        if let Some(d) = self.debug {
-            let (ref_state, full) = d();
-            let mut state = ref_state.borrow_mut();
-            state.state = self.state;
-            state.a = self.a.0;
-            state.x = self.x.0;
-            state.y = self.y.0;
-            state.s = self.s.0;
-            state.p = self.p;
-            state.pc = self.pc.0;
-            state.clocks = self.clocks;
-            state.op_val = self.op_val;
-            state.op_addr = self.op_addr;
-            state.op_tick = self.op_tick;
-
-            let ram = self.ram.borrow();
-            if full {
-                // Do a full copy. This is expensive for every instruction.
-                ram.ram(&mut state.ram);
-            } else {
-                // We don't need to memcpy 64k. We just need
-                // the 3 possible instructions bytes at PC.
-                state.ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
-                // These could wrap around so make sure we don't go out of range.
-                let pc1 = (self.pc + Wrapping(1)).0;
-                state.ram[usize::from(pc1)] = ram.read(pc1);
-                let pc2 = (self.pc + Wrapping(2)).0;
-                state.ram[usize::from(pc2)] = ram.read(pc2);
-            }
-        }
-    }
-
-    /// `power_on` will reset the CPU to power on state which isn't well defined.
-    /// Registers are random and stack is at random (though visual 6502 claims it's 0xFD
-    /// due to a push P/PC in reset which gets run at power on).
-    /// P is cleared with interrupts disabled and decimal mode random (for NMOS versions).
-    /// The starting PC value is loaded from the reset vector.
-    ///
-    /// # Errors
-    /// If reset has any issues an error will be returned.
-    fn power_on(&mut self) -> Result<()> {
-        if self.state != State::Off {
-            return Err(eyre!("cannot power on except from an off state"));
-        }
-
-        let mut rng = rand::thread_rng();
-
-        // This is always set and clears the rest.
-        // This includes D which is always off on a Ricoh.
-        self.p = P_S1;
-
-        // Randomize register contents
-        self.a = rng.gen();
-        self.x = rng.gen();
-        self.y = rng.gen();
-        self.s = rng.gen();
-
-        self.state = State::On;
-
-        // Use reset to get everything else done.
-        loop {
-            match self.reset() {
-                Ok(OpState::Done) => break,
-                Ok(OpState::Processing) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
-    }
-
-    /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
-    /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
-    /// changes. Flags are not disturbed except for interrupts being disabled
-    /// and the PC is loaded from the reset vector.
-    /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
-    /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
-    /// Visual 6502 simulation shows this all in detail.
-    /// This takes 7 cycles once triggered (same as interrupts).
-    /// Will return true when reset is complete and errors if any occur.
-    ///
-    /// # Errors
-    /// Internal problems (getting into the wrong state) can result in errors.
-    fn reset(&mut self) -> Result<OpState> {
-        if self.state == State::Off {
-            return Err(eyre!("power_on not called before calling reset!"));
-        }
-
-        // If we haven't started a reset sequence start it now.
-        if self.state != State::Reset {
-            self.state = State::Reset;
-            self.op_tick = Tick::Reset;
-            self.reset_tick = Tick::Tick1;
-        }
-        self.op_tick = self.op_tick.next();
-        self.debug();
-        self.clocks += 1;
-
-        match self.reset_tick {
-            Tick::Tick1 | Tick::Tick2 => {
-                // Burn off 2 clocks internally to reset before we start processing.
-                // Technically this runs the next 2 sequences of the current opcode.
-                // We don't bother emulating that and instead just reread the
-                // current PC
-                _ = self.ram.borrow().read(self.pc.0);
-
-                self.reset_tick = self.reset_tick.next();
-
-                // Leave op_tick in reset mode so once we're done here it'll match below
-                // as Tick1.
-                self.op_tick = Tick::Reset;
-
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                match self.op_tick {
-                    Tick::Tick1 => {
-                        // Standard first tick reads current PC value which normally
-                        // is the opcode but we discard.
-                        self.ram.borrow().read(self.pc.0);
-                        self.pc += 1;
-
-                        // Reset our other internal state
-
-                        // If we were halted before, clear that out.
-                        self.halt_opcode = 0x00;
-                        self.halt_pc = 0x0000;
-
-                        // The stack ends up at 0xFD which implies it gets set to 0x00 now
-                        // as we pull 3 bytes off the stack in the end.
-                        self.s = Wrapping(0x00);
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick2 => {
-                        // Read another throw away value which is normally the opval but
-                        // discarded as well.
-                        self.ram.borrow().read(self.pc.0);
-                        self.pc += 1;
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick3 | Tick::Tick4 => {
-                        // Tick3: Simulate pushing P onto stack but reset holds R/W high so we don't write.
-                        // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
-                        // These reads go nowhere (technically they end up in internal regs but since that's
-                        // not visible externally, who cares?).
-                        let addr: u16 = STACK_START + u16::from(self.s.0);
-                        self.ram.borrow().read(addr);
-                        self.s -= 1;
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick5 => {
-                        // Final write to stack (PC high) but actual read due to being in reset.
-                        let addr: u16 = STACK_START + u16::from(self.s.0);
-                        self.ram.borrow().read(addr);
-                        self.s -= 1;
-
-                        // Disable interrupts and make sure decimal is off
-                        self.p |= P_INTERRUPT;
-                        self.p &= !P_DECIMAL;
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick6 => {
-                        // Load PCL from reset vector
-                        self.op_val = self.ram.borrow().read(RESET_VECTOR);
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick7 => {
-                        // Load PCH from reset vector and go back into normal operations.
-                        self.pc = Wrapping(
-                            u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
-                                | u16::from(self.op_val),
-                        );
-                        self.reset_tick = Tick::Reset;
-                        self.op_tick = Tick::Reset;
-                        self.state = State::Running;
-                        Ok(OpState::Done)
-                    }
-                    // Technically both this and the reset_tick one below are impossible
-                    // sans bugs here as tick() won't run while we're in reset and it's the only other
-                    // way to modify the sequence.
-                    _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
-                }
-            }
-            _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
-        }
-    }
-
-    /// ram returns a reference to the Memory implementation.
-    fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
-        self.ram.clone()
-    }
-
-    // pc returns the current PC value.
-    fn pc(&self) -> u16 {
-        self.pc.0
-    }
-    // pc_muts sets PC to the given address.
-    fn pc_mut(&mut self, new: u16) {
-        self.pc = Wrapping(new);
-    }
+    cpu_impl!();
+    cpu_cmos_ricoh_power_reset!();
 }
 
-// CMOS has variations in ops/power/reset so need to direct implement vs the macro.
+// CMOS has variations in ops and power/reset so need to direct implement ops
+// and use the macros for everything else.
 impl<'a> CPU<'a> for CPU65C02<'a> {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
@@ -4974,214 +4939,8 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
         unsafe { *cmos_opcodes_values().get_unchecked(usize::from(op)) }
     }
 
-    /// Use this to enable or disable state based debugging dynamically.
-    fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
-        self.debug = d;
-    }
-
-    /// debug will emit a filled in value when called. If called from `tick` this
-    /// will only happen at the start of an opcode.
-    /// If RDY is asserted it will simply repeat the previous state if at Tick1.
-    fn debug(&self) {
-        if let Some(d) = self.debug {
-            let (ref_state, full) = d();
-            let mut state = ref_state.borrow_mut();
-            state.state = self.state;
-            state.a = self.a.0;
-            state.x = self.x.0;
-            state.y = self.y.0;
-            state.s = self.s.0;
-            state.p = self.p;
-            state.pc = self.pc.0;
-            state.clocks = self.clocks;
-            state.op_val = self.op_val;
-            state.op_addr = self.op_addr;
-            state.op_tick = self.op_tick;
-
-            let ram = self.ram.borrow();
-            if full {
-                // Do a full copy. This is expensive for every instruction.
-                ram.ram(&mut state.ram);
-            } else {
-                // We don't need to memcpy 64k. We just need
-                // the 3 possible instructions bytes at PC.
-                state.ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
-                // These could wrap around so make sure we don't go out of range.
-                let pc1 = (self.pc + Wrapping(1)).0;
-                state.ram[usize::from(pc1)] = ram.read(pc1);
-                let pc2 = (self.pc + Wrapping(2)).0;
-                state.ram[usize::from(pc2)] = ram.read(pc2);
-            }
-        }
-    }
-
-    /// `power_on` will reset the CPU to power on state which isn't well defined.
-    /// Registers are random and stack is at random (though visual 6502 claims it's 0xFD
-    /// due to a push P/PC in reset which gets run at power on).
-    /// P is cleared with interrupts disabled and decimal mode random (for NMOS versions).
-    /// The starting PC value is loaded from the reset vector.
-    ///
-    /// # Errors
-    /// If reset has any issues an error will be returned.
-    fn power_on(&mut self) -> Result<()> {
-        if self.state != State::Off {
-            return Err(eyre!("cannot power on except from an off state"));
-        }
-
-        let mut rng = rand::thread_rng();
-
-        // This is always set and clears the rest.
-        // This includes D which is always off on CMOS.
-        self.p = P_S1;
-
-        // Randomize register contents
-        self.a = rng.gen();
-        self.x = rng.gen();
-        self.y = rng.gen();
-        self.s = rng.gen();
-
-        self.state = State::On;
-
-        // Use reset to get everything else done.
-        loop {
-            match self.reset() {
-                Ok(OpState::Done) => break,
-                Ok(OpState::Processing) => continue,
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(())
-    }
-
-    /// reset is similar to `power_on` except the main registers are not touched. The stack reset to 0x00
-    /// and then moved 3 bytes as if PC/P have been pushed though R/W is only set to read so nothing
-    /// changes. Flags are not disturbed except for interrupts being disabled
-    /// and the PC is loaded from the reset vector.
-    /// There are 2 cycles of "setup" before the same sequence as BRK happens (internally it forces BRK
-    /// into the IR). It holds the R/W line high so no writes happen but otherwise the sequence is the same.
-    /// Visual 6502 simulation shows this all in detail.
-    /// This takes 7 cycles once triggered (same as interrupts).
-    /// Will return true when reset is complete and errors if any occur.
-    ///
-    /// # Errors
-    /// Internal problems (getting into the wrong state) can result in errors.
-    fn reset(&mut self) -> Result<OpState> {
-        if self.state == State::Off {
-            return Err(eyre!("power_on not called before calling reset!"));
-        }
-
-        // If we haven't started a reset sequence start it now.
-        if self.state != State::Reset {
-            self.state = State::Reset;
-            self.op_tick = Tick::Reset;
-            self.reset_tick = Tick::Tick1;
-        }
-        self.op_tick = self.op_tick.next();
-        self.debug();
-        self.clocks += 1;
-
-        match self.reset_tick {
-            Tick::Tick1 | Tick::Tick2 => {
-                // Burn off 2 clocks internally to reset before we start processing.
-                // Technically this runs the next 2 sequences of the current opcode.
-                // We don't bother emulating that and instead just reread the
-                // current PC
-                _ = self.ram.borrow().read(self.pc.0);
-
-                self.reset_tick = self.reset_tick.next();
-
-                // Leave op_tick in reset mode so once we're done here it'll match below
-                // as Tick1.
-                self.op_tick = Tick::Reset;
-
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                match self.op_tick {
-                    Tick::Tick1 => {
-                        // Standard first tick reads current PC value which normally
-                        // is the opcode but we discard.
-                        self.ram.borrow().read(self.pc.0);
-                        self.pc += 1;
-
-                        // Reset our other internal state
-
-                        // If we were halted before, clear that out.
-                        self.halt_opcode = 0x00;
-                        self.halt_pc = 0x0000;
-
-                        // The stack ends up at 0xFD which implies it gets set to 0x00 now
-                        // as we pull 3 bytes off the stack in the end.
-                        self.s = Wrapping(0x00);
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick2 => {
-                        // Read another throw away value which is normally the opval but
-                        // discarded as well.
-                        self.ram.borrow().read(self.pc.0);
-                        self.pc += 1;
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick3 | Tick::Tick4 => {
-                        // Tick3: Simulate pushing P onto stack but reset holds R/W high so we don't write.
-                        // Tick4: Simulate writing low byte of PC onto stack. Same rules as Tick3.
-                        // These reads go nowhere (technically they end up in internal regs but since that's
-                        // not visible externally, who cares?).
-                        let addr: u16 = STACK_START + u16::from(self.s.0);
-                        self.ram.borrow().read(addr);
-                        self.s -= 1;
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick5 => {
-                        // Final write to stack (PC high) but actual read due to being in reset.
-                        let addr: u16 = STACK_START + u16::from(self.s.0);
-                        self.ram.borrow().read(addr);
-                        self.s -= 1;
-
-                        // Disable interrupts and make sure decimal is off
-                        self.p |= P_INTERRUPT;
-                        self.p &= !P_DECIMAL;
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick6 => {
-                        // Load PCL from reset vector
-                        self.op_val = self.ram.borrow().read(RESET_VECTOR);
-                        Ok(OpState::Processing)
-                    }
-                    Tick::Tick7 => {
-                        // Load PCH from reset vector and go back into normal operations.
-                        self.pc = Wrapping(
-                            u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
-                                | u16::from(self.op_val),
-                        );
-                        self.reset_tick = Tick::Reset;
-                        self.op_tick = Tick::Reset;
-                        self.state = State::Running;
-                        Ok(OpState::Done)
-                    }
-                    // Technically both this and the reset_tick one below are impossible
-                    // sans bugs here as tick() won't run while we're in reset and it's the only other
-                    // way to modify the sequence.
-                    _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
-                }
-            }
-            _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
-        }
-    }
-
-    /// ram returns a reference to the Memory implementation.
-    fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
-        self.ram.clone()
-    }
-
-    /// pc returns the current PC value.
-    fn pc(&self) -> u16 {
-        self.pc.0
-    }
-    /// `pc_mut` sets PC to the given address.
-    fn pc_mut(&mut self, new: u16) {
-        self.pc = Wrapping(new);
-    }
+    cpu_impl!();
+    cpu_cmos_ricoh_power_reset!();
 }
 
 macro_rules! chip_impl_nmos {
