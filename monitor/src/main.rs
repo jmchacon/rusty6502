@@ -13,7 +13,7 @@ use strum_macros::{Display, EnumString};
 
 mod commands;
 
-use commands::{Command, CommandResponse, Location, LocationRange, Stop, StopReason, Val};
+use commands::{Command, CommandResponse, Location, LocationRange, Stop, StopReason, Val, PC};
 
 /// monitor will start a 65xx of the given chip and begin a blank memory session.
 ///
@@ -32,9 +32,13 @@ struct Args {
     filename: Option<String>,
 
     #[arg(
+        long,
         help = "Offset into RAM to start loading data. All other RAM will be zero'd out. Ignored for PRG files."
     )]
     offset: Option<u16>,
+
+    #[arg(long, help = "Starting PC value after loading and RESET has been run.")]
+    start: Option<u16>,
 }
 
 // Type defines the various implementations of the 6502 available.
@@ -69,32 +73,43 @@ fn main() -> Result<()> {
 
     thread::spawn(move || cpu_loop(args.cpu_type, &cmdrx, &resptx));
 
-    if let Some(file) = args.filename {
-        if let Some(offset) = args.offset {
-            cmdtx.send(Command::Load(file, Some(Location { addr: offset })))?;
-        } else {
-            cmdtx.send(Command::Load(file, None))?;
-        }
-        // Grab the response check for receive error then decode it to get a load error.
-        // TODO: Handle this pretty, not via panic.
-        resprx.recv()??;
-    }
-    main_loop(&cmdtx, &resprx)?;
+    main_loop(&cmdtx, &resprx, &args)?;
     Ok(())
 }
 
 #[allow(clippy::too_many_lines)]
-fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Result<()> {
+fn main_loop(
+    tx: &Sender<Command>,
+    rx: &Receiver<Result<CommandResponse>>,
+    args: &Args,
+) -> Result<()> {
     let (stdintx, stdinrx) = channel();
-    thread::spawn(move || loop {
-        let mut buffer = String::new();
-        #[allow(clippy::unwrap_used)]
-        io::stdin().read_line(&mut buffer).unwrap();
-        #[allow(clippy::unwrap_used)]
-        stdintx.send(buffer).unwrap();
+    let mut load = String::new();
+    if let Some(file) = &args.filename {
+        let loc = args.offset.unwrap_or_default();
+        let pc = args.start.unwrap_or_default();
+        load = format!("L {file} {loc} {pc}");
+    }
+    thread::spawn(move || {
+        // One time initial load handling by simulating it typed in.
+        // Much simpler than replicating load logic.
+        if !load.is_empty() {
+            #[allow(clippy::unwrap_used)]
+            stdintx.send(load).unwrap();
+        }
+        loop {
+            let mut buffer = String::new();
+            #[allow(clippy::unwrap_used)]
+            io::stdin().read_line(&mut buffer).unwrap();
+            #[allow(clippy::unwrap_used)]
+            stdintx.send(buffer).unwrap();
+        }
     });
     let mut running = false;
-    print!("> ");
+    // Only print if we didn't load
+    if args.filename.is_none() {
+        print!("> ");
+    }
     #[allow(clippy::unwrap_used)]
     io::stdout().flush().unwrap();
 
@@ -122,12 +137,10 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             println!(
                                 "R <addr> - Read the given memory location and return its value"
                             );
+                            println!("RR <addr> <len> - Read starting at the given location for len times.");
+                            println!("                  NOTE: When printing this will show a memory dump but the only");
                             println!(
-                            "RR <addr> <len> - Read starting at the given location for len times."
-                        );
-                            println!("                - NOTE: When printing this will show a memory dump but the only");
-                            println!(
-                                "                -       defined values are from the range given"
+                                "                        defined values are from the range given"
                             );
                             println!("W <addr> <len> - Write the value to the addr given");
                             println!("WR <addr> <len> <val> - Write the value to the range of addresses given");
@@ -139,7 +152,9 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             println!("WP <addr> - Set a watchpoint on the given memory location");
                             println!("WPL - List all watchpoints");
                             println!("DW <num> - Delete the given watchpoint");
-                            println!("L <path> [<start>] - Load a binary image and optionally reset PC to the start addr");
+                            println!("L <path> [<start> [<pc>]] - Load a binary image and optionally start loading at the given");
+                            println!("                            address and optionally reset PC to the start addr");
+                            println!("                            NOTE: Load implies a RESET sequence will be run as well");
                             println!("BIN <path> - Dump a memory image of RAM to the given path");
                             println!("PC <addr> - Set the PC to the addr");
                             println!("RESET - Run a reset sequence on the CPU");
@@ -158,7 +173,7 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             #[allow(clippy::unwrap_used)]
                             let r = rx.recv().unwrap();
                             match r {
-                                Ok(CommandResponse::Stop(st)) => print_state(&st),
+                                Ok(CommandResponse::Stop(st)) => print_state(&st, tx, rx),
                                 Err(e) => println!("Stop error - {e}"),
                                 _ => panic!("Invalid return from Stop - {r:?}"),
                             }
@@ -236,7 +251,7 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             #[allow(clippy::unwrap_used)]
                             let r = rx.recv().unwrap();
                             match r {
-                                Ok(CommandResponse::Step(st)) => print_state(&st),
+                                Ok(CommandResponse::Step(st)) => print_state(&st, tx, rx),
                                 Err(e) => println!("Step error - {e}"),
                                 _ => panic!("Invalid return from Step - {r:?}"),
                             }
@@ -247,7 +262,7 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             #[allow(clippy::unwrap_used)]
                             let r = rx.recv().unwrap();
                             match r {
-                                Ok(CommandResponse::Tick(st)) => print_state(&st),
+                                Ok(CommandResponse::Tick(st)) => print_state(&st, tx, rx),
                                 Err(e) => println!("Tick error - {e}"),
                                 _ => panic!("Invalid return from Tick - {r:?}"),
                             }
@@ -401,10 +416,14 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             #[allow(clippy::unwrap_used)]
                             let r = rx.recv().unwrap();
                             match r {
-                                Ok(CommandResponse::Cpu(st)) => print_state(&Stop {
-                                    state: st,
-                                    reason: StopReason::None,
-                                }),
+                                Ok(CommandResponse::Cpu(st)) => print_state(
+                                    &Stop {
+                                        state: st,
+                                        reason: StopReason::None,
+                                    },
+                                    tx,
+                                    rx,
+                                ),
                                 Err(e) => println!("Cpu error - {e}"),
                                 _ => panic!("Invalid return from Cpu - {r:?}"),
                             }
@@ -549,28 +568,48 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             }
                         }
                         "L" => {
-                            if parts.len() != 2 && parts.len() != 3 {
-                                println!("Error - Load must include a filename and optionally load location - L <path to file> [location]");
+                            if parts.len() < 2 || parts.len() > 4 {
+                                println!("Error - Load must include a filename and optionally load location with optional start - L <path to file> [location [start]]");
                                 continue;
                             }
                             let file = String::from(parts[1]);
-                            let mut loc = None;
-                            if parts.len() == 3 {
+                            let loc = if parts.len() == 3 {
                                 let addr = match parse_u16(parts[2]) {
                                     Ok(addr) => addr,
                                     Err(e) => {
-                                        println!("Error - parse error on len: {e}");
+                                        println!("Error - parse error on location: {e}");
                                         continue;
                                     }
                                 };
-                                loc = Some(Location { addr });
-                            }
+                                Some(Location { addr })
+                            } else {
+                                None
+                            };
+                            let start = if parts.len() == 4 {
+                                let addr = match parse_u16(parts[3]) {
+                                    Ok(addr) => addr,
+                                    Err(e) => {
+                                        println!("Error - parse error on start: {e}");
+                                        continue;
+                                    }
+                                };
+                                Some(PC { addr })
+                            } else {
+                                None
+                            };
                             #[allow(clippy::unwrap_used)]
-                            tx.send(Command::Load(file, loc)).unwrap();
+                            tx.send(Command::Load(file, loc, start)).unwrap();
                             #[allow(clippy::unwrap_used)]
                             let r = rx.recv().unwrap();
                             match r {
-                                Ok(CommandResponse::Load) => {}
+                                Ok(CommandResponse::Load(st)) => print_state(
+                                    &Stop {
+                                        state: st,
+                                        reason: StopReason::None,
+                                    },
+                                    tx,
+                                    rx,
+                                ),
                                 Err(e) => println!("Load error - {e}"),
                                 _ => panic!("Invalid return from Load - {r:?}"),
                             }
@@ -610,10 +649,14 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             #[allow(clippy::unwrap_used)]
                             let r = rx.recv().unwrap();
                             match r {
-                                Ok(CommandResponse::PC(st)) => print_state(&Stop {
-                                    state: st,
-                                    reason: StopReason::None,
-                                }),
+                                Ok(CommandResponse::PC(st)) => print_state(
+                                    &Stop {
+                                        state: st,
+                                        reason: StopReason::None,
+                                    },
+                                    tx,
+                                    rx,
+                                ),
                                 Err(e) => println!("PC error - {e}"),
                                 _ => panic!("Invalid return from PC - {r:?}"),
                             }
@@ -624,10 +667,14 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
                             #[allow(clippy::unwrap_used)]
                             let r = rx.recv().unwrap();
                             match r {
-                                Ok(CommandResponse::Reset(st)) => print_state(&Stop {
-                                    state: st,
-                                    reason: StopReason::None,
-                                }),
+                                Ok(CommandResponse::Reset(st)) => print_state(
+                                    &Stop {
+                                        state: st,
+                                        reason: StopReason::None,
+                                    },
+                                    tx,
+                                    rx,
+                                ),
                                 Err(e) => println!("Reset error - {e}"),
                                 _ => panic!("Invalid return from Reset - {r:?}"),
                             }
@@ -651,7 +698,14 @@ fn main_loop(tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) -> Re
             match rx.try_recv() {
                 Ok(s) => match s {
                     Ok(ret) => match ret {
-                        CommandResponse::Stop(st) => print_state(&st),
+                        CommandResponse::Stop(st) => {
+                            running = false;
+                            println!();
+                            print_state(&st, tx, rx);
+                            print!("> ");
+                            #[allow(clippy::unwrap_used)]
+                            io::stdout().flush().unwrap();
+                        }
                         _ => panic!("invalid response from run: {ret:?}"),
                     },
                     Err(e) => println!("Error from Run - {e}"),
@@ -705,17 +759,27 @@ fn parse_u8(val: &str) -> Result<u8> {
     }
 }
 
-fn print_state(st: &Stop) {
+fn print_state(st: &Stop, tx: &Sender<Command>, rx: &Receiver<Result<CommandResponse>>) {
     // Different from just using Display for CPUState since we don't want the
     // memory dump and also clocks aren't as important.
-    if let StopReason::Break(addr) = st.reason {
-        println!("Breakpoint at {addr:04X}");
+    if let StopReason::Break(addr) = &st.reason {
+        println!("Breakpoint at {:04X}", addr.addr);
     }
-    if let StopReason::Watch(addr) = st.reason {
+    if let StopReason::Watch(pc, addr) = &st.reason {
         println!(
-            "Watchpoint triggered for addr {addr:04X} at {:04X}",
-            st.state.pc
+            "Watchpoint triggered for addr {:04X} at {:04X}",
+            addr.addr, pc.addr
         );
+        #[allow(clippy::unwrap_used)]
+        tx.send(Command::Disassemble(Location { addr: pc.addr }))
+            .unwrap();
+        #[allow(clippy::unwrap_used)]
+        let r = rx.recv().unwrap();
+        match r {
+            Ok(CommandResponse::Disassemble(d)) => println!("{d}"),
+            Err(e) => println!("Disassemble error - {e}"),
+            _ => panic!("Invalid return from Disassemble - {r:?}"),
+        }
     }
     println!(
             "{:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}",
@@ -795,6 +859,7 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                 // If we have watchpoints get a memory snapshot.
                 cpu.ram().borrow().ram(&mut ram);
             }
+            let oldpc = cpu.pc();
             let r = step(cpu);
             if let Err(e) = r {
                 #[allow(clippy::unwrap_used)]
@@ -807,7 +872,7 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
             let mut reason = StopReason::Stop;
             for b in &breakpoints {
                 if b.addr == cpu.pc() {
-                    reason = StopReason::Break(b.addr);
+                    reason = StopReason::Break(Location { addr: b.addr });
                 }
             }
             if !watchpoints.is_empty() {
@@ -815,7 +880,7 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                 let cr = cr.borrow();
                 for w in &watchpoints {
                     if cr.read(w.addr) != ram[usize::from(w.addr)] {
-                        reason = StopReason::Watch(w.addr);
+                        reason = StopReason::Watch(PC { addr: oldpc }, Location { addr: w.addr });
                         break;
                     }
                 }
@@ -925,6 +990,7 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                     // If we have watchpoints get a memory snapshot.
                     cpu.ram().borrow().ram(&mut ram);
                 }
+                let oldpc = cpu.pc();
                 let r = step(cpu);
                 if let Err(e) = r {
                     #[allow(clippy::unwrap_used)]
@@ -936,7 +1002,7 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                 let mut reason = StopReason::Step;
                 for b in &breakpoints {
                     if b.addr == cpu.pc() {
-                        reason = StopReason::Break(b.addr);
+                        reason = StopReason::Break(Location { addr: b.addr });
                     }
                 }
                 if !watchpoints.is_empty() {
@@ -944,7 +1010,8 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                     let cr = cr.borrow();
                     for w in &watchpoints {
                         if cr.read(w.addr) != ram[usize::from(w.addr)] {
-                            reason = StopReason::Watch(w.addr);
+                            reason =
+                                StopReason::Watch(PC { addr: oldpc }, Location { addr: w.addr });
                             break;
                         }
                     }
@@ -967,6 +1034,7 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                     // If we have watchpoints get a memory snapshot.
                     cpu.ram().borrow().ram(&mut ram);
                 }
+                let oldpc = cpu.pc();
                 let r = cpu.tick();
                 if let Err(e) = r {
                     #[allow(clippy::unwrap_used)]
@@ -985,7 +1053,7 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                 let mut reason = StopReason::Tick;
                 for b in &breakpoints {
                     if b.addr == cpu.pc() {
-                        reason = StopReason::Break(b.addr);
+                        reason = StopReason::Break(Location { addr: b.addr });
                     }
                 }
                 if !watchpoints.is_empty() {
@@ -993,7 +1061,8 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                     let cr = cr.borrow();
                     for w in &watchpoints {
                         if cr.read(w.addr) != ram[usize::from(w.addr)] {
-                            reason = StopReason::Watch(w.addr);
+                            reason =
+                                StopReason::Watch(PC { addr: oldpc }, Location { addr: w.addr });
                             break;
                         }
                     }
@@ -1092,28 +1161,56 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                 #[allow(clippy::unwrap_used)]
                 tx.send(Ok(CommandResponse::DeleteWatchpoint)).unwrap();
             }
-            Command::Load(file, start) => {
-                let start = if let Some(s) = start {
-                    s
+            Command::Load(file, loc, start) => {
+                let loc = if let Some(loc) = loc {
+                    loc
                 } else {
-                    Location { addr: 0x0000 }
+                    Location { addr: 0x000 }
                 };
+
                 let path = Path::new(&file);
                 match read(path) {
                     Ok(b) => {
-                        if b.len() > MAX_SIZE || (usize::from(start.addr) + b.len()) > MAX_SIZE {
+                        if b.len() > MAX_SIZE || (usize::from(loc.addr) + b.len()) > MAX_SIZE {
                             #[allow(clippy::unwrap_used)]
                             tx.send(Err(eyre!(
                                 "file too large {} at offset {}",
                                 b.len(),
-                                start.addr
+                                loc.addr
                             )))
                             .unwrap();
                             continue;
                         }
                         for (addr, b) in b.iter().enumerate() {
                             #[allow(clippy::cast_possible_truncation)]
-                            cpu.ram().borrow_mut().write(start.addr + addr as u16, *b);
+                            cpu.ram().borrow_mut().write(loc.addr + addr as u16, *b);
+                        }
+                        if !is_init {
+                            is_init = true;
+                            #[allow(clippy::unwrap_used)]
+                            cpu.power_on().unwrap();
+                        }
+                        loop {
+                            match cpu.reset() {
+                                Ok(OpState::Done) => {
+                                    if let Some(start) = start {
+                                        cpu.pc_mut(start.addr);
+                                    }
+                                    cpu.debug();
+                                    (d.state.borrow_mut().dis, _) =
+                                        cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
+                                    #[allow(clippy::unwrap_used)]
+                                    tx.send(Ok(CommandResponse::Load(d.state.borrow().clone())))
+                                        .unwrap();
+                                    break;
+                                }
+                                Ok(OpState::Processing) => continue,
+                                Err(e) => {
+                                    #[allow(clippy::unwrap_used)]
+                                    tx.send(Err(eyre!("reset error: {e}"))).unwrap();
+                                    break;
+                                }
+                            }
                         }
                     }
                     Err(e) => {
@@ -1122,9 +1219,6 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                         continue;
                     }
                 }
-                #[allow(clippy::unwrap_used)]
-                tx.send(Ok(CommandResponse::Load)).unwrap();
-                continue;
             }
             Command::Dump(file) => {
                 let mut r = [0; MAX_SIZE];
@@ -1150,25 +1244,32 @@ fn cpu_loop(ty: Type, rx: &Receiver<Command>, tx: &Sender<Result<CommandResponse
                 tx.send(Ok(CommandResponse::PC(d.state.borrow().clone())))
                     .unwrap();
             }
-            Command::Reset => loop {
-                match cpu.reset() {
-                    Ok(OpState::Done) => {
-                        cpu.debug();
-                        (d.state.borrow_mut().dis, _) =
-                            cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                        #[allow(clippy::unwrap_used)]
-                        tx.send(Ok(CommandResponse::Reset(d.state.borrow().clone())))
-                            .unwrap();
-                        break;
-                    }
-                    Ok(OpState::Processing) => continue,
-                    Err(e) => {
-                        #[allow(clippy::unwrap_used)]
-                        tx.send(Err(eyre!("reset error: {e}"))).unwrap();
-                        break;
+            Command::Reset => {
+                if !is_init {
+                    is_init = true;
+                    #[allow(clippy::unwrap_used)]
+                    cpu.power_on().unwrap();
+                }
+                loop {
+                    match cpu.reset() {
+                        Ok(OpState::Done) => {
+                            cpu.debug();
+                            (d.state.borrow_mut().dis, _) =
+                                cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
+                            #[allow(clippy::unwrap_used)]
+                            tx.send(Ok(CommandResponse::Reset(d.state.borrow().clone())))
+                                .unwrap();
+                            break;
+                        }
+                        Ok(OpState::Processing) => continue,
+                        Err(e) => {
+                            #[allow(clippy::unwrap_used)]
+                            tx.send(Err(eyre!("reset error: {e}"))).unwrap();
+                            break;
+                        }
                     }
                 }
-            },
+            }
         }
     }
 }

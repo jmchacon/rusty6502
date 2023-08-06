@@ -20,15 +20,20 @@ pub(crate) enum Command {
     Watch(Location),
     WatchList,
     DeleteWatchpoint(usize),
-    Load(String, Option<Location>),
+    Load(String, Option<Location>, Option<PC>),
     Dump(String),
     PC(Location),
     Reset,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Location {
     pub(crate) addr: u16,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PC {
+    pub addr: u16,
 }
 
 #[derive(Debug)]
@@ -46,8 +51,8 @@ pub(crate) struct Val {
 pub(crate) enum StopReason {
     Step,
     Tick,
-    Break(u16),
-    Watch(u16),
+    Break(Location),
+    Watch(PC, Location),
     Stop,
     None,
 }
@@ -81,7 +86,7 @@ pub(crate) enum CommandResponse {
     Watch,
     WatchList(Vec<Location>),
     DeleteWatchpoint,
-    Load,
+    Load(CPUState),
     Dump,
     PC(CPUState),
     Reset(CPUState),
