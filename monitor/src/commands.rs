@@ -1,7 +1,7 @@
 use rusty6502::prelude::*;
 
 #[derive(Debug)]
-pub(crate) enum Command {
+pub enum Command {
     Run,
     Stop,
     Break(Location),
@@ -27,8 +27,8 @@ pub(crate) enum Command {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Location {
-    pub(crate) addr: u16,
+pub struct Location {
+    pub addr: u16,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -37,18 +37,19 @@ pub struct PC {
 }
 
 #[derive(Debug)]
-pub(crate) struct LocationRange {
-    pub(crate) addr: u16,
-    pub(crate) len: Option<u16>,
+pub struct LocationRange {
+    pub addr: u16,
+    pub len: Option<u16>,
 }
 
 #[derive(Debug)]
-pub(crate) struct Val {
-    pub(crate) val: u8,
+pub struct Val {
+    pub val: u8,
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum StopReason {
+pub enum StopReason {
+    //Run,
     Step,
     Tick,
     Break(Location),
@@ -58,17 +59,16 @@ pub(crate) enum StopReason {
 }
 
 #[derive(Debug)]
-pub(crate) struct Stop {
-    pub(crate) state: CPUState,
-    pub(crate) reason: StopReason,
+pub struct Stop {
+    pub state: CPUState,
+    pub reason: StopReason,
 }
 
 #[derive(Debug)]
-pub(crate) enum CommandResponse {
+pub enum CommandResponse {
     // NOTE: There is no Run response as this will never return
     //       directly from that state. It will either hit a break, watch,
     //       get a new Stop command or an error.
-    //Error(Result<()>),
     Stop(Stop),
     Break,
     BreakList(Vec<Location>),
