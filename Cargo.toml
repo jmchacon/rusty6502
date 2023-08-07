@@ -41,6 +41,7 @@ debug = true
 
 [workspace.dependencies]
 clap = { version = "~4.0", features = ["derive", "wrap_help"] }
+clap-num = "1.0.2"
 color-eyre = { version = "0.6.2", default-features = false }
 # Force bind proc-macro2 as the default most people are on (1.0.58) doesn't
 # work on nightly after 2023-06-27

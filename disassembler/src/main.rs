@@ -3,6 +3,7 @@
 
 use c64basic::{list, BASIC_LOAD_ADDR};
 use clap::Parser;
+use clap_num::maybe_hex;
 use color_eyre::eyre::Result;
 use rusty6502::prelude::*;
 use std::{ffi::OsStr, fs::read, num::Wrapping, path::Path};
@@ -22,12 +23,12 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 0,
+        default_value_t = 0,value_parser=maybe_hex::<u16>,
         help = "Offset into RAM to start loading data. All other RAM will be zero'd out. Ignored for PRG files."
     )]
     offset: u16,
 
-    #[arg(long, default_value_t = 0, help = "The PC value to start disassembly.")]
+    #[arg(long, default_value_t = 0, value_parser=maybe_hex::<u16>, help = "The PC value to start disassembly.")]
     start_pc: u16,
 }
 

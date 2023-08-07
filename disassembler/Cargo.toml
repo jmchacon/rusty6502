@@ -10,6 +10,7 @@ c64basic = { path = "../c64basic", version = "~0.1" }
 rusty6502 = { path = "../", version = "~0.1" }
 
 clap = { workspace = true }
+clap-num = { workspace = true }
 color-eyre = { workspace = true }
 proc-macro2 = { workspace = true }
 strum_macros = { workspace = true }
