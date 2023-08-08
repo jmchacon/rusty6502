@@ -10,7 +10,7 @@ use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::{io, thread};
+use std::{io, thread, time};
 use strum_macros::{Display, EnumString};
 
 mod commands;
@@ -64,6 +64,26 @@ enum Type {
     CMOS,
 }
 
+struct Runner {
+    h: std::thread::JoinHandle<Result<()>>,
+    n: String,
+    done: bool,
+}
+
+macro_rules! check_thread {
+    ($thread:ident) => {
+        if $thread.done {
+            let res = $thread.h.join();
+            if let Err(e) = res {
+                println!("ERROR from {} thread: {e:?}", $thread.n);
+                std::process::exit(1);
+            } else {
+                std::process::exit(0);
+            }
+        }
+    };
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args: Args = Args::parse();
@@ -73,7 +93,12 @@ fn main() -> Result<()> {
     // The response channel.
     let (cpucommandresptx, cpucommandresprx) = channel();
 
-    thread::spawn(move || cpu_loop(args.cpu_type, &cpucommandrx, &cpucommandresptx));
+    let c = thread::spawn(move || cpu_loop(args.cpu_type, &cpucommandrx, &cpucommandresptx));
+    let mut cpu = Runner {
+        h: c,
+        n: String::from("CPU"),
+        done: false,
+    };
 
     let (inputtx, inputrx) = channel();
     let mut load = String::new();
@@ -82,7 +107,7 @@ fn main() -> Result<()> {
         let pc = args.start.unwrap_or_default();
         load = format!("L {file} {loc} {pc}");
     }
-    thread::spawn(move || -> Result<()> {
+    let s = thread::spawn(move || -> Result<()> {
         // One time initial load handling by simulating it typed in.
         // Much simpler than replicating load logic.
         if !load.is_empty() {
@@ -94,9 +119,14 @@ fn main() -> Result<()> {
             inputtx.send(buffer)?;
         }
     });
+    let mut stdin = Runner {
+        h: s,
+        n: String::from("Stdin"),
+        done: false,
+    };
 
     let (outputtx, outputrx) = channel();
-    thread::spawn(move || -> Result<()> {
+    let o = thread::spawn(move || -> Result<()> {
         loop {
             let (out, prompt) = outputrx.recv()?;
             print!("{out}");
@@ -106,19 +136,43 @@ fn main() -> Result<()> {
             io::stdout().flush()?;
         }
     });
+    let mut stdout = Runner {
+        h: o,
+        n: String::from("Stdout"),
+        done: false,
+    };
 
-    main_loop(
-        &cpucommandtx,
-        &cpucommandresprx,
-        &inputrx,
-        &outputtx,
-        args.filename.is_some(),
-    )?;
-    std::process::exit(0);
+    let m = thread::spawn(move || -> Result<()> {
+        input_loop(
+            &cpucommandtx,
+            &cpucommandresprx,
+            &inputrx,
+            &outputtx,
+            args.filename.is_some(),
+        )
+    });
+    let mut main = Runner {
+        h: m,
+        n: String::from("main"),
+        done: false,
+    };
+
+    loop {
+        for r in [&mut main, &mut cpu, &mut stdin, &mut stdout] {
+            if r.h.is_finished() {
+                r.done = true;
+            }
+        }
+        check_thread!(main);
+        check_thread!(cpu);
+        check_thread!(stdin);
+        check_thread!(stdout);
+        thread::sleep(time::Duration::from_secs(1));
+    }
 }
 
 #[allow(clippy::too_many_lines)]
-fn main_loop(
+fn input_loop(
     cpucommandtx: &Sender<Command>,
     cpucommandresprx: &Receiver<Result<CommandResponse>>,
     inputtx: &Receiver<String>,
@@ -759,8 +813,10 @@ QUIT | Q - Exit the monitor
                             running = false;
                         }
                         _ => {
-                            outputtx
-                                .send((format!("ERROR: Invalid command - {}", parts[0]), false))?;
+                            outputtx.send((
+                                format!("ERROR: Invalid command - {}\n", parts[0]),
+                                false,
+                            ))?;
                         }
                     }
                 }
@@ -840,7 +896,7 @@ fn print_state(
     outputtx: &Sender<(String, bool)>,
 ) -> Result<()> {
     // Different from just using Display for CPUState since we don't want the
-    // memory dump and also clocks aren't as important.
+    // memory dump and slightly differeing order.
     if let StopReason::Break(addr) = &st.reason {
         outputtx.send((format!("Breakpoint at {:04X}\n", addr.addr), false))?;
     }
