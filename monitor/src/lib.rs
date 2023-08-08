@@ -1,52 +1,23 @@
-//! monitor implements a basic monitor program for running a 65xx device.
-use clap::Parser;
-use clap_num::maybe_hex;
+//! monitor implements a library for running a 65xx chip in a monitor and
+//! then interfacing to the outside world via input/output channels.
 use color_eyre::eyre::{eyre, Result};
 use rusty6502::prelude::*;
 use std::cell::RefCell;
 use std::fmt::Write as fmtWrite;
 use std::fs::{read, write};
-use std::io::Write;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::{io, thread, time};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use strum_macros::{Display, EnumString};
 
 mod commands;
 
 use commands::{Command, CommandResponse, Location, LocationRange, Stop, StopReason, Val, PC};
 
-/// monitor will start a 65xx of the given chip and begin a blank memory session.
-///
-/// It can take an optional memory image file (.bin generally) or a
-/// .prg file (c64 basic program which loads at 0x0801)
-/// and load it before turning over control.
-///
-/// If it's a c64 basic program the basic code will be interpreted and anything
-/// remaining after will be disassembled as assembly.
-#[derive(Parser)]
-#[command(author, version, about)]
-struct Args {
-    cpu_type: Type,
-
-    #[arg(help = "Filename containing binary image or PRG file")]
-    filename: Option<String>,
-
-    #[arg(
-        long, value_parser=maybe_hex::<u16>,
-        help = "Offset into RAM to start loading data. All other RAM will be zero'd out. Ignored for PRG files."
-    )]
-    offset: Option<u16>,
-
-    #[arg(long, value_parser=maybe_hex::<u16>, help = "Starting PC value after loading and RESET has been run.")]
-    start: Option<u16>,
-}
-
-// Type defines the various implementations of the 6502 available.
+/// Type defines the various implementations of the 6502 available.
 #[derive(Copy, Clone, Debug, Display, PartialEq, Eq, EnumString)]
 #[allow(clippy::upper_case_acronyms)]
-enum Type {
+pub enum Type {
     /// Basic NMOS 6502 including all undocumented opcodes.
     NMOS,
 
@@ -64,114 +35,21 @@ enum Type {
     CMOS,
 }
 
-struct Runner {
-    h: std::thread::JoinHandle<Result<()>>,
-    n: String,
-    done: bool,
-}
-
-macro_rules! check_thread {
-    ($thread:ident) => {
-        if $thread.done {
-            let res = $thread.h.join();
-            if let Err(e) = res {
-                println!("ERROR from {} thread: {e:?}", $thread.n);
-                std::process::exit(1);
-            } else {
-                std::process::exit(0);
-            }
-        }
-    };
-}
-
-fn main() -> Result<()> {
-    color_eyre::install()?;
-    let args: Args = Args::parse();
-
-    // The command channel.
-    let (cpucommandtx, cpucommandrx) = channel();
-    // The response channel.
-    let (cpucommandresptx, cpucommandresprx) = channel();
-    let c = thread::spawn(move || cpu_loop(args.cpu_type, &cpucommandrx, &cpucommandresptx));
-    let mut cpu = Runner {
-        h: c,
-        n: String::from("CPU"),
-        done: false,
-    };
-
-    let (inputtx, inputrx) = channel();
-    let mut load = String::new();
-    if let Some(file) = &args.filename {
-        let loc = args.offset.unwrap_or_default();
-        let pc = args.start.unwrap_or_default();
-        load = format!("L {file} {loc} {pc}");
-    }
-    let s = thread::spawn(move || -> Result<()> {
-        // One time initial load handling by simulating it typed in.
-        // Much simpler than replicating load logic.
-        if !load.is_empty() {
-            inputtx.send(load)?;
-        }
-        loop {
-            let mut buffer = String::new();
-            io::stdin().read_line(&mut buffer)?;
-            inputtx.send(buffer)?;
-        }
-    });
-    let mut stdin = Runner {
-        h: s,
-        n: String::from("Stdin"),
-        done: false,
-    };
-
-    let (outputtx, outputrx) = channel();
-    let o = thread::spawn(move || -> Result<()> {
-        loop {
-            let (out, prompt) = outputrx.recv()?;
-            print!("{out}");
-            if prompt {
-                print!("> ");
-            }
-            io::stdout().flush()?;
-        }
-    });
-    let mut stdout = Runner {
-        h: o,
-        n: String::from("Stdout"),
-        done: false,
-    };
-
-    let m = thread::spawn(move || -> Result<()> {
-        input_loop(
-            &cpucommandtx,
-            &cpucommandresprx,
-            &inputrx,
-            &outputtx,
-            args.filename.is_some(),
-        )
-    });
-    let mut main = Runner {
-        h: m,
-        n: String::from("main"),
-        done: false,
-    };
-
-    loop {
-        for r in [&mut main, &mut cpu, &mut stdin, &mut stdout] {
-            if r.h.is_finished() {
-                r.done = true;
-            }
-        }
-        check_thread!(main);
-        check_thread!(cpu);
-        check_thread!(stdin);
-        check_thread!(stdout);
-        thread::sleep(time::Duration::from_millis(100));
-    }
-}
-
+/// This function is the main input loop which expects a channel to receive
+/// commands over and a channel connecting to/from the CPU to send commands
+/// and receive responses.
+///
+/// NOTE: preload is set to true if the caller already executed a load
+///       instruction before starting this loop. This way the proper prompt is
+///       emitted.
+///
+/// # Errors
+/// Any premature close of the channels will result in an error.
+///
+/// # Panics
+/// Invalid state returns from the CPU will result in a panic.
 #[allow(clippy::too_many_lines)]
-fn input_loop(
+pub fn input_loop(
     cpucommandtx: &Sender<Command>,
     cpucommandresprx: &Receiver<Result<CommandResponse>>,
     inputtx: &Receiver<String>,
@@ -943,8 +821,19 @@ impl Debug {
     }
 }
 
+/// `cpu_loop` is the runner which accepts commands over the channel, instruments
+/// the CPU and then returns the response over the other channel.
+///
+/// NOTE: For most commands this is a command/response relationship except for
+///       RUN. Once that starts this will emit a `StopResponse` as either
+///       RUN/BREAK/WATCH with appropriate state for every instruction processed.
+///       This will continue until a BREAK or WATCH is hit or a new STOP command
+///       comes down the command channel.
+///
+/// # Errors
+/// Any premature close of the channels will result in an error.
 #[allow(clippy::similar_names, clippy::too_many_lines)]
-fn cpu_loop(
+pub fn cpu_loop(
     ty: Type,
     cpucommandrx: &Receiver<Command>,
     cpucommandresptx: &Sender<Result<CommandResponse>>,

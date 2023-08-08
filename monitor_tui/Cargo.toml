@@ -1,13 +1,12 @@
 [package]
-name = "monitor"
+name = "monitor_tui"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
-rusty6502 = { workspace = true }
-
+clap = { workspace = true }
+clap-num = { workspace = true }
 color-eyre = { workspace = true }
-strum_macros = { workspace = true }
-strum = { workspace = true }
+monitor = { workspace = true }

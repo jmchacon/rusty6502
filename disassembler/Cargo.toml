@@ -6,8 +6,8 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-c64basic = { path = "../c64basic", version = "~0.1" }
-rusty6502 = { path = "../", version = "~0.1" }
+c64basic = { workspace = true }
+rusty6502 = { workspace = true }
 
 clap = { workspace = true }
 clap-num = { workspace = true }
