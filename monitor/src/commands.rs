@@ -49,7 +49,7 @@ pub struct Val {
 
 #[derive(Debug, PartialEq)]
 pub enum StopReason {
-    //Run,
+    Run,
     Step,
     Tick,
     Break(Location),
@@ -66,9 +66,8 @@ pub struct Stop {
 
 #[derive(Debug)]
 pub enum CommandResponse {
-    // NOTE: There is no Run response as this will never return
-    //       directly from that state. It will either hit a break, watch,
-    //       get a new Stop command or an error.
+    // NOTE: There is no Run response as it uses Stop to indicate updates.
+    //       It will either hit a break, watch, get a new Stop command or an error.
     Stop(Stop),
     Break,
     BreakList(Vec<Location>),

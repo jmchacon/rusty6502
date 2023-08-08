@@ -167,7 +167,7 @@ fn main() -> Result<()> {
         check_thread!(cpu);
         check_thread!(stdin);
         check_thread!(stdout);
-        thread::sleep(time::Duration::from_secs(1));
+        thread::sleep(time::Duration::from_millis(100));
     }
 }
 
@@ -185,7 +185,7 @@ fn input_loop(
         outputtx.send((String::new(), true))?;
     }
 
-    let mut running = false;
+    let mut running = 0;
     loop {
         match inputtx.try_recv() {
             Ok(line) => {
@@ -240,7 +240,7 @@ QUIT | Q - Exit the monitor
                         "QUIT" | "Q" => return Ok(()),
                         "RUN" | "C" => {
                             cpucommandtx.send(Command::Run)?;
-                            running = true;
+                            running = 1;
                         }
                         "STOP" => {
                             cpucommandtx.send(Command::Stop)?;
@@ -252,7 +252,7 @@ QUIT | Q - Exit the monitor
                                 Err(e) => outputtx.send((format!("Stop error - {e}\n"), false))?,
                                 _ => panic!("Invalid return from Stop - {r:?}"),
                             }
-                            running = false;
+                            running = 0;
                         }
                         "B" => {
                             if parts.len() != 2 {
@@ -810,7 +810,7 @@ QUIT | Q - Exit the monitor
                                 Err(e) => outputtx.send((format!("Reset error - {e}\n"), false))?,
                                 _ => panic!("Invalid return from Reset - {r:?}"),
                             }
-                            running = false;
+                            running = 0;
                         }
                         _ => {
                             outputtx.send((
@@ -825,16 +825,27 @@ QUIT | Q - Exit the monitor
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => panic!("stdin died?"),
         }
+
         // Once it's running we have to juggle stdin vs possibly brk/watch happening.
-        if running {
+        if running > 0 {
             match cpucommandresprx.try_recv() {
                 Ok(s) => match s {
                     Ok(ret) => match ret {
                         CommandResponse::Stop(st) => {
-                            running = false;
-                            outputtx.send((String::new(), false))?;
-                            print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
-                            outputtx.send((String::new(), true))?;
+                            if st.reason == StopReason::Run {
+                                // First Run response emit a blank line to line up
+                                // vs the prompt.
+                                if running < 2 {
+                                    running += 1;
+                                    outputtx.send((String::from("\n"), false))?;
+                                }
+                                print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
+                            } else {
+                                running = 0;
+                                outputtx.send((String::new(), false))?;
+                                print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
+                                outputtx.send((String::new(), true))?;
+                            }
                         }
                         _ => panic!("invalid response from run: {ret:?}"),
                     },
@@ -917,7 +928,7 @@ fn print_state(
         }
     }
     outputtx.send((format!(
-            "{:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}\n",
+            "{:<24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}\n",
             st.state.dis, st.state.a, st.state.x, st.state.y, st.state.s, st.state.p, st.state.op_val, st.state.op_addr, st.state.op_tick, st.state.clocks), false))?;
     Ok(())
 }
@@ -1008,7 +1019,7 @@ fn cpu_loop(
 
             cpu.debug();
             (d.state.borrow_mut().dis, _) = cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-            let mut reason = StopReason::Stop;
+            let mut reason = StopReason::Run;
             for b in &breakpoints {
                 if b.addr == cpu.pc() {
                     reason = StopReason::Break(Location { addr: b.addr });
@@ -1024,14 +1035,14 @@ fn cpu_loop(
                     }
                 }
             }
-            if reason != StopReason::Stop {
-                let st = Stop {
-                    state: d.state.borrow().clone(),
-                    reason,
-                };
-                cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
+            if reason != StopReason::Run {
                 is_running = false;
             }
+            let st = Stop {
+                state: d.state.borrow().clone(),
+                reason,
+            };
+            cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
         }
 
         // Peek at the channel. If it's an error but empty and we're
@@ -1082,6 +1093,14 @@ fn cpu_loop(
                     cpu.power_on()?;
                 }
                 is_running = true;
+                cpu.debug();
+                (d.state.borrow_mut().dis, _) =
+                    cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
+                let st = Stop {
+                    state: d.state.borrow().clone(),
+                    reason: StopReason::Run,
+                };
+                cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
             }
             Command::Stop => {
                 is_running = false;
