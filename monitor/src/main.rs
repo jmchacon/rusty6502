@@ -92,7 +92,6 @@ fn main() -> Result<()> {
     let (cpucommandtx, cpucommandrx) = channel();
     // The response channel.
     let (cpucommandresptx, cpucommandresprx) = channel();
-
     let c = thread::spawn(move || cpu_loop(args.cpu_type, &cpucommandrx, &cpucommandresptx));
     let mut cpu = Runner {
         h: c,
@@ -909,12 +908,12 @@ fn print_state(
     // Different from just using Display for CPUState since we don't want the
     // memory dump and slightly differeing order.
     if let StopReason::Break(addr) = &st.reason {
-        outputtx.send((format!("Breakpoint at {:04X}\n", addr.addr), false))?;
+        outputtx.send((format!("\nBreakpoint at {:04X}\n", addr.addr), false))?;
     }
     if let StopReason::Watch(pc, addr) = &st.reason {
         outputtx.send((
             format!(
-                "Watchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})\n",
+                "\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})\n",
                 addr.addr, pc.addr, st.state.pc,
             ),
             false,
@@ -928,7 +927,7 @@ fn print_state(
         }
     }
     outputtx.send((format!(
-            "{:<24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}\n",
+            "{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}\n",
             st.state.dis, st.state.a, st.state.x, st.state.y, st.state.s, st.state.p, st.state.op_val, st.state.op_addr, st.state.op_tick, st.state.clocks), false))?;
     Ok(())
 }
