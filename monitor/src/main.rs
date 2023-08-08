@@ -942,7 +942,6 @@ impl Debug {
         (Rc::clone(&self.state), self.full)
     }
 }
-//cpucommandrx, &cpucommandresptx
 
 #[allow(clippy::similar_names, clippy::too_many_lines)]
 fn cpu_loop(
@@ -1077,12 +1076,7 @@ fn cpu_loop(
             }
             c
         } else {
-            let x = cpucommandrx.recv();
-            if x.is_err() {
-                return Err(eyre!("rx dropped: {x:?}"));
-            }
-            // SAFETY: We know this is Ok now
-            unsafe { x.unwrap_unchecked() }
+            cpucommandrx.recv()?
         };
 
         match c {
