@@ -1,7 +1,7 @@
 use crate::{
     AddressMode, CPUError, CPUInternal, CPUNmosInternal, CPURicoh, CPUState, ChipDef, Flags,
-    FlatRAM, InstructionMode, InterruptState, InterruptStyle, OpState, Opcode, Register, State,
-    Tick, Vectors, CPU, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
+    FlatRAM, InstructionMode, InterruptState, InterruptStyle, OpState, Opcode, Register, ResetTick,
+    State, Tick, Vectors, CPU, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
     P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
 use chip::Chip;
@@ -256,17 +256,8 @@ fn invalid_states() -> Result<()> {
 
     // Make sure the bad states in reset error.
     cpu.reset()?;
-    cpu.reset_tick = Tick::Tick5;
-    let ret = cpu.reset();
-    assert!(ret.is_err(), "didn't get reset error for tick5?");
-    #[allow(clippy::unwrap_used)]
-    let errs = ret.err().unwrap().to_string();
-    assert!(
-        errs.contains("invalid reset_tick"),
-        "wrong error for invalid reset_tick: {errs}"
-    );
 
-    cpu.reset_tick = Tick::Tick3;
+    cpu.reset_tick = ResetTick::Tick3;
     cpu.op_tick = Tick::Tick8;
     let ret = cpu.reset();
     assert!(ret.is_err(), "didn't get op_tick reset error?");

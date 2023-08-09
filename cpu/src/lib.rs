@@ -520,7 +520,7 @@ enum InstructionMode {
     Store,
 }
 
-/// Clock tick state during a given instruction/reset sequence.
+/// Clock tick state during a given instruction sequence.
 #[derive(Debug, Default, Display, Copy, Clone, PartialEq, EnumString)]
 pub enum Tick {
     /// The reset state. Used to start a new instruction assuming all
@@ -560,6 +560,26 @@ impl Tick {
             Tick::Tick5 => Tick::Tick6,
             Tick::Tick6 => Tick::Tick7,
             Tick::Tick7 | Tick::Tick8 => Tick::Tick8,
+        }
+    }
+}
+
+// Reset tick states
+#[derive(Copy, Clone, Display, PartialEq)]
+enum ResetTick {
+    /// Tick1 and 2 are burn off cycles.
+    Tick1,
+    /// 2nd burn off cycle
+    Tick2,
+    /// 3rd tick (when normal processing takes over)
+    Tick3,
+}
+
+impl ResetTick {
+    fn next(self) -> Self {
+        match self {
+            ResetTick::Tick1 => ResetTick::Tick2,
+            ResetTick::Tick2 | ResetTick::Tick3 => ResetTick::Tick3,
         }
     }
 }
@@ -4567,14 +4587,14 @@ macro_rules! cpu_nmos_power_reset {
             if self.state != State::Reset {
                 self.state = State::Reset;
                 self.op_tick = Tick::Reset;
-                self.reset_tick = Tick::Tick1;
+                self.reset_tick = ResetTick::Tick1;
             }
             self.op_tick = self.op_tick.next();
             self.debug();
             self.clocks += 1;
 
             match self.reset_tick {
-                Tick::Tick1 | Tick::Tick2 => {
+                ResetTick::Tick1 | ResetTick::Tick2 => {
                     // Burn off 2 clocks internally to reset before we start processing.
                     // Technically this runs the next 2 sequences of the current opcode.
                     // We don't bother emulating that and instead just reread the
@@ -4589,7 +4609,7 @@ macro_rules! cpu_nmos_power_reset {
 
                     Ok(OpState::Processing)
                 }
-                Tick::Tick3 => {
+                ResetTick::Tick3 => {
                     match self.op_tick {
                         Tick::Tick1 => {
                             // Standard first tick reads current PC value which normally
@@ -4654,7 +4674,7 @@ macro_rules! cpu_nmos_power_reset {
                                 u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
                                     | u16::from(self.op_val),
                             );
-                            self.reset_tick = Tick::Reset;
+                            self.reset_tick = ResetTick::Tick1;
                             self.op_tick = Tick::Reset;
                             self.state = State::Running;
                             Ok(OpState::Done)
@@ -4665,7 +4685,6 @@ macro_rules! cpu_nmos_power_reset {
                         _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
                     }
                 }
-                _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
             }
         }
     };
@@ -4804,14 +4823,14 @@ macro_rules! cpu_cmos_ricoh_power_reset {
             if self.state != State::Reset {
                 self.state = State::Reset;
                 self.op_tick = Tick::Reset;
-                self.reset_tick = Tick::Tick1;
+                self.reset_tick = ResetTick::Tick1;
             }
             self.op_tick = self.op_tick.next();
             self.debug();
             self.clocks += 1;
 
             match self.reset_tick {
-                Tick::Tick1 | Tick::Tick2 => {
+                ResetTick::Tick1 | ResetTick::Tick2 => {
                     // Burn off 2 clocks internally to reset before we start processing.
                     // Technically this runs the next 2 sequences of the current opcode.
                     // We don't bother emulating that and instead just reread the
@@ -4826,7 +4845,7 @@ macro_rules! cpu_cmos_ricoh_power_reset {
 
                     Ok(OpState::Processing)
                 }
-                Tick::Tick3 => {
+                ResetTick::Tick3 => {
                     match self.op_tick {
                         Tick::Tick1 => {
                             // Standard first tick reads current PC value which normally
@@ -4884,7 +4903,7 @@ macro_rules! cpu_cmos_ricoh_power_reset {
                                 u16::from(self.ram.borrow().read(RESET_VECTOR + 1)) << 8
                                     | u16::from(self.op_val),
                             );
-                            self.reset_tick = Tick::Reset;
+                            self.reset_tick = ResetTick::Tick1;
                             self.op_tick = Tick::Reset;
                             self.state = State::Running;
                             Ok(OpState::Done)
@@ -4895,7 +4914,6 @@ macro_rules! cpu_cmos_ricoh_power_reset {
                         _ => Err(eyre!("invalid op_tick in reset: {}", self.op_tick)),
                     }
                 }
-                _ => Err(eyre!("invalid reset_tick: {}", self.reset_tick)),
             }
         }
     };
@@ -5397,7 +5415,7 @@ macro_rules! cpu_new {
                 op_raw: 0x00,
                 op_val: 0x00,
                 op_tick: Tick::Reset,
-                reset_tick: Tick::Reset,
+                reset_tick: ResetTick::Tick1,
                 op_addr: 0x0000,
                 addr_done: OpState::Done,
                 halt_opcode: 0x00,
@@ -5454,7 +5472,7 @@ impl<'a> CPU6510<'a> {
             op_raw: 0x00,
             op_val: 0x00,
             op_tick: Tick::Reset,
-            reset_tick: Tick::Reset,
+            reset_tick: ResetTick::Tick1,
             op_addr: 0x0000,
             addr_done: OpState::Done,
             halt_opcode: 0x00,
