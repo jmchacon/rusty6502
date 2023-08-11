@@ -45,9 +45,7 @@ pub enum Type {
 ///
 /// # Errors
 /// Any premature close of the channels will result in an error.
-///
-/// # Panics
-/// Invalid state returns from the CPU will result in a panic.
+/// Additionally any invalid state transitions will result in an error.
 #[allow(clippy::too_many_lines)]
 pub fn input_loop(
     cpucommandtx: &Sender<Command>,
@@ -127,7 +125,7 @@ QUIT | Q - Exit the monitor
                                     print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
                                 }
                                 Err(e) => outputtx.send((format!("Stop error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Stop - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Stop - {r:?}")),
                             }
                             running = 0;
                         }
@@ -149,7 +147,9 @@ QUIT | Q - Exit the monitor
                                             outputtx
                                                 .send((format!("Break error - {e}\n"), false))?;
                                         }
-                                        _ => panic!("Invalid return from Break - {r:?}"),
+                                        _ => {
+                                            return Err(eyre!("Invalid return from Break - {r:?}"))
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -175,7 +175,7 @@ QUIT | Q - Exit the monitor
                                 Err(e) => {
                                     outputtx.send((format!("BreakList error - {e}\n"), false))?;
                                 }
-                                _ => panic!("Invalid return from BreakList - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from BreakList - {r:?}")),
                             }
                         }
                         "DB" => {
@@ -199,7 +199,9 @@ QUIT | Q - Exit the monitor
                                             false,
                                         ))?,
                                         _ => {
-                                            panic!("Invalid return from Delete Breakpoint - {r:?}")
+                                            return Err(eyre!(
+                                                "Invalid return from Delete Breakpoint - {r:?}"
+                                            ))
                                         }
                                     }
                                 }
@@ -219,7 +221,7 @@ QUIT | Q - Exit the monitor
                                     print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
                                 }
                                 Err(e) => outputtx.send((format!("Step error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Step - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Step - {r:?}")),
                             }
                         }
                         "T" => {
@@ -230,7 +232,7 @@ QUIT | Q - Exit the monitor
                                     print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
                                 }
                                 Err(e) => outputtx.send((format!("Tick error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Tick - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Tick - {r:?}")),
                             }
                         }
                         "R" => {
@@ -256,7 +258,7 @@ QUIT | Q - Exit the monitor
                                             outputtx
                                                 .send((format!("Read error - {e}\n"), false))?;
                                         }
-                                        _ => panic!("Invalid return from Read - {r:?}"),
+                                        _ => return Err(eyre!("Invalid return from Read - {r:?}")),
                                     }
                                 }
                                 Err(e) => {
@@ -309,7 +311,7 @@ QUIT | Q - Exit the monitor
                                 Err(e) => {
                                     outputtx.send((format!("Read Range error - {e}\n"), false))?;
                                 }
-                                _ => panic!("Invalid return from Read Range - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Read Range - {r:?}")),
                             }
                         }
                         "W" => {
@@ -345,7 +347,7 @@ QUIT | Q - Exit the monitor
                             match r {
                                 Ok(CommandResponse::Write) => {}
                                 Err(e) => outputtx.send((format!("Write error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Write - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Write - {r:?}")),
                             }
                         }
                         "WR" => {
@@ -396,7 +398,7 @@ QUIT | Q - Exit the monitor
                                 Err(e) => {
                                     outputtx.send((format!("Write Range error - {e}\n"), false))?;
                                 }
-                                _ => panic!("Invalid return from Write Range - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Write Range - {r:?}")),
                             }
                         }
                         "CPU" => {
@@ -413,7 +415,7 @@ QUIT | Q - Exit the monitor
                                     outputtx,
                                 )?,
                                 Err(e) => outputtx.send((format!("Cpu error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Cpu - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Cpu - {r:?}")),
                             }
                         }
                         "RAM" => {
@@ -424,7 +426,7 @@ QUIT | Q - Exit the monitor
                                     outputtx.send((format!("{}", &r as &dyn Memory), false))?;
                                 }
                                 Err(e) => outputtx.send((format!("Ram error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Ram - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Ram - {r:?}")),
                             }
                         }
                         "D" => {
@@ -447,7 +449,11 @@ QUIT | Q - Exit the monitor
                                         }
                                         Err(e) => outputtx
                                             .send((format!("Disassemble error - {e}\n"), false))?,
-                                        _ => panic!("Invalid return from Disassemble - {r:?}"),
+                                        _ => {
+                                            return Err(eyre!(
+                                                "Invalid return from Disassemble - {r:?}"
+                                            ))
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -496,7 +502,11 @@ QUIT | Q - Exit the monitor
                                 }
                                 Err(e) => outputtx
                                     .send((format!("Dissasemble Range error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Disassemble Range - {r:?}"),
+                                _ => {
+                                    return Err(eyre!(
+                                        "Invalid return from Disassemble Range - {r:?}"
+                                    ))
+                                }
                             }
                         }
                         "WP" => {
@@ -517,7 +527,9 @@ QUIT | Q - Exit the monitor
                                         Ok(CommandResponse::Watch) => {}
                                         Err(e) => outputtx
                                             .send((format!("Watch error - {e}\n"), false))?,
-                                        _ => panic!("Invalid return from Watch - {r:?}"),
+                                        _ => {
+                                            return Err(eyre!("Invalid return from Watch - {r:?}"))
+                                        }
                                     }
                                 }
                                 Err(e) => {
@@ -543,7 +555,7 @@ QUIT | Q - Exit the monitor
                                 Err(e) => {
                                     outputtx.send((format!("WatchList error - {e}\n"), false))?;
                                 }
-                                _ => panic!("Invalid return from WatchList - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from WatchList - {r:?}")),
                             }
                         }
                         "DW" => {
@@ -562,7 +574,9 @@ QUIT | Q - Exit the monitor
                                             false,
                                         ))?,
                                         _ => {
-                                            panic!("Invalid return from Delete Watchpoint - {r:?}")
+                                            return Err(eyre!(
+                                                "Invalid return from Delete Watchpoint - {r:?}"
+                                            ))
                                         }
                                     }
                                 }
@@ -620,7 +634,7 @@ QUIT | Q - Exit the monitor
                                     outputtx,
                                 )?,
                                 Err(e) => outputtx.send((format!("Load error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Load - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Load - {r:?}")),
                             }
                         }
                         "BIN" => {
@@ -634,7 +648,7 @@ QUIT | Q - Exit the monitor
                             match r {
                                 Ok(CommandResponse::Dump) => {}
                                 Err(e) => outputtx.send((format!("Dump error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Dump - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Dump - {r:?}")),
                             }
                         }
                         "PC" => {
@@ -668,7 +682,7 @@ QUIT | Q - Exit the monitor
                                     outputtx,
                                 )?,
                                 Err(e) => outputtx.send((format!("PC error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from PC - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from PC - {r:?}")),
                             }
                         }
                         "RESET" => {
@@ -685,7 +699,7 @@ QUIT | Q - Exit the monitor
                                     outputtx,
                                 )?,
                                 Err(e) => outputtx.send((format!("Reset error - {e}\n"), false))?,
-                                _ => panic!("Invalid return from Reset - {r:?}"),
+                                _ => return Err(eyre!("Invalid return from Reset - {r:?}")),
                             }
                             running = 0;
                         }
@@ -700,7 +714,7 @@ QUIT | Q - Exit the monitor
                 outputtx.send((String::new(), true))?;
             }
             Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => panic!("stdin died?"),
+            Err(TryRecvError::Disconnected) => return Err(eyre!("stdin died?")),
         }
 
         // Once it's running we have to juggle stdin vs possibly brk/watch happening.
@@ -724,12 +738,12 @@ QUIT | Q - Exit the monitor
                                 outputtx.send((String::new(), true))?;
                             }
                         }
-                        _ => panic!("invalid response from run: {ret:?}"),
+                        _ => return Err(eyre!("invalid response from run: {ret:?}")),
                     },
                     Err(e) => outputtx.send((format!("Error from Run - {e}"), true))?,
                 },
                 Err(TryRecvError::Empty) => {}
-                Err(TryRecvError::Disconnected) => panic!("Sender channel died"),
+                Err(TryRecvError::Disconnected) => return Err(eyre!("Sender channel died")),
             }
         }
     }
@@ -801,7 +815,7 @@ fn print_state(
         match r {
             Ok(CommandResponse::Disassemble(d)) => outputtx.send((format!("{d}\n"), false))?,
             Err(e) => outputtx.send((format!("Disassemble error - {e}\n"), false))?,
-            _ => panic!("Invalid return from Disassemble - {r:?}"),
+            _ => return Err(eyre!("Invalid return from Disassemble - {r:?}")),
         }
     }
     outputtx.send((format!(
