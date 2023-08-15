@@ -35,6 +35,23 @@ pub enum Type {
     CMOS,
 }
 
+/// Items the output channel can receive and should render as it sees appropriate
+#[derive(Debug)]
+pub enum Output {
+    /// Print an optional leading string, then a newline and a new prompt.
+    Prompt(Option<String>),
+    /// An error from a command which prints along with a newline and a new prompt.
+    Error(String),
+    /// The CPU State including why we received it (NOTE: the ram section isn't filled in).
+    /// An optional leading string (which will have newline appended) may also be supplied.
+    /// No prompt should be printed here as this is often used for repeating output
+    /// such as during RUN.
+    CPU(Stop, Option<String>),
+    /// A RAM dump. No prompt should be printed after this as it's often used
+    /// in non interactive areas.
+    RAM([u8; MAX_SIZE]),
+}
+
 /// This function is the main input loop which expects a channel to receive
 /// commands over and a channel connecting to/from the CPU to send commands
 /// and receive responses.
@@ -51,22 +68,23 @@ pub fn input_loop(
     cpucommandtx: &Sender<Command>,
     cpucommandresprx: &Receiver<Result<CommandResponse>>,
     inputtx: &Receiver<String>,
-    outputtx: &Sender<(String, bool)>,
+    outputtx: &Sender<Output>,
     preload: bool,
 ) -> Result<()> {
     // Only print if we didn't preload something since that will be
     // already in stdin and processed below and print the prompt.
     if !preload {
-        outputtx.send((String::new(), true))?;
+        outputtx.send(Output::Prompt(None))?;
     }
 
     let mut running = 0;
     loop {
+        let mut pre = None;
         match inputtx.try_recv() {
             Ok(line) => {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() > 4 {
-                    outputtx.send((format!("ERROR: Invalid command - {line}\n"), true))?;
+                    outputtx.send(Output::Error(format!("ERROR: Invalid command - {line}")))?;
                     continue;
                 }
                 if !parts.is_empty() {
@@ -74,9 +92,8 @@ pub fn input_loop(
 
                     match cmd.as_str() {
                         "H" | "HELP" => {
-                            outputtx.send((
-                                String::from(
-                                    r#"Usage:
+                            pre = Some(String::from(
+                                r#"Usage:
 HELP | H - This usage information
 RUN | C - run continually until either a breakpoint/watchpoint is hit or a STOP is sent
 STOP - cause the CPU to stop at the current instrunction from continual running
@@ -105,12 +122,8 @@ L <path> [<start> [<pc>]] - Load a binary image and optionally start loading at 
 BIN <path> - Dump a memory image of RAM to the given path
 PC <addr> - Set the PC to the addr
 RESET - Run a reset sequence on the CPU
-QUIT | Q - Exit the monitor
-
-"#,
-                                ),
-                                false,
-                            ))?;
+QUIT | Q - Exit the monitor"#,
+                            ));
                         }
                         "QUIT" | "Q" => return Ok(()),
                         "RUN" | "C" => {
@@ -122,19 +135,20 @@ QUIT | Q - Exit the monitor
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Stop(st)) => {
-                                    print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
+                                    outputtx.send(Output::CPU(st, None))?;
                                 }
-                                Err(e) => outputtx.send((format!("Stop error - {e}\n"), false))?,
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Stop error - {e}")))?;
+                                }
                                 _ => return Err(eyre!("Invalid return from Stop - {r:?}")),
                             }
                             running = 0;
                         }
                         "B" => {
                             if parts.len() != 2 {
-                                outputtx.send((
-                                    String::from("Error - Break must include an addr - B <addr>\n"),
-                                    true,
-                                ))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Break must include an addr - B <addr>",
+                                )))?;
                                 continue;
                             }
                             match parse_u16(parts[1]) {
@@ -144,8 +158,10 @@ QUIT | Q - Exit the monitor
                                     match r {
                                         Ok(CommandResponse::Break) => {}
                                         Err(e) => {
-                                            outputtx
-                                                .send((format!("Break error - {e}\n"), false))?;
+                                            outputtx.send(Output::Error(format!(
+                                                "Break error - {e}"
+                                            )))?;
+                                            continue;
                                         }
                                         _ => {
                                             return Err(eyre!("Invalid return from Break - {r:?}"))
@@ -153,10 +169,10 @@ QUIT | Q - Exit the monitor
                                     }
                                 }
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on addr: {e}\n"),
-                                        false,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on addr: {e}"
+                                    )))?;
+                                    continue;
                                 }
                             }
                         }
@@ -170,22 +186,22 @@ QUIT | Q - Exit the monitor
                                     for (pos, l) in bl.iter().enumerate() {
                                         writeln!(bps, "{pos} - ${:04X}", l.addr)?;
                                     }
-                                    outputtx.send((bps, false))?;
+                                    trim_newline(&mut bps);
+                                    pre = Some(bps);
                                 }
                                 Err(e) => {
-                                    outputtx.send((format!("BreakList error - {e}\n"), false))?;
+                                    outputtx
+                                        .send(Output::Error(format!("BreakList error - {e}")))?;
+                                    continue;
                                 }
                                 _ => return Err(eyre!("Invalid return from BreakList - {r:?}")),
                             }
                         }
                         "DB" => {
                             if parts.len() != 2 {
-                                outputtx.send((
-                                    String::from(
-                                        "Error - Delete Breakpoint must include an num - DB <num>\n",
-                                    ),
-                                    true,
-                                ))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Delete Breakpoint must include an num - DB <num>",
+                                )))?;
                                 continue;
                             }
                             match parts[1].parse::<usize>() {
@@ -194,10 +210,12 @@ QUIT | Q - Exit the monitor
                                     let r = cpucommandresprx.recv()?;
                                     match r {
                                         Ok(CommandResponse::DeleteBreakpoint) => {}
-                                        Err(e) => outputtx.send((
-                                            format!("Delete Breakpoint error - {e}\n"),
-                                            false,
-                                        ))?,
+                                        Err(e) => {
+                                            outputtx.send(Output::Error(format!(
+                                                "Delete Breakpoint error - {e}"
+                                            )))?;
+                                            continue;
+                                        }
                                         _ => {
                                             return Err(eyre!(
                                                 "Invalid return from Delete Breakpoint - {r:?}"
@@ -206,10 +224,10 @@ QUIT | Q - Exit the monitor
                                     }
                                 }
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on num: {e}\n"),
-                                        false,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on num: {e}"
+                                    )))?;
+                                    continue;
                                 }
                             }
                         }
@@ -218,9 +236,12 @@ QUIT | Q - Exit the monitor
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Step(st)) => {
-                                    print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
+                                    outputtx.send(Output::CPU(st, None))?;
                                 }
-                                Err(e) => outputtx.send((format!("Step error - {e}\n"), false))?,
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Step error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from Step - {r:?}")),
                             }
                         }
@@ -229,18 +250,20 @@ QUIT | Q - Exit the monitor
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Tick(st)) => {
-                                    print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
+                                    outputtx.send(Output::CPU(st, None))?;
                                 }
-                                Err(e) => outputtx.send((format!("Tick error - {e}\n"), false))?,
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Tick error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from Tick - {r:?}")),
                             }
                         }
                         "R" => {
                             if parts.len() != 2 {
-                                outputtx.send((
-                                    String::from("Error - Read must include an addr - R <addr>\n"),
-                                    true,
-                                ))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Read must include an addr - R <addr>",
+                                )))?;
                                 continue;
                             }
                             match parse_u16(parts[1]) {
@@ -249,48 +272,45 @@ QUIT | Q - Exit the monitor
                                     let r = cpucommandresprx.recv()?;
                                     match r {
                                         Ok(CommandResponse::Read(r)) => {
-                                            outputtx.send((
-                                                format!("{addr:04X}  {:02X}\n", r.val),
-                                                false,
-                                            ))?;
+                                            pre = Some(format!("{addr:04X}  {:02X}", r.val));
                                         }
                                         Err(e) => {
-                                            outputtx
-                                                .send((format!("Read error - {e}\n"), false))?;
+                                            outputtx.send(Output::Error(format!(
+                                                "Read error - {e}\n"
+                                            )))?;
+                                            continue;
                                         }
                                         _ => return Err(eyre!("Invalid return from Read - {r:?}")),
                                     }
                                 }
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on addr: {e}"),
-                                        false,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on addr: {e}"
+                                    )))?;
+                                    continue;
                                 }
                             }
                         }
                         "RR" => {
                             if parts.len() != 3 {
-                                outputtx.send((String::from("Error - Read Range must include an addr and len - RR <addr> <len>\n"), true))?;
+                                outputtx.send(Output::Error(String::from("Error - Read Range must include an addr and len - RR <addr> <len>")))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
                                 Ok(addr) => addr,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on addr: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on addr: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
                             let len = match parse_u16(parts[2]) {
                                 Ok(len) => len,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on len: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on len: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
@@ -302,42 +322,44 @@ QUIT | Q - Exit the monitor
                             match r {
                                 Ok(CommandResponse::ReadRange(l)) => {
                                     // Memory has a good Display impl we can use.
+                                    // Just fill in the bytes we received and
+                                    // everything will collapse around the nuls.
                                     let mut r = [0; MAX_SIZE];
                                     for (pos, v) in l.iter().enumerate() {
                                         r[addr as usize + pos] = v.val;
                                     }
-                                    outputtx.send((format!("{}", &r as &dyn Memory), false))?;
+                                    outputtx.send(Output::RAM(r))?;
                                 }
                                 Err(e) => {
-                                    outputtx.send((format!("Read Range error - {e}\n"), false))?;
+                                    outputtx
+                                        .send(Output::Error(format!("Read Range error - {e}")))?;
+                                    continue;
                                 }
                                 _ => return Err(eyre!("Invalid return from Read Range - {r:?}")),
                             }
                         }
                         "W" => {
                             if parts.len() != 3 {
-                                outputtx.send((String::from(
-                                    "Error - Write must include an addr and value - W <addr> <val>\n"
-                                ), true))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Write must include an addr and value - W <addr> <val>",
+                                )))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
                                 Ok(addr) => addr,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on addr: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on addr: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
                             let val = match parse_u8(parts[2]) {
                                 Ok(val) => val,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on val: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on val: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
@@ -346,42 +368,42 @@ QUIT | Q - Exit the monitor
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Write) => {}
-                                Err(e) => outputtx.send((format!("Write error - {e}\n"), false))?,
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Write error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from Write - {r:?}")),
                             }
                         }
                         "WR" => {
                             if parts.len() != 4 {
-                                outputtx.send((String::from("Error - Write Range must include an addr len and val - WR <addr> <len> <val>\n"), true))?;
+                                outputtx.send(Output::Error(String::from("Error - Write Range must include an addr len and val - WR <addr> <len> <val>")))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
                                 Ok(addr) => addr,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on addr: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on addr: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
                             let len = match parse_u16(parts[2]) {
                                 Ok(len) => len,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on len: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on len: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
                             let val = match parse_u8(parts[3]) {
                                 Ok(val) => val,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on val: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on val: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
@@ -396,7 +418,9 @@ QUIT | Q - Exit the monitor
                             match r {
                                 Ok(CommandResponse::WriteRange) => {}
                                 Err(e) => {
-                                    outputtx.send((format!("Write Range error - {e}\n"), false))?;
+                                    outputtx
+                                        .send(Output::Error(format!("Write Range error - {e}")))?;
+                                    continue;
                                 }
                                 _ => return Err(eyre!("Invalid return from Write Range - {r:?}")),
                             }
@@ -405,16 +429,19 @@ QUIT | Q - Exit the monitor
                             cpucommandtx.send(Command::Cpu)?;
                             let r = cpucommandresprx.recv()?;
                             match r {
-                                Ok(CommandResponse::Cpu(st)) => print_state(
-                                    &Stop {
-                                        state: st,
-                                        reason: StopReason::None,
-                                    },
-                                    cpucommandtx,
-                                    cpucommandresprx,
-                                    outputtx,
-                                )?,
-                                Err(e) => outputtx.send((format!("Cpu error - {e}\n"), false))?,
+                                Ok(CommandResponse::Cpu(st)) => {
+                                    outputtx.send(Output::CPU(
+                                        Stop {
+                                            state: st,
+                                            reason: StopReason::None,
+                                        },
+                                        None,
+                                    ))?;
+                                }
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Cpu error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from Cpu - {r:?}")),
                             }
                         }
@@ -423,20 +450,20 @@ QUIT | Q - Exit the monitor
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Ram(r)) => {
-                                    outputtx.send((format!("{}", &r as &dyn Memory), false))?;
+                                    outputtx.send(Output::RAM(r))?;
                                 }
-                                Err(e) => outputtx.send((format!("Ram error - {e}\n"), false))?,
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Ram error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from Ram - {r:?}")),
                             }
                         }
                         "D" => {
                             if parts.len() != 2 {
-                                outputtx.send((
-                                    String::from(
-                                        "Error - Disassemble must include an addr - D <addr>\n",
-                                    ),
-                                    true,
-                                ))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Disassemble must include an addr - D <addr>",
+                                )))?;
                                 continue;
                             }
                             match parse_u16(parts[1]) {
@@ -445,10 +472,14 @@ QUIT | Q - Exit the monitor
                                     let r = cpucommandresprx.recv()?;
                                     match r {
                                         Ok(CommandResponse::Disassemble(d)) => {
-                                            outputtx.send((format!("{d}\n"), false))?;
+                                            pre = Some(d);
                                         }
-                                        Err(e) => outputtx
-                                            .send((format!("Disassemble error - {e}\n"), false))?,
+                                        Err(e) => {
+                                            outputtx.send(Output::Error(format!(
+                                                "Disassemble error - {e}"
+                                            )))?;
+                                            continue;
+                                        }
                                         _ => {
                                             return Err(eyre!(
                                                 "Invalid return from Disassemble - {r:?}"
@@ -457,35 +488,33 @@ QUIT | Q - Exit the monitor
                                     }
                                 }
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on addr: {e}\n"),
-                                        false,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on addr: {e}"
+                                    )))?;
+                                    continue;
                                 }
                             }
                         }
                         "DR" => {
                             if parts.len() != 3 {
-                                outputtx.send((String::from("Error - Disassemble Range must include an addr and len - DR <addr> <len>\n"), true))?;
+                                outputtx.send(Output::Error(String::from("Error - Disassemble Range must include an addr and len - DR <addr> <len>")))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
                                 Ok(addr) => addr,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on addr: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on addr: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
                             let len = match parse_u16(parts[2]) {
                                 Ok(len) => len,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on len: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on len: {e}\n"
+                                    )))?;
                                     continue;
                                 }
                             };
@@ -496,12 +525,19 @@ QUIT | Q - Exit the monitor
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::DisassembleRange(l)) => {
+                                    let mut dr = String::new();
                                     for d in l {
-                                        outputtx.send((format!("{d}\n"), false))?;
+                                        writeln!(dr, "{d}")?;
                                     }
+                                    trim_newline(&mut dr);
+                                    pre = Some(dr);
                                 }
-                                Err(e) => outputtx
-                                    .send((format!("Dissasemble Range error - {e}\n"), false))?,
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!(
+                                        "Dissasemble Range error - {e}"
+                                    )))?;
+                                    continue;
+                                }
                                 _ => {
                                     return Err(eyre!(
                                         "Invalid return from Disassemble Range - {r:?}"
@@ -511,12 +547,9 @@ QUIT | Q - Exit the monitor
                         }
                         "WP" => {
                             if parts.len() != 2 {
-                                outputtx.send((
-                                    String::from(
-                                        "Error - Watchpoint must include an addr - WP <addr>\n",
-                                    ),
-                                    true,
-                                ))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Watchpoint must include an addr - WP <addr>",
+                                )))?;
                                 continue;
                             }
                             match parse_u16(parts[1]) {
@@ -525,18 +558,22 @@ QUIT | Q - Exit the monitor
                                     let r = cpucommandresprx.recv()?;
                                     match r {
                                         Ok(CommandResponse::Watch) => {}
-                                        Err(e) => outputtx
-                                            .send((format!("Watch error - {e}\n"), false))?,
+                                        Err(e) => {
+                                            outputtx.send(Output::Error(format!(
+                                                "Watch error - {e}"
+                                            )))?;
+                                            continue;
+                                        }
                                         _ => {
                                             return Err(eyre!("Invalid return from Watch - {r:?}"))
                                         }
                                     }
                                 }
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on addr: {e}\n"),
-                                        false,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on addr: {e}"
+                                    )))?;
+                                    continue;
                                 }
                             }
                         }
@@ -550,17 +587,22 @@ QUIT | Q - Exit the monitor
                                     for (pos, l) in wl.iter().enumerate() {
                                         writeln!(wps, "{pos} - ${:04X}", l.addr)?;
                                     }
-                                    outputtx.send((wps, false))?;
+                                    trim_newline(&mut wps);
+                                    pre = Some(wps);
                                 }
                                 Err(e) => {
-                                    outputtx.send((format!("WatchList error - {e}\n"), false))?;
+                                    outputtx
+                                        .send(Output::Error(format!("WatchList error - {e}\n")))?;
+                                    continue;
                                 }
                                 _ => return Err(eyre!("Invalid return from WatchList - {r:?}")),
                             }
                         }
                         "DW" => {
                             if parts.len() != 2 {
-                                outputtx.send((String::from("Error - Delete Watchpoint must include an num - DW <num>\n"), true))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Delete Watchpoint must include an num - DW <num>",
+                                )))?;
                                 continue;
                             }
                             match parts[1].parse::<usize>() {
@@ -569,10 +611,12 @@ QUIT | Q - Exit the monitor
                                     let r = cpucommandresprx.recv()?;
                                     match r {
                                         Ok(CommandResponse::DeleteWatchpoint) => {}
-                                        Err(e) => outputtx.send((
-                                            format!("Delete Watchpoint error - {e}\n"),
-                                            false,
-                                        ))?,
+                                        Err(e) => {
+                                            outputtx.send(Output::Error(format!(
+                                                "Delete Watchpoint error - {e}"
+                                            )))?;
+                                            continue;
+                                        }
                                         _ => {
                                             return Err(eyre!(
                                                 "Invalid return from Delete Watchpoint - {r:?}"
@@ -581,13 +625,16 @@ QUIT | Q - Exit the monitor
                                     }
                                 }
                                 Err(e) => {
-                                    println!("Error - parse error on num: {e}");
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on num: {e}"
+                                    )))?;
+                                    continue;
                                 }
                             }
                         }
                         "L" => {
                             if parts.len() < 2 || parts.len() > 4 {
-                                outputtx.send((String::from("Error - Load must include a filename and optionally load location with optional start - L <path to file> [location [start]]\n"), true))?;
+                                outputtx.send(Output::Error(String::from("Error - Load must include a filename and optionally load location with optional start - L <path to file> [location [start]]")))?;
                                 continue;
                             }
                             let file = String::from(parts[1]);
@@ -595,10 +642,9 @@ QUIT | Q - Exit the monitor
                                 let addr = match parse_u16(parts[2]) {
                                     Ok(addr) => addr,
                                     Err(e) => {
-                                        outputtx.send((
-                                            format!("Error - parse error on location: {e}\n"),
-                                            true,
-                                        ))?;
+                                        outputtx.send(Output::Error(format!(
+                                            "Error - parse error on location: {e}"
+                                        )))?;
                                         continue;
                                     }
                                 };
@@ -610,10 +656,9 @@ QUIT | Q - Exit the monitor
                                 let addr = match parse_u16(parts[3]) {
                                     Ok(addr) => addr,
                                     Err(e) => {
-                                        outputtx.send((
-                                            format!("Error - parse error on start: {e}\n"),
-                                            true,
-                                        ))?;
+                                        outputtx.send(Output::Error(format!(
+                                            "Error - parse error on start: {e}"
+                                        )))?;
                                         continue;
                                     }
                                 };
@@ -624,22 +669,27 @@ QUIT | Q - Exit the monitor
                             cpucommandtx.send(Command::Load(file, loc, start))?;
                             let r = cpucommandresprx.recv()?;
                             match r {
-                                Ok(CommandResponse::Load(st)) => print_state(
-                                    &Stop {
-                                        state: st,
-                                        reason: StopReason::None,
-                                    },
-                                    cpucommandtx,
-                                    cpucommandresprx,
-                                    outputtx,
-                                )?,
-                                Err(e) => outputtx.send((format!("Load error - {e}\n"), false))?,
+                                Ok(CommandResponse::Load(st)) => {
+                                    outputtx.send(Output::CPU(
+                                        Stop {
+                                            state: st,
+                                            reason: StopReason::None,
+                                        },
+                                        None,
+                                    ))?;
+                                }
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Load error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from Load - {r:?}")),
                             }
                         }
                         "BIN" => {
                             if parts.len() != 2 {
-                                outputtx.send((String::from("Error - Dump must include a filename - BIN <path to file>\n"), true))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Dump must include a filename - BIN <path to file>",
+                                )))?;
                                 continue;
                             }
                             let file = String::from(parts[1]);
@@ -647,41 +697,45 @@ QUIT | Q - Exit the monitor
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Dump) => {}
-                                Err(e) => outputtx.send((format!("Dump error - {e}\n"), false))?,
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Dump error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from Dump - {r:?}")),
                             }
                         }
                         "PC" => {
                             if parts.len() != 2 {
-                                outputtx.send((
-                                    String::from("Error - PC must include an addr - PC <addr>\n"),
-                                    true,
-                                ))?;
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - PC must include an addr - PC <addr>",
+                                )))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
                                 Ok(addr) => addr,
                                 Err(e) => {
-                                    outputtx.send((
-                                        format!("Error - parse error on len: {e}\n"),
-                                        true,
-                                    ))?;
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on len: {e}"
+                                    )))?;
                                     continue;
                                 }
                             };
                             cpucommandtx.send(Command::PC(Location { addr }))?;
                             let r = cpucommandresprx.recv()?;
                             match r {
-                                Ok(CommandResponse::PC(st)) => print_state(
-                                    &Stop {
-                                        state: st,
-                                        reason: StopReason::None,
-                                    },
-                                    cpucommandtx,
-                                    cpucommandresprx,
-                                    outputtx,
-                                )?,
-                                Err(e) => outputtx.send((format!("PC error - {e}\n"), false))?,
+                                Ok(CommandResponse::PC(st)) => {
+                                    outputtx.send(Output::CPU(
+                                        Stop {
+                                            state: st,
+                                            reason: StopReason::None,
+                                        },
+                                        None,
+                                    ))?;
+                                }
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("PC error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from PC - {r:?}")),
                             }
                         }
@@ -689,29 +743,33 @@ QUIT | Q - Exit the monitor
                             cpucommandtx.send(Command::Reset)?;
                             let r = cpucommandresprx.recv()?;
                             match r {
-                                Ok(CommandResponse::Reset(st)) => print_state(
-                                    &Stop {
-                                        state: st,
-                                        reason: StopReason::None,
-                                    },
-                                    cpucommandtx,
-                                    cpucommandresprx,
-                                    outputtx,
-                                )?,
-                                Err(e) => outputtx.send((format!("Reset error - {e}\n"), false))?,
+                                Ok(CommandResponse::Reset(st)) => {
+                                    outputtx.send(Output::CPU(
+                                        Stop {
+                                            state: st,
+                                            reason: StopReason::None,
+                                        },
+                                        None,
+                                    ))?;
+                                }
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("Reset error - {e}")))?;
+                                    continue;
+                                }
                                 _ => return Err(eyre!("Invalid return from Reset - {r:?}")),
                             }
                             running = 0;
                         }
                         _ => {
-                            outputtx.send((
-                                format!("ERROR: Invalid command - {}\n", parts[0]),
-                                false,
-                            ))?;
+                            outputtx.send(Output::Error(format!(
+                                "ERROR: Invalid command - {}",
+                                parts[0]
+                            )))?;
+                            continue;
                         }
                     }
                 }
-                outputtx.send((String::new(), true))?;
+                outputtx.send(Output::Prompt(pre))?;
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => return Err(eyre!("stdin died?")),
@@ -726,25 +784,58 @@ QUIT | Q - Exit the monitor
                             if st.reason == StopReason::Run {
                                 // First Run response emit a blank line to line up
                                 // vs the prompt.
-                                if running < 2 {
+                                let prompt = if running < 2 {
                                     running += 1;
-                                    outputtx.send((String::from("\n"), false))?;
-                                }
-                                print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
+                                    Some(String::new())
+                                } else {
+                                    None
+                                };
+                                outputtx.send(Output::CPU(st, prompt))?;
                             } else {
                                 running = 0;
-                                outputtx.send((String::new(), false))?;
-                                print_state(&st, cpucommandtx, cpucommandresprx, outputtx)?;
-                                outputtx.send((String::new(), true))?;
+                                let mut pre = String::new();
+                                if let StopReason::Break(addr) = &st.reason {
+                                    writeln!(pre, "\nBreakpoint at {:04X}", addr.addr)?;
+                                }
+                                if let StopReason::Watch(pc, addr) = &st.reason {
+                                    writeln!(pre, "\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})", addr.addr, pc.addr, st.state.pc,
+                                )?;
+                                    cpucommandtx
+                                        .send(Command::Disassemble(Location { addr: pc.addr }))?;
+                                    let r = cpucommandresprx.recv()?;
+                                    match r {
+                                        Ok(CommandResponse::Disassemble(d)) => {
+                                            write!(pre, "{d}")?;
+                                        }
+                                        Err(e) => writeln!(pre, "Disassemble error - {e}")?,
+                                        _ => {
+                                            return Err(eyre!(
+                                                "Invalid return from Disassemble - {r:?}"
+                                            ))
+                                        }
+                                    }
+                                }
+                                outputtx.send(Output::CPU(st, Some(pre)))?;
+                                outputtx.send(Output::Prompt(None))?;
                             }
                         }
                         _ => return Err(eyre!("invalid response from run: {ret:?}")),
                     },
-                    Err(e) => outputtx.send((format!("Error from Run - {e}"), true))?,
+                    Err(e) => outputtx.send(Output::Error(format!("Error from Run - {e}")))?,
                 },
                 Err(TryRecvError::Empty) => {}
                 Err(TryRecvError::Disconnected) => return Err(eyre!("Sender channel died")),
             }
+        }
+    }
+}
+
+fn trim_newline(bps: &mut String) {
+    // Trim off the last newline
+    if bps.ends_with('\n') {
+        bps.pop();
+        if bps.ends_with('\r') {
+            bps.pop();
         }
     }
 }
@@ -789,39 +880,6 @@ fn parse_u8(val: &str) -> Result<u8> {
         Ok(v) => Ok(v),
         Err(e) => Err(eyre!("parse error: {e}")),
     }
-}
-
-fn print_state(
-    st: &Stop,
-    tx: &Sender<Command>,
-    rx: &Receiver<Result<CommandResponse>>,
-    outputtx: &Sender<(String, bool)>,
-) -> Result<()> {
-    // Different from just using Display for CPUState since we don't want the
-    // memory dump and slightly differeing order.
-    if let StopReason::Break(addr) = &st.reason {
-        outputtx.send((format!("\nBreakpoint at {:04X}\n", addr.addr), false))?;
-    }
-    if let StopReason::Watch(pc, addr) = &st.reason {
-        outputtx.send((
-            format!(
-                "\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})\n",
-                addr.addr, pc.addr, st.state.pc,
-            ),
-            false,
-        ))?;
-        tx.send(Command::Disassemble(Location { addr: pc.addr }))?;
-        let r = rx.recv()?;
-        match r {
-            Ok(CommandResponse::Disassemble(d)) => outputtx.send((format!("{d}\n"), false))?,
-            Err(e) => outputtx.send((format!("Disassemble error - {e}\n"), false))?,
-            _ => return Err(eyre!("Invalid return from Disassemble - {r:?}")),
-        }
-    }
-    outputtx.send((format!(
-            "{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}\n",
-            st.state.dis, st.state.a, st.state.x, st.state.y, st.state.s, st.state.p, st.state.op_val, st.state.op_addr, st.state.op_tick, st.state.clocks), false))?;
-    Ok(())
 }
 
 struct Debug {
@@ -1184,10 +1242,14 @@ pub fn cpu_loop(
             }
             Command::DeleteWatchpoint(num) => {
                 if num >= watchpoints.len() {
-                    cpucommandresptx.send(Err(eyre!(
-                        "watchpoint index {num} out of range 0-{}",
-                        watchpoints.len() - 1
-                    )))?;
+                    if watchpoints.is_empty() {
+                        cpucommandresptx.send(Err(eyre!("no watchpoints to delete")))?;
+                    } else {
+                        cpucommandresptx.send(Err(eyre!(
+                            "watchpoint index {num} out of range 0-{}",
+                            watchpoints.len() - 1
+                        )))?;
+                    }
                     continue;
                 }
                 watchpoints.swap_remove(num);

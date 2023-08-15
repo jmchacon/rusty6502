@@ -13,6 +13,7 @@ members = [
     "./irq",
     "./memory",
     "./monitor",
+    "./monitor_gui",
     "./monitor_tui",
 ]
 default-members = [
@@ -29,6 +30,7 @@ default-members = [
     "./irq",
     "./memory",
     "./monitor",
+    "./monitor_gui",
     "./monitor_tui",
 ]
 

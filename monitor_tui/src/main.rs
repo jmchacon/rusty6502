@@ -1,8 +1,9 @@
-//! `monitor_tui` implements a basic monitor program for running a 65xx device.
+//! `monitor_tui` implements a basic monitor CLI program for running a 65xx device.
 use clap::Parser;
 use clap_num::maybe_hex;
 use color_eyre::eyre::Result;
 use monitor::{cpu_loop, input_loop, Type};
+use rusty6502::prelude::*;
 use std::{io, io::Write, sync::mpsc::channel, thread, time};
 
 /// `monitor_tui` will start a 65xx of the given chip and begin a blank memory session.
@@ -64,18 +65,15 @@ fn main() -> Result<()> {
     };
 
     let (inputtx, inputrx) = channel();
-    let mut load = String::new();
     if let Some(file) = &args.filename {
         let loc = args.offset.unwrap_or_default();
         let pc = args.start.unwrap_or_default();
-        load = format!("L {file} {loc} {pc}");
-    }
-    let s = thread::spawn(move || -> Result<()> {
+        let load = format!("L {file} {loc} {pc}");
         // One time initial load handling by simulating it typed in.
         // Much simpler than replicating load logic.
-        if !load.is_empty() {
-            inputtx.send(load)?;
-        }
+        inputtx.send(load)?;
+    }
+    let s = thread::spawn(move || -> Result<()> {
         loop {
             let mut buffer = String::new();
             io::stdin().read_line(&mut buffer)?;
@@ -91,11 +89,29 @@ fn main() -> Result<()> {
     let (outputtx, outputrx) = channel();
     let o = thread::spawn(move || -> Result<()> {
         loop {
-            let (out, prompt) = outputrx.recv()?;
-            print!("{out}");
-            if prompt {
-                print!("> ");
+            match outputrx.recv()? {
+                monitor::Output::Prompt(p) => {
+                    if let Some(o) = p {
+                        println!("{o}");
+                    }
+                    print!("> ");
+                }
+                monitor::Output::Error(e) => {
+                    println!("{e}");
+                    print!("> ");
+                }
+                monitor::Output::CPU(st, pre) => {
+                    if let Some(pre) = pre {
+                        println!("{pre}");
+                    }
+                    println!("{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}", st.state.dis, st.state.a, st.state.x, st.state.y, st.state.s, st.state.p, st.state.op_val, st.state.op_addr, st.state.op_tick, st.state.clocks);
+                }
+                monitor::Output::RAM(r) => {
+                    print!("{}", &r as &dyn Memory);
+                }
             }
+            // Different from just using Display for CPUState since we don't want the
+            // memory dump and slightly differeing order.
             io::stdout().flush()?;
         }
     });
@@ -133,3 +149,37 @@ fn main() -> Result<()> {
         thread::sleep(time::Duration::from_millis(100));
     }
 }
+
+/*fn print_state(
+    st: &Stop,
+    tx: &Sender<Command>,
+    rx: &Receiver<Result<CommandResponse>>,
+    outputtx: &Sender<(String, bool)>,
+) -> Result<()> {
+    // Different from just using Display for CPUState since we don't want the
+    // memory dump and slightly differeing order.
+    if let StopReason::Break(addr) = &st.reason {
+        outputtx.send((format!("\nBreakpoint at {:04X}\n", addr.addr), false))?;
+    }
+    if let StopReason::Watch(pc, addr) = &st.reason {
+        outputtx.send((
+            format!(
+                "\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})\n",
+                addr.addr, pc.addr, st.state.pc,
+            ),
+            false,
+        ))?;
+        tx.send(Command::Disassemble(Location { addr: pc.addr }))?;
+        let r = rx.recv()?;
+        match r {
+            Ok(CommandResponse::Disassemble(d)) => outputtx.send((format!("{d}\n"), false))?,
+            Err(e) => outputtx.send((format!("Disassemble error - {e}\n"), false))?,
+            _ => return Err(eyre!("Invalid return from Disassemble - {r:?}")),
+        }
+    }
+    outputtx.send((format!(
+            "{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}\n",
+            st.state.dis, st.state.a, st.state.x, st.state.y, st.state.s, st.state.p, st.state.op_val, st.state.op_addr, st.state.op_tick, st.state.clocks), false))?;
+    Ok(())
+}
+*/
