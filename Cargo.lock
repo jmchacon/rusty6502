@@ -181,7 +181,6 @@ name = "assemble"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
- "proc-macro2",
  "regex",
  "rusty6502",
  "strum",
@@ -195,7 +194,6 @@ dependencies = [
  "assemble",
  "clap",
  "color-eyre",
- "proc-macro2",
  "rusty6502",
  "strum",
  "strum_macros",
@@ -480,7 +478,6 @@ checksum = "89b2fd2a0dcf38d7971e2194b6b6eebab45ae01067456a7fd93d5547a61b70be"
 name = "c64basic"
 version = "0.1.0"
 dependencies = [
- "proc-macro2",
  "rusty6502",
  "strum",
  "strum_macros",
@@ -541,7 +538,6 @@ name = "chip"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
- "proc-macro2",
 ]
 
 [[package]]
@@ -678,7 +674,6 @@ dependencies = [
  "clap",
  "clap-num",
  "color-eyre",
- "proc-macro2",
 ]
 
 [[package]]
@@ -731,7 +726,6 @@ dependencies = [
  "io",
  "irq",
  "memory",
- "proc-macro2",
  "rand",
  "strum",
  "strum_macros",
@@ -813,7 +807,6 @@ dependencies = [
  "clap",
  "clap-num",
  "color-eyre",
- "proc-macro2",
  "rusty6502",
  "strum",
  "strum_macros",
@@ -1272,7 +1265,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "color-eyre",
- "proc-macro2",
 ]
 
 [[package]]
@@ -1369,9 +1361,6 @@ dependencies = [
 [[package]]
 name = "io"
 version = "0.1.0"
-dependencies = [
- "proc-macro2",
-]
 
 [[package]]
 name = "io-lifetimes"
@@ -1387,9 +1376,6 @@ dependencies = [
 [[package]]
 name = "irq"
 version = "0.1.0"
-dependencies = [
- "proc-macro2",
-]
 
 [[package]]
 name = "is-terminal"
@@ -1548,9 +1534,6 @@ dependencies = [
 [[package]]
 name = "memory"
 version = "0.1.0"
-dependencies = [
- "proc-macro2",
-]
 
 [[package]]
 name = "minimal-lexical"
@@ -2139,6 +2122,7 @@ dependencies = [
  "chip",
  "cpu",
  "memory",
+ "serde_derive",
 ]
 
 [[package]]
