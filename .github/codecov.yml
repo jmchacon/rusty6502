@@ -19,7 +19,8 @@ ignore:
   - "convertprg/src/main.rs"
   - "disassembler/src/main.rs"
   - "handasm/src/main.rs"
-  - "monitor/src/*.rs"
+  - "monitor_gui/src/*.rs"
+  - "monitor_tui/src/*.rs"
 
 # Make comments less noisy
 comment:
