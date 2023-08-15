@@ -9,7 +9,6 @@ rust-version.workspace = true
 rusty6502  = { workspace = true }
 
 color-eyre = { workspace = true }
-proc-macro2 = { workspace = true }
 regex = { workspace = true }
 strum_macros = { workspace = true }
 strum = { workspace = true }

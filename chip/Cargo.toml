@@ -7,4 +7,3 @@ rust-version.workspace = true
 
 [dependencies]
 color-eyre = { workspace = true }
-proc-macro2 = { workspace = true }

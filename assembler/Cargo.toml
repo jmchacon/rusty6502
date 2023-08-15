@@ -11,6 +11,5 @@ rusty6502  = { workspace = true }
 assemble = { workspace = true }
 color-eyre = { workspace = true }
 clap = { workspace = true }
-proc-macro2 = { workspace = true }
 strum_macros = { workspace = true }
 strum = { workspace = true }
