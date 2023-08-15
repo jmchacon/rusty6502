@@ -7,7 +7,6 @@ use clap_num::maybe_hex;
 use color_eyre::eyre::Result;
 use rusty6502::prelude::*;
 use std::{ffi::OsStr, fs::read, num::Wrapping, path::Path};
-use strum_macros::{Display, EnumString};
 
 /// disassembler will take a memory image file (.bin generally) or a .prg file (c64 basic program)
 /// and disassemble it.
@@ -17,7 +16,7 @@ use strum_macros::{Display, EnumString};
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
-    cpu_type: Type,
+    cpu_type: CPUType,
 
     filename: String,
 
@@ -30,27 +29,6 @@ struct Args {
 
     #[arg(long, default_value_t = 0, value_parser=maybe_hex::<u16>, help = "The PC value to start disassembly.")]
     start_pc: u16,
-}
-
-// Type defines the various implementations of the 6502 available.
-#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, EnumString)]
-#[allow(clippy::upper_case_acronyms)]
-enum Type {
-    /// Basic NMOS 6502 including all undocumented opcodes.
-    NMOS,
-
-    /// Ricoh version used in the NES which is identical to NMOS except BCD mode is unimplemented.
-    #[strum(to_string = "NMOS_RICOH")]
-    RICOH,
-
-    /// NMOS 6501 variant (used in c64) which includes I/O ports mapped at addresses 0x00 and 0x01.
-    #[strum(to_string = "NMOS_6510")]
-    NMOS6510,
-
-    /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
-    /// This is an implementation of the later WDC spec so will include support
-    /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
-    CMOS,
 }
 
 #[allow(clippy::similar_names)]
@@ -150,10 +128,10 @@ fn main() -> Result<()> {
     let c6510 = CPU6510::new(ChipDef::default(), None);
     let cmos = CPU65C02::new(ChipDef::default());
     let cpu: &dyn CPU = match args.cpu_type {
-        Type::NMOS => &nmos,
-        Type::RICOH => &ricoh,
-        Type::NMOS6510 => &c6510,
-        Type::CMOS => &cmos,
+        CPUType::NMOS => &nmos,
+        CPUType::RICOH => &ricoh,
+        CPUType::NMOS6510 => &c6510,
+        CPUType::CMOS => &cmos,
     };
 
     loop {

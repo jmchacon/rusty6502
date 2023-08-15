@@ -3,6 +3,7 @@
 //! emulation.
 
 use color_eyre::eyre::Result;
+use strum_macros::{Display, EnumString};
 
 /// Chip defines the trait for an 8 bit chip in the 6502 chip era.
 pub trait Chip {
@@ -24,4 +25,25 @@ pub trait Chip {
     /// If calling results in a lockup/illegal condition an error
     /// will be returned.
     fn tick_done(&mut self) -> Result<()>;
+}
+
+/// `CPUType` defines the various implementations of the 6502 available.
+#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, EnumString)]
+#[allow(clippy::upper_case_acronyms)]
+pub enum CPUType {
+    /// Basic NMOS 6502 including all undocumented opcodes.
+    NMOS,
+
+    /// Ricoh version used in the NES which is identical to NMOS except BCD mode is unimplemented.
+    #[strum(to_string = "NMOS_RICOH")]
+    RICOH,
+
+    /// NMOS 6501 variant (used in c64) which includes I/O ports mapped at addresses 0x00 and 0x01.
+    #[strum(to_string = "NMOS_6510")]
+    NMOS6510,
+
+    /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
+    /// This is an implementation of the later WDC spec so will include support
+    /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
+    CMOS,
 }

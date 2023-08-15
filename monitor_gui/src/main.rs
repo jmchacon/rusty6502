@@ -5,7 +5,8 @@ use eframe::egui;
 use egui::{FontFamily, FontId, RichText, TextStyle};
 
 use color_eyre::eyre::Result;
-use monitor::{cpu_loop, input_loop, Type};
+use monitor::{cpu_loop, input_loop};
+use rusty6502::prelude::*;
 use std::{io, io::Write, sync::mpsc::channel, thread, time};
 
 struct Runner {
@@ -44,7 +45,7 @@ fn main() -> Result<()> {
     let (cpucommandtx, cpucommandrx) = channel();
     // The response channel.
     let (cpucommandresptx, cpucommandresprx) = channel();
-    let c = thread::spawn(move || cpu_loop(Type::NMOS, &cpucommandrx, &cpucommandresptx));
+    let c = thread::spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &cpucommandresptx));
     let mut cpu = Runner {
         h: c,
         n: String::from("CPU"),

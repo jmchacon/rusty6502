@@ -8,32 +8,13 @@ use std::fs::{read, write};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
-use strum_macros::{Display, EnumString};
 
 mod commands;
 
 use commands::{Command, CommandResponse, Location, LocationRange, Stop, StopReason, Val, PC};
 
-/// Type defines the various implementations of the 6502 available.
-#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, EnumString)]
-#[allow(clippy::upper_case_acronyms)]
-pub enum Type {
-    /// Basic NMOS 6502 including all undocumented opcodes.
-    NMOS,
-
-    /// Ricoh version used in the NES which is identical to NMOS except BCD mode is unimplemented.
-    #[strum(to_string = "NMOS_RICOH")]
-    RICOH,
-
-    /// NMOS 6501 variant (used in c64) which includes I/O ports mapped at addresses 0x00 and 0x01.
-    #[strum(to_string = "NMOS_6510")]
-    NMOS6510,
-
-    /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
-    /// This is an implementation of the later WDC spec so will include support
-    /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
-    CMOS,
-}
+#[cfg(test)]
+mod tests;
 
 /// Items the output channel can receive and should render as it sees appropriate
 #[derive(Debug)]
@@ -906,7 +887,7 @@ impl Debug {
 /// Any premature close of the channels will result in an error.
 #[allow(clippy::similar_names, clippy::too_many_lines)]
 pub fn cpu_loop(
-    ty: Type,
+    ty: CPUType,
     cpucommandrx: &Receiver<Command>,
     cpucommandresptx: &Sender<Result<CommandResponse>>,
 ) -> Result<()> {
@@ -915,10 +896,10 @@ pub fn cpu_loop(
     let mut c6510 = CPU6510::new(ChipDef::default(), None);
     let mut cmos = CPU65C02::new(ChipDef::default());
     let cpu: &mut dyn CPU = match ty {
-        Type::NMOS => &mut nmos,
-        Type::RICOH => &mut ricoh,
-        Type::NMOS6510 => &mut c6510,
-        Type::CMOS => &mut cmos,
+        CPUType::NMOS => &mut nmos,
+        CPUType::RICOH => &mut ricoh,
+        CPUType::NMOS6510 => &mut c6510,
+        CPUType::CMOS => &mut cmos,
     };
 
     let mut is_running = false;

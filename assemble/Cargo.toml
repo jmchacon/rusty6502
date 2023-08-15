@@ -10,5 +10,3 @@ rusty6502  = { workspace = true }
 
 color-eyre = { workspace = true }
 regex = { workspace = true }
-strum_macros = { workspace = true }
-strum = { workspace = true }

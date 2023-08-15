@@ -5,36 +5,14 @@ use std::{
     io::{self, BufRead},
     path::Path,
 };
-use strum_macros::{Display, EnumString};
 
 struct AssembleTest<'a> {
     asm: &'a str,
     bin: &'a str,
-    cpus: Vec<Type>,
+    cpus: Vec<CPUType>,
 }
 
 use crate::parse;
-
-// Type defines the various implementations of the 6502 available.
-#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, EnumString)]
-#[allow(clippy::upper_case_acronyms)]
-enum Type {
-    /// Basic NMOS 6502 including all undocumented opcodes.
-    NMOS,
-
-    /// Ricoh version used in the NES which is identical to NMOS except BCD mode is unimplemented.
-    #[strum(to_string = "NMOS_RICOH")]
-    RICOH,
-
-    /// NMOS 6501 variant (used in c64) which includes I/O ports mapped at addresses 0x00 and 0x01.
-    #[strum(to_string = "NMOS_6510")]
-    NMOS6510,
-
-    /// 65C02 CMOS version where undocumented opcodes are all explicit NOP's and defined.
-    /// This is an implementation of the later WDC spec so will include support
-    /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
-    CMOS,
-}
 
 macro_rules! assemble_test {
     ($suite:ident, $($name:ident: $assemble_test:expr)*) => {
@@ -65,10 +43,10 @@ macro_rules! assemble_test {
                       let c6510 = CPU6510::new(ChipDef::default(), None);
                       let cmos = CPU65C02::new(ChipDef::default());
                       let cpu: &dyn CPU = match t {
-                          Type::NMOS => &nmos,
-                          Type::RICOH => &ricoh,
-                          Type::NMOS6510 => &c6510,
-                          Type::CMOS => &cmos,
+                          CPUType::NMOS => &nmos,
+                          CPUType::RICOH => &ricoh,
+                          CPUType::NMOS6510 => &c6510,
+                          CPUType::CMOS => &cmos,
                       };
 
                       let asm = parse(cpu, lines, true)?;
@@ -99,17 +77,17 @@ assemble_test!(
     bcd_test: AssembleTest{
         asm: "bcd_test.asm",
         bin: "bcd_test.bin",
-        cpus: vec![Type::NMOS, Type::NMOS6510, Type::CMOS, Type::RICOH],
+        cpus: vec![CPUType::NMOS, CPUType::NMOS6510, CPUType::CMOS, CPUType::RICOH],
     }
     undocumented_test: AssembleTest{
         asm: "undocumented.asm",
         bin: "undocumented.bin",
-        cpus: vec![Type::NMOS, Type::NMOS6510, Type::RICOH],
+        cpus: vec![CPUType::NMOS, CPUType::NMOS6510, CPUType::RICOH],
     }
     testasm_test: AssembleTest{
         asm: "testasm.asm",
         bin: "testasm.bin",
-        cpus: vec![Type::NMOS, Type::NMOS6510, Type::RICOH],
+        cpus: vec![CPUType::NMOS, CPUType::NMOS6510, CPUType::RICOH],
     }
 );
 

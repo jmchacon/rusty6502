@@ -183,8 +183,6 @@ dependencies = [
  "color-eyre",
  "regex",
  "rusty6502",
- "strum",
- "strum_macros",
 ]
 
 [[package]]
@@ -195,8 +193,6 @@ dependencies = [
  "clap",
  "color-eyre",
  "rusty6502",
- "strum",
- "strum_macros",
 ]
 
 [[package]]
@@ -538,6 +534,8 @@ name = "chip"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+ "strum",
+ "strum_macros",
 ]
 
 [[package]]
@@ -808,8 +806,6 @@ dependencies = [
  "clap-num",
  "color-eyre",
  "rusty6502",
- "strum",
- "strum_macros",
 ]
 
 [[package]]
@@ -1578,8 +1574,6 @@ version = "0.1.0"
 dependencies = [
  "color-eyre",
  "rusty6502",
- "strum",
- "strum_macros",
 ]
 
 [[package]]
@@ -1591,6 +1585,7 @@ dependencies = [
  "egui",
  "env_logger",
  "monitor",
+ "rusty6502",
 ]
 
 [[package]]

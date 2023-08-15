@@ -6,6 +6,8 @@ rust-version.workspace = true
 authors.workspace = true
 
 [dependencies]
+rusty6502 = { workspace = true }
+
 color-eyre = { workspace = true }
 eframe = "0.22.0"
 egui = "0.22.0"

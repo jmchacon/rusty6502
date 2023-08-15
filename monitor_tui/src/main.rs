@@ -2,7 +2,7 @@
 use clap::Parser;
 use clap_num::maybe_hex;
 use color_eyre::eyre::Result;
-use monitor::{cpu_loop, input_loop, Type};
+use monitor::{cpu_loop, input_loop};
 use rusty6502::prelude::*;
 use std::{io, io::Write, sync::mpsc::channel, thread, time};
 
@@ -14,7 +14,7 @@ use std::{io, io::Write, sync::mpsc::channel, thread, time};
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
-    cpu_type: Type,
+    cpu_type: CPUType,
 
     #[arg(help = "Filename containing binary image or PRG file")]
     filename: Option<String>,
@@ -29,9 +29,9 @@ struct Args {
     start: Option<u16>,
 }
 
-struct Runner {
+struct Runner<'a> {
     h: std::thread::JoinHandle<Result<()>>,
-    n: String,
+    n: &'a str,
     done: bool,
 }
 
@@ -60,7 +60,7 @@ fn main() -> Result<()> {
     let c = thread::spawn(move || cpu_loop(args.cpu_type, &cpucommandrx, &cpucommandresptx));
     let mut cpu = Runner {
         h: c,
-        n: String::from("CPU"),
+        n: "CPU",
         done: false,
     };
 
@@ -82,7 +82,7 @@ fn main() -> Result<()> {
     });
     let mut stdin = Runner {
         h: s,
-        n: String::from("Stdin"),
+        n: "Stdin",
         done: false,
     };
 
@@ -117,7 +117,7 @@ fn main() -> Result<()> {
     });
     let mut stdout = Runner {
         h: o,
-        n: String::from("Stdout"),
+        n: "Stdout",
         done: false,
     };
 
@@ -132,7 +132,7 @@ fn main() -> Result<()> {
     });
     let mut main = Runner {
         h: m,
-        n: String::from("main"),
+        n: "main",
         done: false,
     };
 
@@ -149,37 +149,3 @@ fn main() -> Result<()> {
         thread::sleep(time::Duration::from_millis(100));
     }
 }
-
-/*fn print_state(
-    st: &Stop,
-    tx: &Sender<Command>,
-    rx: &Receiver<Result<CommandResponse>>,
-    outputtx: &Sender<(String, bool)>,
-) -> Result<()> {
-    // Different from just using Display for CPUState since we don't want the
-    // memory dump and slightly differeing order.
-    if let StopReason::Break(addr) = &st.reason {
-        outputtx.send((format!("\nBreakpoint at {:04X}\n", addr.addr), false))?;
-    }
-    if let StopReason::Watch(pc, addr) = &st.reason {
-        outputtx.send((
-            format!(
-                "\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})\n",
-                addr.addr, pc.addr, st.state.pc,
-            ),
-            false,
-        ))?;
-        tx.send(Command::Disassemble(Location { addr: pc.addr }))?;
-        let r = rx.recv()?;
-        match r {
-            Ok(CommandResponse::Disassemble(d)) => outputtx.send((format!("{d}\n"), false))?,
-            Err(e) => outputtx.send((format!("Disassemble error - {e}\n"), false))?,
-            _ => return Err(eyre!("Invalid return from Disassemble - {r:?}")),
-        }
-    }
-    outputtx.send((format!(
-            "{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}\n",
-            st.state.dis, st.state.a, st.state.x, st.state.y, st.state.s, st.state.p, st.state.op_val, st.state.op_addr, st.state.op_tick, st.state.clocks), false))?;
-    Ok(())
-}
-*/
