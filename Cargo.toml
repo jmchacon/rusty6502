@@ -60,7 +60,7 @@ regex = "1"
 rusty6502 = { path = "./", version = "~0.1" }
 strum_macros = "0.24.1"
 strum = "0.24.1"
-thiserror = "1.0.45"
+thiserror = "1.0.46"
 
 [workspace.package]
 edition = "2021"
