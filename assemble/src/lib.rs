@@ -857,6 +857,7 @@ fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
         // ascii chars here.
         [b'0', b'x', ..] => (&val[2..], 16),
         [b'$', ..] => (&val[1..], 16),
+        [b'%', ..] => (&val[1..], 2),
         _ => (val, 10),
     };
 

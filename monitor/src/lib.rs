@@ -821,15 +821,20 @@ fn trim_newline(bps: &mut String) {
     }
 }
 
-fn parse_u16(val: &str) -> Result<u16> {
-    let (trimmed, base) = match val.as_bytes() {
+fn val_and_base(val: &str) -> (&str, u32) {
+    match val.as_bytes() {
         // Remove any possibly leading 0x or $. If we did this is also base 16
         // Can index back into val without worry about utf8 since we only matched
         // ascii chars here.
         [b'0', b'x', ..] => (&val[2..], 16),
         [b'$', ..] => (&val[1..], 16),
+        [b'%', ..] => (&val[1..], 2),
         _ => (val, 10),
-    };
+    }
+}
+
+fn parse_u16(val: &str) -> Result<u16> {
+    let (trimmed, base) = val_and_base(val);
 
     // If nothing was left we're done with no value.
     if trimmed.is_empty() {
@@ -843,14 +848,7 @@ fn parse_u16(val: &str) -> Result<u16> {
 }
 
 fn parse_u8(val: &str) -> Result<u8> {
-    let (trimmed, base) = match val.as_bytes() {
-        // Remove any possibly leading 0x or $. If we did this is also base 16
-        // Can index back into val without worry about utf8 since we only matched
-        // ascii chars here.
-        [b'0', b'x', ..] => (&val[2..], 16),
-        [b'$', ..] => (&val[1..], 16),
-        _ => (val, 10),
-    };
+    let (trimmed, base) = val_and_base(val);
 
     // If nothing was left we're done with no value.
     if trimmed.is_empty() {
