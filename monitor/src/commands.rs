@@ -1,4 +1,6 @@
 use rusty6502::prelude::*;
+use std::fmt;
+use strum_macros::Display;
 
 #[derive(Debug)]
 pub enum Command {
@@ -47,7 +49,7 @@ pub struct Val {
     pub val: u8,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Display, PartialEq)]
 pub enum StopReason {
     Run,
     Step,
@@ -62,6 +64,13 @@ pub enum StopReason {
 pub struct Stop {
     pub state: CPUState,
     pub reason: StopReason,
+}
+
+impl fmt::Display for Stop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Reason: {}", self.reason)?;
+        writeln!(f, "State: {}", self.state)
+    }
 }
 
 #[derive(Debug)]
