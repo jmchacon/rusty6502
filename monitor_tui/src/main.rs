@@ -107,7 +107,7 @@ fn main() -> Result<()> {
                     println!("{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}", st.state.dis, st.state.a, st.state.x, st.state.y, st.state.s, st.state.p, st.state.op_val, st.state.op_addr, st.state.op_tick, st.state.clocks);
                 }
                 monitor::Output::RAM(r) => {
-                    print!("{}", &r as &dyn Memory);
+                    print!("{}", r.as_ref() as &dyn Memory);
                 }
             }
             // Different from just using Display for CPUState since we don't want the

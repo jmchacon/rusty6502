@@ -62,7 +62,7 @@ pub enum StopReason {
 
 #[derive(Debug)]
 pub struct Stop {
-    pub state: CPUState,
+    pub state: Box<CPUState>,
     pub reason: StopReason,
 }
 
@@ -77,25 +77,25 @@ impl fmt::Display for Stop {
 pub enum CommandResponse {
     // NOTE: There is no Run response as it uses Stop to indicate updates.
     //       It will either hit a break, watch, get a new Stop command or an error.
-    Stop(Stop),
+    Stop(Box<Stop>),
     Break,
     BreakList(Vec<Location>),
     DeleteBreakpoint,
-    Step(Stop),
-    Tick(Stop),
+    Step(Box<Stop>),
+    Tick(Box<Stop>),
     Read(Val),
     ReadRange(Vec<Val>),
     Write,
     WriteRange,
-    Cpu(CPUState),
-    Ram([u8; MAX_SIZE]),
+    Cpu(Box<CPUState>),
+    Ram(Box<[u8; MAX_SIZE]>),
     Disassemble(String),
     DisassembleRange(Vec<String>),
     Watch,
     WatchList(Vec<Location>),
     DeleteWatchpoint,
-    Load(CPUState),
+    Load(Box<CPUState>),
     Dump,
-    PC(CPUState),
-    Reset(CPUState),
+    PC(Box<CPUState>),
+    Reset(Box<CPUState>),
 }

@@ -27,10 +27,10 @@ pub enum Output {
     /// An optional leading string (which will have newline appended) may also be supplied.
     /// No prompt should be printed here as this is often used for repeating output
     /// such as during RUN.
-    CPU(Stop, Option<String>),
+    CPU(Box<Stop>, Option<String>),
     /// A RAM dump. No prompt should be printed after this as it's often used
     /// in non interactive areas.
-    RAM([u8; MAX_SIZE]),
+    RAM(Box<[u8; MAX_SIZE]>),
 }
 
 /// This function is the main input loop which expects a channel to receive
@@ -307,7 +307,7 @@ QUIT | Q - Exit the monitor"#,
                                     // Memory has a good Display impl we can use.
                                     // Just fill in the bytes we received and
                                     // everything will collapse around the nuls.
-                                    let mut r = [0; MAX_SIZE];
+                                    let mut r = Box::new([0; MAX_SIZE]);
                                     for (pos, v) in l.iter().enumerate() {
                                         r[addr as usize + pos] = v.val;
                                     }
@@ -414,10 +414,10 @@ QUIT | Q - Exit the monitor"#,
                             match r {
                                 Ok(CommandResponse::Cpu(st)) => {
                                     outputtx.send(Output::CPU(
-                                        Stop {
+                                        Box::new(Stop {
                                             state: st,
                                             reason: StopReason::None,
-                                        },
+                                        }),
                                         None,
                                     ))?;
                                 }
@@ -654,10 +654,10 @@ QUIT | Q - Exit the monitor"#,
                             match r {
                                 Ok(CommandResponse::Load(st)) => {
                                     outputtx.send(Output::CPU(
-                                        Stop {
+                                        Box::new(Stop {
                                             state: st,
                                             reason: StopReason::None,
-                                        },
+                                        }),
                                         None,
                                     ))?;
                                 }
@@ -708,10 +708,10 @@ QUIT | Q - Exit the monitor"#,
                             match r {
                                 Ok(CommandResponse::PC(st)) => {
                                     outputtx.send(Output::CPU(
-                                        Stop {
+                                        Box::new(Stop {
                                             state: st,
                                             reason: StopReason::None,
-                                        },
+                                        }),
                                         None,
                                     ))?;
                                 }
@@ -728,10 +728,10 @@ QUIT | Q - Exit the monitor"#,
                             match r {
                                 Ok(CommandResponse::Reset(st)) => {
                                     outputtx.send(Output::CPU(
-                                        Stop {
+                                        Box::new(Stop {
                                             state: st,
                                             reason: StopReason::None,
-                                        },
+                                        }),
                                         None,
                                     ))?;
                                 }
@@ -978,10 +978,10 @@ pub fn cpu_loop(
             if reason != StopReason::Run {
                 is_running = false;
             }
-            let st = Stop {
-                state: d.state.borrow().clone(),
+            let st = Box::new(Stop {
+                state: Box::new(d.state.borrow().clone()),
                 reason,
-            };
+            });
             cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
         }
 
@@ -1031,10 +1031,10 @@ pub fn cpu_loop(
                 cpu.debug();
                 (d.state.borrow_mut().dis, _) =
                     cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                let st = Stop {
-                    state: d.state.borrow().clone(),
+                let st = Box::new(Stop {
+                    state: Box::new(d.state.borrow().clone()),
                     reason: StopReason::Run,
-                };
+                });
                 cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
             }
             Command::Stop => {
@@ -1042,10 +1042,10 @@ pub fn cpu_loop(
                 cpu.debug();
                 (d.state.borrow_mut().dis, _) =
                     cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                let st = Stop {
-                    state: d.state.borrow().clone(),
+                let st = Box::new(Stop {
+                    state: Box::new(d.state.borrow().clone()),
                     reason: StopReason::Stop,
-                };
+                });
                 cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
             }
             Command::Break(addr) => {
@@ -1105,10 +1105,10 @@ pub fn cpu_loop(
                         }
                     }
                 }
-                let st = Stop {
-                    state: d.state.borrow().clone(),
+                let st = Box::new(Stop {
+                    state: Box::new(d.state.borrow().clone()),
                     reason,
-                };
+                });
                 cpucommandresptx.send(Ok(CommandResponse::Step(st)))?;
             }
             Command::Tick => {
@@ -1154,10 +1154,10 @@ pub fn cpu_loop(
                         }
                     }
                 }
-                let st = Stop {
-                    state: d.state.borrow().clone(),
+                let st = Box::new(Stop {
+                    state: Box::new(d.state.borrow().clone()),
                     reason,
-                };
+                });
                 cpucommandresptx.send(Ok(CommandResponse::Tick(st)))?;
             }
 
@@ -1191,10 +1191,11 @@ pub fn cpu_loop(
                 cpu.debug();
                 (d.state.borrow_mut().dis, _) =
                     cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                cpucommandresptx.send(Ok(CommandResponse::Cpu(d.state.borrow().clone())))?;
+                cpucommandresptx
+                    .send(Ok(CommandResponse::Cpu(Box::new(d.state.borrow().clone()))))?;
             }
             Command::Ram => {
-                let mut r = [0u8; MAX_SIZE];
+                let mut r = Box::new([0u8; MAX_SIZE]);
                 cpu.ram().borrow().ram(&mut r);
                 cpucommandresptx.send(Ok(CommandResponse::Ram(r)))?;
             }
@@ -1279,9 +1280,9 @@ pub fn cpu_loop(
                                     cpu.debug();
                                     (d.state.borrow_mut().dis, _) =
                                         cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                                    cpucommandresptx.send(Ok(CommandResponse::Load(
+                                    cpucommandresptx.send(Ok(CommandResponse::Load(Box::new(
                                         d.state.borrow().clone(),
-                                    )))?;
+                                    ))))?;
                                     break;
                                 }
                                 Ok(OpState::Processing) => continue,
@@ -1315,7 +1316,8 @@ pub fn cpu_loop(
                 cpu.debug();
                 (d.state.borrow_mut().dis, _) =
                     cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                cpucommandresptx.send(Ok(CommandResponse::PC(d.state.borrow().clone())))?;
+                cpucommandresptx
+                    .send(Ok(CommandResponse::PC(Box::new(d.state.borrow().clone()))))?;
             }
             Command::Reset => {
                 if !is_init {
@@ -1325,7 +1327,9 @@ pub fn cpu_loop(
                     cpu.debug();
                     (d.state.borrow_mut().dis, _) =
                         cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                    cpucommandresptx.send(Ok(CommandResponse::Reset(d.state.borrow().clone())))?;
+                    cpucommandresptx.send(Ok(CommandResponse::Reset(Box::new(
+                        d.state.borrow().clone(),
+                    ))))?;
                     continue;
                 }
                 loop {
@@ -1334,8 +1338,9 @@ pub fn cpu_loop(
                             cpu.debug();
                             (d.state.borrow_mut().dis, _) =
                                 cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                            cpucommandresptx
-                                .send(Ok(CommandResponse::Reset(d.state.borrow().clone())))?;
+                            cpucommandresptx.send(Ok(CommandResponse::Reset(Box::new(
+                                d.state.borrow().clone(),
+                            ))))?;
                             break;
                         }
                         Ok(OpState::Processing) => continue,
