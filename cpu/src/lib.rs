@@ -776,7 +776,7 @@ enum Register {
 /// `CPUState` is the public information about the CPU and RAM
 /// at a point in time. This is generally used through the debug Option
 /// in the Cpu below.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CPUState {
     /// CPU state
     pub state: State,
@@ -835,6 +835,27 @@ impl Default for CPUState {
             dis: String::new(),
             op_tick: Tick::default(),
         }
+    }
+}
+
+impl fmt::Debug for CPUState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let r = &(&(self.ram) as &dyn Memory) as &dyn std::fmt::Debug;
+        f.debug_struct("CPU State")
+            .field("state", &self.state)
+            .field("clocks", &self.clocks)
+            .field("dis", &self.dis)
+            .field("a", &self.a)
+            .field("x", &self.x)
+            .field("y", &self.y)
+            .field("s", &self.s)
+            .field("p", &self.p)
+            .field("pc", &self.pc)
+            .field("op_val", &self.op_val)
+            .field("op_addr", &self.op_addr)
+            .field("op_tick", &self.op_tick)
+            .field("ram", r)
+            .finish()
     }
 }
 
