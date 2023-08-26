@@ -854,8 +854,9 @@ impl fmt::Debug for CPUState {
             .field("op_val", &self.op_val)
             .field("op_addr", &self.op_addr)
             .field("op_tick", &self.op_tick)
-            .field("ram", r)
-            .finish()
+            .finish()?;
+        // Pull RAM out so it formats a bit more nicely and lines up.
+        writeln!(f, "\nram:\n{r:?}")
     }
 }
 
