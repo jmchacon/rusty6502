@@ -106,7 +106,9 @@ RESET - Run a reset sequence on the CPU
 QUIT | Q - Exit the monitor"#,
                             ));
                         }
-                        "QUIT" | "Q" => return Ok(()),
+                        "QUIT" | "Q" => {
+                            return Ok(());
+                        }
                         "RUN" | "C" => {
                             cpucommandtx.send(Command::Run)?;
                             running = 1;
@@ -1265,6 +1267,14 @@ pub fn cpu_loop(
                                 Ok(OpState::Done) => {
                                     if let Some(start) = start {
                                         cpu.pc_mut(start.addr);
+                                    } else {
+                                        // We don't always reset so force start PC
+                                        // to reset vector always.
+                                        let addr =
+                                            u16::from(cpu.ram().borrow().read(RESET_VECTOR + 1))
+                                                << 8
+                                                | u16::from(cpu.ram().borrow().read(RESET_VECTOR));
+                                        cpu.pc_mut(addr);
                                     }
                                     cpu.debug();
                                     (d.state.borrow_mut().dis, _) =
@@ -1292,7 +1302,7 @@ pub fn cpu_loop(
                 let mut r = [0; MAX_SIZE];
                 cpu.ram().borrow().ram(&mut r);
                 match write(Path::new(&file), r) {
-                    Ok(_) => {
+                    Ok(()) => {
                         cpucommandresptx.send(Ok(CommandResponse::Dump))?;
                     }
                     Err(e) => {
