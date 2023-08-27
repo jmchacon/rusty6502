@@ -143,7 +143,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 State::Begin => match upper.as_str().as_bytes() {
                     // We can match an ORG or comment here directly.
                     [b'O', b'R', b'G', ..] => State::Org,
-                    [b';', ..] => State::Comment(String::from(&token[1..])),
+                    [b';', ..] => State::Comment(token[1..].into()),
                     // Anything else is either an opcode or a label to be fleshed
                     // out in a later state.
                     _ => {
@@ -227,7 +227,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 // If instead this ran out of tokens in fields the loop would end and the
                 // next line starts at Begin automatically.
                 State::Remainder => match token.as_bytes() {
-                    [b';', ..] => State::Comment(String::from(&token[1..])),
+                    [b';', ..] => State::Comment(token[1..].into()),
                     _ => {
                         return Err(eyre!(
                             "Error parsing line {}: only comment after parsed tokens allowed - remainder {token} - {line}",
@@ -237,7 +237,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 },
                 // For comments take everything left, construct a comment and then abort the loop now.
                 State::Comment(c) => {
-                    let mut comment = String::from(";");
+                    let mut comment: String = ";".into();
                     comment += c.as_str();
                     comment += " ";
                     comment.push_str(fields.as_slice()[index..].join(" ").as_str());
@@ -293,7 +293,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                     if token.as_bytes().first() == Some(&b';') {
                         operation.mode = AddressMode::Implied;
                         l.push(Token::Op(operation));
-                        State::Comment(String::from(&token[1..]))
+                        State::Comment(token[1..].into())
                     } else {
                         if cpu
                             .resolve_opcode(&operation.op, &AddressMode::Relative)
@@ -389,7 +389,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
         // It may also be a single token opcode such as SEI which has no operand value/label.
         match state {
             State::Comment(c) => {
-                let mut comment = String::from(";");
+                let mut comment: String = ";".into();
                 comment += c.as_str();
                 l.push(Token::Comment(comment));
             }
@@ -685,7 +685,7 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                     // TODO: If > 1 pick one randomly.
                     res.bin[usize::from(o.pc)] = modes[0];
                     if label_out.is_empty() {
-                        label_out = String::from("        ");
+                        label_out = "        ".into();
                     }
                     if let Some(val) = &o.op_val {
                         let val = match val {
@@ -892,11 +892,11 @@ fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
 fn parse_label(label: &str) -> Result<String> {
     // * is special case where it's always ok
     if label == "*" {
-        return Ok(String::from(label));
+        return Ok(label.into());
     }
 
     if re().is_match(label) {
-        Ok(String::from(label))
+        Ok(label.into())
     } else {
         Err(eyre!(
             "Error parsing label - {label}. Must be of the form {LABEL}"

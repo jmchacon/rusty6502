@@ -48,7 +48,7 @@ fn main() -> Result<()> {
     let c = thread::spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &cpucommandresptx));
     let mut cpu = Runner {
         h: c,
-        n: String::from("CPU"),
+        n: "CPU".into(),
         done: false,
     };
 
@@ -63,7 +63,7 @@ fn main() -> Result<()> {
     });
     let mut stdin = Runner {
         h: s,
-        n: String::from("Stdin"),
+        n: "Stdin".into(),
         done: false,
     };
 
@@ -78,7 +78,7 @@ fn main() -> Result<()> {
     });
     let mut stdout = Runner {
         h: o,
-        n: String::from("Stdout"),
+        n: "Stdout".into(),
         done: false,
     };
 
@@ -87,7 +87,7 @@ fn main() -> Result<()> {
     });
     let mut main = Runner {
         h: m,
-        n: String::from("main"),
+        n: "main".into(),
         done: false,
     };
 
