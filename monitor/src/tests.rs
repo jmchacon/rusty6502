@@ -21,11 +21,33 @@ use tempfile::tempdir;
 fn functionality_test() -> Result<()> {
     // The command channel.
     let (cpucommandtx, cpucommandrx) = channel();
+    // Pass through channels for cpucommand so we can log for tests.
+    let (passcpucommandtx, passcpucommandrx) = channel();
+    let passcpu = thread::Builder::new().name("pass through".into());
+    passcpu.spawn(move || -> Result<()> {
+        loop {
+            let resp = passcpucommandrx.recv()?;
+            println!("Recevied Command: {resp:?}");
+            cpucommandtx.send(resp)?;
+        }
+    })?;
+
     // The response channel.
     let (cpucommandresptx, cpucommandresprx) = channel();
+    // Pass through channels for cpucommandresp so we can log for tests.
+    let (passcpucommandresptx, passcpucommandresprx) = channel();
+
+    let passcpuresp = thread::Builder::new().name("pass through".into());
+    passcpuresp.spawn(move || -> Result<()> {
+        loop {
+            let resp = passcpucommandresprx.recv()?;
+            println!("Recevied Response: {resp:?}");
+            cpucommandresptx.send(resp)?;
+        }
+    })?;
 
     let cl = thread::Builder::new().name("cpu_loop".into());
-    cl.spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &cpucommandresptx))?;
+    cl.spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &passcpucommandresptx))?;
 
     let (inputtx, inputrx) = channel();
     let (outputtx, outputrx) = channel();
@@ -37,7 +59,13 @@ fn functionality_test() -> Result<()> {
 
     let il = thread::Builder::new().name("input_loop".into());
     il.spawn(move || -> Result<()> {
-        input_loop(&cpucommandtx, &cpucommandresprx, &inputrx, &outputtx, true)
+        input_loop(
+            &passcpucommandtx,
+            &cpucommandresprx,
+            &inputrx,
+            &outputtx,
+            true,
+        )
     })?;
 
     // We should get a CPU and a prompt since we did a preload.
@@ -102,6 +130,8 @@ fn functionality_test() -> Result<()> {
     pc_tests(&inputtx, &outputrx)?;
     ram_tests(&inputtx, &outputrx)?;
     cpu_tests(&inputtx, &outputrx)?;
+    read_tests(&inputtx, &outputrx)?;
+    write_tests(&inputtx, &outputrx)?;
 
     Ok(())
 }
@@ -525,6 +555,265 @@ fn cpu_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()
     if let Output::Prompt(_) = resp {
     } else {
         panic!("Didn't get prompt after CPU? - {resp:?}");
+    }
+
+    Ok(())
+}
+
+fn read_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+    // Send an invalid read command
+    inputtx.send("R".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid read command");
+    } else {
+        panic!("Didn't get an error for invalid read command. Got {resp:?}");
+    }
+
+    // Send an invalid address
+    inputtx.send("R 0xFFFFF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid read (addr) command");
+    } else {
+        panic!("Didn't get an error for invalid read (addr) command. Got {resp:?}");
+    }
+
+    // Read 0x0400 and validate it
+    inputtx.send("R 0x0400".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let exp = "0400  D8";
+        assert!(
+            s == exp,
+            "Read return didn't match - Got '{s}' and expected '{exp}'"
+        );
+    } else {
+        panic!("Didn't get prompt after read? - {resp:?}");
+    }
+
+    // Invalid RR
+    inputtx.send("RR".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range read command");
+    } else {
+        panic!("Didn't get an error for invalid range read command. Got {resp:?}");
+    }
+
+    // Send an invalid address
+    inputtx.send("RR 0xFFFFF 2".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range read (addr) command");
+    } else {
+        panic!("Didn't get an error for invalid range read (addr) command. Got {resp:?}");
+    }
+
+    // Send an invalid length
+    inputtx.send("RR 0x0400 0xFFFFF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range read (len) command");
+    } else {
+        panic!("Didn't get an error for invalid range read (len) command. Got {resp:?}");
+    }
+
+    // Send a start+len > MAX_SIZE
+    inputtx.send("RR 0x0400 0xFFFF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range read (total) command");
+    } else {
+        panic!("Didn't get an error for invalid range read (total) command. Got {resp:?}");
+    }
+
+    // Read 0x0400 for len 1 and validate it
+    inputtx.send("RR 0x0400 2".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::RAM(r) = resp {
+        assert!(
+            r[0x0400] == 0xD8,
+            "Read return didn't match 0x0400 D8 - Got {}",
+            r[0x0400]
+        );
+        assert!(
+            r[0x0401] == 0xA2,
+            "Read return didn't match 0x0401 A2 - Got {}",
+            r[0x0401]
+        );
+    } else {
+        panic!("Didn't get ram after range read? - {resp:?}");
+    }
+
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after range read? - {resp:?}");
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn write_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+    // Send an invalid read command
+    inputtx.send("W".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid write command");
+    } else {
+        panic!("Didn't get an error for invalid write command. Got {resp:?}");
+    }
+
+    // Send an invalid address
+    inputtx.send("W 0xFFFFF 0xEA".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid write (addr) command");
+    } else {
+        panic!("Didn't get an error for invalid write (addr) command. Got {resp:?}");
+    }
+
+    // Send an invalid val
+    inputtx.send("W 0x0400 0xFFFF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid write (val) command");
+    } else {
+        panic!("Didn't get an error for invalid write (val) command. Got {resp:?}");
+    }
+
+    // Write 0x0400 EA and validate it
+    inputtx.send("W 0x0400 0xEA".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+    // Read 0x0400 and validate it
+    inputtx.send("R 0x0400".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let exp = "0400  EA";
+        assert!(
+            s == exp,
+            "Read return didn't match - Got '{s}' and expected '{exp}'"
+        );
+    } else {
+        panic!("Didn't get prompt after read? - {resp:?}");
+    }
+
+    // Invalid WR
+    inputtx.send("WR".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range write command");
+    } else {
+        panic!("Didn't get an error for invalid range write command. Got {resp:?}");
+    }
+
+    // Send an invalid address
+    inputtx.send("WR 0xFFFFF 2 0xEA".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range write (addr) command");
+    } else {
+        panic!("Didn't get an error for invalid range write (addr) command. Got {resp:?}");
+    }
+
+    // Send an invalid length
+    inputtx.send("WR 0x0400 0xFFFFF 0xEA".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range write (len) command");
+    } else {
+        panic!("Didn't get an error for invalid range write (len) command. Got {resp:?}");
+    }
+
+    // Send an invalid value
+    inputtx.send("WR 0x0400 2 0xFFEA".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range write (val) command");
+    } else {
+        panic!("Didn't get an error for invalid range write (val) command. Got {resp:?}");
+    }
+
+    // Send a start+len > MAX_SIZE
+    inputtx.send("WR 0x0400 0xFFFF 0xEA".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range write (total) command");
+    } else {
+        panic!("Didn't get an error for invalid range write (total) command. Got {resp:?}");
+    }
+
+    // Write 0x0400 for len 2 and validate it
+    inputtx.send("WR 0x0400 2 0xEB".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+    // Read 0x0400 and 0x0401 and validate it
+    inputtx.send("R 0x0400".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let exp = "0400  EB";
+        assert!(
+            s == exp,
+            "Read return didn't match - Got '{s}' and expected '{exp}'"
+        );
+    } else {
+        panic!("Didn't get prompt after read? - {resp:?}");
+    }
+    inputtx.send("R 0x0401".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let exp = "0401  EB";
+        assert!(
+            s == exp,
+            "Read return didn't match - Got '{s}' and expected '{exp}'"
+        );
+    } else {
+        panic!("Didn't get prompt after read? - {resp:?}");
+    }
+
+    // Reset values and validate them.
+    inputtx.send("W 0x0400 0xD8".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+    inputtx.send("W 0x0401 0xA2".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+    inputtx.send("RR 0x0400 2".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::RAM(r) = resp {
+        assert!(
+            r[0x0400] == 0xD8,
+            "Read return didn't match 0x0400 D8 - Got {}",
+            r[0x0400]
+        );
+        assert!(
+            r[0x0401] == 0xA2,
+            "Read return didn't match 0x0401 A2 - Got {}",
+            r[0x0401]
+        );
+    } else {
+        panic!("Didn't get ram after range read? - {resp:?}");
+    }
+
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after range read? - {resp:?}");
     }
 
     Ok(())

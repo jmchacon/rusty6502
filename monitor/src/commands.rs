@@ -73,7 +73,7 @@ impl fmt::Display for Stop {
     }
 }
 
-#[derive(Debug)]
+#[derive(Display)]
 pub enum CommandResponse {
     // NOTE: There is no Run response as it uses Stop to indicate updates.
     //       It will either hit a break, watch, get a new Stop command or an error.
@@ -98,4 +98,17 @@ pub enum CommandResponse {
     Dump,
     PC(Box<CPUState>),
     Reset(Box<CPUState>),
+}
+
+impl fmt::Debug for CommandResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommandResponse::Ram(r) => {
+                // Handle ram directly since we want to use the formatter in Memory to print this.
+                let r = &((r.as_ref()) as &dyn Memory) as &dyn std::fmt::Debug;
+                write!(f, "{r:?}")
+            }
+            _ => write!(f, "{self}"),
+        }
+    }
 }

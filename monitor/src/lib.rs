@@ -73,7 +73,7 @@ pub fn input_loop(
 
                     match cmd.as_str() {
                         "H" | "HELP" => {
-                            pre = Some(String::from(
+                            pre = Some(
                                 r#"Usage:
 HELP | H - This usage information
 RUN | C - run continually until either a breakpoint/watchpoint is hit or a STOP is sent
@@ -103,8 +103,9 @@ L <path> [<start> [<pc>]] - Load a binary image and optionally start loading at 
 BIN <path> - Dump a memory image of RAM to the given path
 PC <addr> - Set the PC to the addr
 RESET - Run a reset sequence on the CPU
-QUIT | Q - Exit the monitor"#,
-                            ));
+QUIT | Q - Exit the monitor"#
+                                    .into(),
+                            );
                         }
                         "QUIT" | "Q" => {
                             return Ok(());
@@ -129,9 +130,9 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "B" => {
                             if parts.len() != 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Break must include an addr - B <addr>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Break must include an addr - B <addr>".into(),
+                                ))?;
                                 continue;
                             }
                             match parse_u16(parts[1]) {
@@ -182,9 +183,10 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "DB" => {
                             if parts.len() != 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Delete Breakpoint must include an num - DB <num>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Delete Breakpoint must include an num - DB <num>"
+                                        .into(),
+                                ))?;
                                 continue;
                             }
                             match parts[1].parse::<usize>() {
@@ -244,9 +246,9 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "R" => {
                             if parts.len() != 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Read must include an addr - R <addr>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Read must include an addr - R <addr>".into(),
+                                ))?;
                                 continue;
                             }
                             match parse_u16(parts[1]) {
@@ -276,7 +278,7 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "RR" => {
                             if parts.len() != 3 {
-                                outputtx.send(Output::Error(String::from("Error - Read Range must include an addr and len - RR <addr> <len>")))?;
+                                outputtx.send(Output::Error("Error - Read Range must include an addr and len - RR <addr> <len>".into()))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
@@ -323,9 +325,10 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "W" => {
                             if parts.len() != 3 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Write must include an addr and value - W <addr> <val>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Write must include an addr and value - W <addr> <val>"
+                                        .into(),
+                                ))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
@@ -360,7 +363,7 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "WR" => {
                             if parts.len() != 4 {
-                                outputtx.send(Output::Error(String::from("Error - Write Range must include an addr len and val - WR <addr> <len> <val>")))?;
+                                outputtx.send(Output::Error("Error - Write Range must include an addr len and val - WR <addr> <len> <val>".into()))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
@@ -444,9 +447,9 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "D" => {
                             if parts.len() != 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Disassemble must include an addr - D <addr>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Disassemble must include an addr - D <addr>".into(),
+                                ))?;
                                 continue;
                             }
                             match parse_u16(parts[1]) {
@@ -480,7 +483,7 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "DR" => {
                             if parts.len() != 3 {
-                                outputtx.send(Output::Error(String::from("Error - Disassemble Range must include an addr and len - DR <addr> <len>")))?;
+                                outputtx.send(Output::Error("Error - Disassemble Range must include an addr and len - DR <addr> <len>".into()))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
@@ -530,9 +533,9 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "WP" => {
                             if parts.len() != 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Watchpoint must include an addr - WP <addr>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Watchpoint must include an addr - WP <addr>".into(),
+                                ))?;
                                 continue;
                             }
                             match parse_u16(parts[1]) {
@@ -583,9 +586,10 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "DW" => {
                             if parts.len() != 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Delete Watchpoint must include an num - DW <num>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Delete Watchpoint must include an num - DW <num>"
+                                        .into(),
+                                ))?;
                                 continue;
                             }
                             match parts[1].parse::<usize>() {
@@ -617,10 +621,10 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "L" => {
                             if parts.len() < 2 || parts.len() > 4 {
-                                outputtx.send(Output::Error(String::from("Error - Load must include a filename and optionally load location with optional start - L <path to file> [location [start]]")))?;
+                                outputtx.send(Output::Error("Error - Load must include a filename and optionally load location with optional start - L <path to file> [location [start]]".into()))?;
                                 continue;
                             }
-                            let file = String::from(parts[1]);
+                            let file: String = parts[1].into();
                             let loc = if parts.len() == 3 {
                                 let addr = match parse_u16(parts[2]) {
                                     Ok(addr) => addr,
@@ -670,12 +674,13 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "BIN" => {
                             if parts.len() != 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Dump must include a filename - BIN <path to file>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Dump must include a filename - BIN <path to file>"
+                                        .into(),
+                                ))?;
                                 continue;
                             }
-                            let file = String::from(parts[1]);
+                            let file: String = parts[1].into();
                             cpucommandtx.send(Command::Dump(file))?;
                             let r = cpucommandresprx.recv()?;
                             match r {
@@ -689,9 +694,9 @@ QUIT | Q - Exit the monitor"#,
                         }
                         "PC" => {
                             if parts.len() != 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - PC must include an addr - PC <addr>",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - PC must include an addr - PC <addr>".into(),
+                                ))?;
                                 continue;
                             }
                             let addr = match parse_u16(parts[1]) {
@@ -928,11 +933,11 @@ pub fn cpu_loop(
         if let Some(l) = range.len {
             len = l;
         }
-        if (usize::from(range.addr) + usize::from(len)) > MAX_SIZE {
+        if (usize::from(range.addr) + usize::from(len - 1)) > MAX_SIZE {
             cpucommandresptx.send(Err(eyre!(
                 "invalid size {} + {} exceeds {MAX_SIZE}",
                 range.addr,
-                len
+                len - 1
             )))?;
             return Err(eyre!("range error"));
         }
