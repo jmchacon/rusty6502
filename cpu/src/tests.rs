@@ -4,7 +4,7 @@ use crate::{
     State, Tick, Vectors, CPU, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
     P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
-use chip::Chip;
+use chip::{CPUType, Chip};
 use color_eyre::eyre::{eyre, Result};
 use irq::Sender;
 use memory::{Memory, MAX_SIZE};
@@ -232,6 +232,15 @@ fn invalid_states() -> Result<()> {
     #[allow(clippy::clone_on_copy)]
     let x = a.clone();
     assert!(x.to_string() == "A", "Clone didn't work for register?");
+
+    let cpu = CPUType::NMOS;
+    #[allow(clippy::clone_on_copy)]
+    let cpucopy = cpu.clone();
+    assert!(
+        cpucopy.to_string() == "NMOS",
+        "Clone didn't work for CPUType?"
+    );
+
     let d = Debug::<CPUState>::new(128, 1);
     let debug = { || d.debug() };
     let nmi_addr = 0x1212;

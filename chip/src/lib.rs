@@ -28,7 +28,7 @@ pub trait Chip {
 }
 
 /// `CPUType` defines the various implementations of the 6502 available.
-#[derive(Copy, Clone, Debug, Display, PartialEq, Eq, EnumString)]
+#[derive(Copy, Clone, Debug, Display, EnumString)]
 #[allow(clippy::upper_case_acronyms)]
 pub enum CPUType {
     /// Basic NMOS 6502 including all undocumented opcodes.

@@ -565,7 +565,7 @@ impl Tick {
 }
 
 // Reset tick states
-#[derive(Copy, Clone, Display, PartialEq)]
+#[derive(Copy, Clone)]
 enum ResetTick {
     /// Tick1 and 2 are burn off cycles.
     Tick1,
@@ -2244,9 +2244,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // p_mut sets the P register to the given Flags.
     fn p_mut(&mut self, new: Flags);
 
-    // clocks returns the number of clock cycles since startup.
-    fn clocks(&self) -> usize;
-
     // op_val returns the internal op_val register.
     fn op_val(&self) -> u8;
     // op_val_mut sets the internal op_val register.
@@ -3810,11 +3807,6 @@ macro_rules! cpu_internal {
         // p_mut sets the P register to the given Flags.
         fn p_mut(&mut self, new: Flags) {
             self.p = new;
-        }
-
-        // clocks returns the number of clock cycles since startup.
-        fn clocks(&self) -> usize {
-            self.clocks
         }
 
         // op_val returns the internal op_val register.
