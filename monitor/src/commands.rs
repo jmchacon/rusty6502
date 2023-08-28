@@ -4,13 +4,16 @@ use strum_macros::Display;
 
 #[derive(Debug)]
 pub enum Command {
-    Run,
+    // Bool indicates whether to snapshot RAM on each instruction (expensive).
+    Run(bool),
     Stop,
     Break(Location),
     BreakList,
     DeleteBreakpoint(usize),
-    Step,
-    Tick,
+    // Bool indicates whether to snapshot RAM on each instruction (expensive).
+    Step(bool),
+    // Bool indicates whether to snapshot RAM on each instruction (expensive).
+    Tick(bool),
     Read(Location),
     ReadRange(LocationRange),
     Write(Location, Val),

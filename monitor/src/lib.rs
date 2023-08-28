@@ -10,7 +10,6 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
 mod commands;
-
 use commands::{Command, CommandResponse, Location, LocationRange, Stop, StopReason, Val, PC};
 
 #[cfg(test)]
@@ -76,13 +75,16 @@ pub fn input_loop(
                             pre = Some(
                                 r#"Usage:
 HELP | H - This usage information
-RUN | C - run continually until either a breakpoint/watchpoint is hit or a STOP is sent
+RUN | C [true] - run continually until either a breakpoint/watchpoint is hit or a STOP is sent.
+                 If the bool is set to true then a RAM snapshot will be taken on each instruction.
 STOP - cause the CPU to stop at the current instrunction from continual running
 BP <addr> - Break when PC is equal to the addr
 BPL - List all breakpoints
 DB <num> - Delete the given breakpoint
-S - Step instruction (2-8 clock cycles)
-T - Tick instruction (one clock cycle)
+S [true] - Step instruction (2-8 clock cycles)
+           If the bool is set to true then a RAM snapshot will be taken on each instruction.
+T [true] - Tick instruction (one clock cycle)
+           If the bool is set to true then a RAM snapshot will be taken on each tick.
 R <addr> - Read the given memory location and return its value
 RR <addr> <len> - Read starting at the given location for len times.
                   NOTE: When printing this will show a memory dump but the only
@@ -111,7 +113,14 @@ QUIT | Q - Exit the monitor"#
                             return Ok(());
                         }
                         "RUN" | "C" => {
-                            cpucommandtx.send(Command::Run)?;
+                            if parts.len() > 2 {
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Run can only optionally be follow by true: RUN [true]",
+                                )))?;
+                                continue;
+                            }
+                            let ram = parts.len() == 2 && parts[1] == "TRUE";
+                            cpucommandtx.send(Command::Run(ram))?;
                             running = 1;
                         }
                         "STOP" => {
@@ -217,7 +226,14 @@ QUIT | Q - Exit the monitor"#
                             }
                         }
                         "S" => {
-                            cpucommandtx.send(Command::Step)?;
+                            if parts.len() > 2 {
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Step can only optionally be follow by true: S [true]",
+                                )))?;
+                                continue;
+                            }
+                            let ram = parts.len() == 2 && parts[1] == "TRUE";
+                            cpucommandtx.send(Command::Step(ram))?;
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Step(st)) => {
@@ -231,7 +247,14 @@ QUIT | Q - Exit the monitor"#
                             }
                         }
                         "T" => {
-                            cpucommandtx.send(Command::Tick)?;
+                            if parts.len() > 2 {
+                                outputtx.send(Output::Error(String::from(
+                                    "Error - Tick can only optionally be follow by true: T [true]",
+                                )))?;
+                                continue;
+                            }
+                            let ram = parts.len() == 2 && parts[1] == "TRUE";
+                            cpucommandtx.send(Command::Tick(ram))?;
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Tick(st)) => {
@@ -870,12 +893,12 @@ fn parse_u8(val: &str) -> Result<u8> {
 
 struct Debug {
     state: Rc<RefCell<CPUState>>,
-    full: bool,
+    full: Rc<RefCell<bool>>,
 }
 
 impl Debug {
     fn debug(&self) -> (Rc<RefCell<CPUState>>, bool) {
-        (Rc::clone(&self.state), self.full)
+        (Rc::clone(&self.state), *self.full.borrow())
     }
 }
 
@@ -911,7 +934,7 @@ pub fn cpu_loop(
     let mut is_init = false;
     let d = Debug {
         state: Rc::new(RefCell::new(CPUState::default())),
-        full: false,
+        full: Rc::new(RefCell::new(false)),
     };
     let debug = { || d.debug() };
     cpu.set_debug(Some(&debug));
@@ -947,6 +970,8 @@ pub fn cpu_loop(
     let mut breakpoints: Vec<Location> = Vec::new();
     let mut watchpoints: Vec<Location> = Vec::new();
 
+    let mut running_ram_snapshot = false;
+
     loop {
         if is_running {
             let mut ram = [0; MAX_SIZE];
@@ -962,6 +987,7 @@ pub fn cpu_loop(
                 return Err(eyre!("step error"));
             }
 
+            *d.full.borrow_mut() = running_ram_snapshot;
             cpu.debug();
             (d.state.borrow_mut().dis, _) = cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
             let mut reason = StopReason::Run;
@@ -1027,11 +1053,12 @@ pub fn cpu_loop(
         };
 
         match c {
-            Command::Run => {
+            Command::Run(ram) => {
                 if !is_init {
                     is_init = true;
                     cpu.power_on()?;
                 }
+                running_ram_snapshot = ram;
                 is_running = true;
                 cpu.debug();
                 (d.state.borrow_mut().dis, _) =
@@ -1075,7 +1102,7 @@ pub fn cpu_loop(
                 breakpoints.swap_remove(num);
                 cpucommandresptx.send(Ok(CommandResponse::DeleteBreakpoint))?;
             }
-            Command::Step => {
+            Command::Step(capture_ram) => {
                 if !is_init {
                     is_init = true;
                     cpu.power_on()?;
@@ -1086,6 +1113,7 @@ pub fn cpu_loop(
                     cpu.ram().borrow().ram(&mut ram);
                 }
                 let oldpc = cpu.pc();
+                *d.full.borrow_mut() = capture_ram;
                 let r = step(cpu);
                 if let Err(e) = r {
                     cpucommandresptx.send(Err(eyre!("step error: {e}")))?;
@@ -1116,7 +1144,7 @@ pub fn cpu_loop(
                 });
                 cpucommandresptx.send(Ok(CommandResponse::Step(st)))?;
             }
-            Command::Tick => {
+            Command::Tick(capture_ram) => {
                 if !is_init {
                     is_init = true;
                     cpu.power_on()?;
@@ -1127,6 +1155,7 @@ pub fn cpu_loop(
                     cpu.ram().borrow().ram(&mut ram);
                 }
                 let oldpc = cpu.pc();
+                *d.full.borrow_mut() = capture_ram;
                 let r = cpu.tick();
                 if let Err(e) = r {
                     let e = eyre!("tick error: {e}");
