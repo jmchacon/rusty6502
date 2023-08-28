@@ -4,7 +4,7 @@
 // Send commands, validate outputs
 //
 // Separate test: See if we can close channels to trigger some failure modes
-use crate::{cpu_loop, input_loop, Output, StopReason};
+use crate::{cpu_loop, input_loop, trim_newline, Output, StopReason};
 use color_eyre::eyre::{Report, Result};
 use ntest::timeout;
 use rusty6502::prelude::*;
@@ -205,6 +205,7 @@ fn functionality_test() -> Result<()> {
     cpu_tests(&inputtx, &outputrx)?;
     read_tests(&inputtx, &outputrx)?;
     write_tests(&inputtx, &outputrx)?;
+    disassemble_tests(&inputtx, &outputrx)?;
 
     Ok(())
 }
@@ -730,7 +731,7 @@ fn read_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<(
 
 #[allow(clippy::too_many_lines)]
 fn write_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
-    // Send an invalid read command
+    // Send an invalid write command
     inputtx.send("W".into())?;
     let resp = outputrx.recv()?;
     if let Output::Error(s) = resp {
@@ -813,6 +814,15 @@ fn write_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<
         panic!("Didn't get an error for invalid range write (val) command. Got {resp:?}");
     }
 
+    // Send an invalid value (parse)
+    inputtx.send("WR 0x0400 2 0x".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid range write (parse val) command");
+    } else {
+        panic!("Didn't get an error for invalid range write (parse val) command. Got {resp:?}");
+    }
+
     // Send a start+len > MAX_SIZE
     inputtx.send("WR 0x0400 0xFFFF 0xEA".into())?;
     let resp = outputrx.recv()?;
@@ -890,4 +900,97 @@ fn write_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<
     }
 
     Ok(())
+}
+
+fn disassemble_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+    // Send an invalid disassemble
+    inputtx.send("D".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid disassemble command");
+    } else {
+        panic!("Didn't get an error for invalid disassemble command. Got {resp:?}");
+    }
+
+    // Send an invalid address
+    inputtx.send("D 0xFFFFF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid disassemble (addr) command");
+    } else {
+        panic!("Didn't get an error for invalid disassemble (addr) command. Got {resp:?}");
+    }
+
+    // Disassemble and validate
+    inputtx.send("D 0x0400".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let expected = "0400 D8         CLD";
+        assert!(
+            s.contains(expected),
+            "Output from disassemble doesn't contain '{expected}' - {s}"
+        );
+    } else {
+        panic!("Didn't get prompt after disassemble? - {resp:?}");
+    }
+
+    // Invalid disassemble range
+    inputtx.send("DR".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid disassemble range command");
+    } else {
+        panic!("Didn't get an error for invalid disassemble range command. Got {resp:?}");
+    }
+
+    // Send an invalid address
+    inputtx.send("DR 0xFFFFF 2".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid disassemble range (addr) command");
+    } else {
+        panic!("Didn't get an error for invalid disassemble range (addr) command. Got {resp:?}");
+    }
+
+    // Send an invalid count
+    inputtx.send("DR 0x0400 0xFFFFF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid disassemble range (count) command");
+    } else {
+        panic!("Didn't get an error for invalid disassemble range (count) command. Got {resp:?}");
+    }
+
+    // Send an invalid range
+    inputtx.send("DR 0x0400 0xFFFF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid disassemble range (range) command");
+    } else {
+        panic!("Didn't get an error for invalid disassemble range (range) command. Got {resp:?}");
+    }
+
+    // Send length 2 over and validate
+    inputtx.send("DR 0x0400 2".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let expected = "0400 D8         CLD\n0401 A2 FF      LDX #$FF";
+        assert!(
+            s.contains(expected),
+            "Output from disassemble range doesn't contain '{expected}' - {s}"
+        );
+    } else {
+        panic!("Didn't get prompt after disassemble range? - {resp:?}");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_trim() {
+    let mut input: String = "test\r\n".into();
+    trim_newline(&mut input);
+    assert!(
+        input == "test",
+        "Didn't trim everything off input? '{input}'"
+    );
 }
