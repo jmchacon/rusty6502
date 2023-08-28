@@ -5,20 +5,24 @@
 //
 // Separate test: See if we can close channels to trigger some failure modes
 use crate::{cpu_loop, input_loop, Output, StopReason};
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{Report, Result};
 use ntest::timeout;
 use rusty6502::prelude::*;
 use std::fs::read;
 use std::path::Path;
+use std::thread::JoinHandle;
 use std::{sync::mpsc::channel, sync::mpsc::Receiver, sync::mpsc::Sender, thread};
 use tempfile::tempdir;
 
-// NOTE: We use timeout on this function to avoid having to test each
-// recv. Instead let an overall timeout control things.
-
-#[test]
-#[timeout(60000)]
-fn functionality_test() -> Result<()> {
+#[allow(clippy::type_complexity)]
+fn setup(
+    cpu: CPUType,
+    preload: bool,
+) -> Result<(
+    Sender<String>,
+    Receiver<Output>,
+    JoinHandle<Result<(), Report>>,
+)> {
     // The command channel.
     let (cpucommandtx, cpucommandrx) = channel();
     // Pass through channels for cpucommand so we can log for tests.
@@ -47,26 +51,95 @@ fn functionality_test() -> Result<()> {
     })?;
 
     let cl = thread::Builder::new().name("cpu_loop".into());
-    cl.spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &passcpucommandresptx))?;
+    cl.spawn(move || cpu_loop(cpu, &cpucommandrx, &passcpucommandresptx))?;
 
     let (inputtx, inputrx) = channel();
     let (outputtx, outputrx) = channel();
 
-    // Send a load down for a ROM we know works. Do this before starting the
-    // main loop so we can attest preload.
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
-    inputtx.send(format!("L {} 0x0000 0x0400", path.to_string_lossy()))?;
+    if preload {
+        // Send a load down for a ROM we know works. Do this before starting the
+        // main loop so we can attest preload.
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
+        inputtx.send(format!("L {} 0x0000 0x0400", path.to_string_lossy()))?;
+    }
 
     let il = thread::Builder::new().name("input_loop".into());
-    il.spawn(move || -> Result<()> {
+    let ilh = il.spawn(move || -> Result<()> {
         input_loop(
             &passcpucommandtx,
             &cpucommandresprx,
             &inputrx,
             &outputtx,
-            true,
+            preload,
         )
     })?;
+    Ok((inputtx, outputrx, ilh))
+}
+
+macro_rules! basic_startup_quit_test {
+    ($suite:ident, $($name:ident: $cpu:expr,)*) => {
+        mod $suite {
+            use super::*;
+
+            $(
+                #[test]
+                #[timeout(60000)]
+                fn $name() -> Result<()> {
+                    let (inputtx, outputrx, ilh) = setup($cpu, false)?;
+                    // Should go immediately to a prompt since we didn't preload
+                    let resp = outputrx.recv()?;
+                    if let Output::Prompt(_) = resp {
+                    } else {
+                        panic!("Didn't get prompt after startup load? - {resp:?}");
+                    }
+
+                    // Send a RESET down since it shouldn't be initialized
+                    inputtx.send("RESET".into())?;
+                    let resp = outputrx.recv()?;
+                    if let Output::CPU(cpu, _) = resp {
+                        assert!(
+                            cpu.state.pc == 0x0000,
+                            "PC not correct. Expected 0x0000 and got {cpu}"
+                        );
+                    } else {
+                        panic!("Didn't get CPUState after reset? - {resp:?}");
+                    }
+                    let resp = outputrx.recv()?;
+                    if let Output::Prompt(_) = resp {
+                    } else {
+                        panic!("Didn't get prompt after reset? - {resp:?}");
+                    }
+
+                    // Send a QUIT down and validate the thread returns.
+                    inputtx.send("Q".into())?;
+                    let ret = ilh.join();
+                    assert!(
+                        ret.is_ok(),
+                        "Got error from input loop thread after quit - {ret:?}"
+                    );
+                    Ok(())
+                }
+            )*
+        }
+    }
+}
+
+basic_startup_quit_test!(
+  basic_startup_quit_tests,
+  nmos: CPUType::NMOS,
+  nmos6510: CPUType::NMOS6510,
+  ricoh: CPUType::RICOH,
+  cmos: CPUType::CMOS,
+);
+
+// NOTE: We use timeout on this function to avoid having to test each
+// recv. Instead let an overall timeout control things.
+#[test]
+#[timeout(60000)]
+fn functionality_test() -> Result<()> {
+    let (inputtx, outputrx, _) = setup(CPUType::NMOS, true)?;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
 
     // We should get a CPU and a prompt since we did a preload.
     let resp = outputrx.recv()?;
