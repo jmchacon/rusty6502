@@ -971,7 +971,7 @@ pub fn cpu_loop(
     let mut watchpoints: Vec<Location> = Vec::new();
 
     let mut running_ram_snapshot = false;
-
+    let mut tick_pc = 0_u16;
     loop {
         if is_running {
             let mut ram = [0; MAX_SIZE];
@@ -979,7 +979,10 @@ pub fn cpu_loop(
                 // If we have watchpoints get a memory snapshot.
                 cpu.ram().borrow().ram(&mut ram);
             }
-            let oldpc = cpu.pc();
+            cpu.debug();
+            if d.state.borrow().op_tick == Tick::Reset {
+                tick_pc = cpu.pc();
+            }
             let r = step(cpu);
             if let Err(e) = r {
                 let e = eyre!("step error: {e}");
@@ -992,7 +995,7 @@ pub fn cpu_loop(
             (d.state.borrow_mut().dis, _) = cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
             let mut reason = StopReason::Run;
             for b in &breakpoints {
-                if b.addr == cpu.pc() {
+                if b.addr == tick_pc {
                     reason = StopReason::Break(Location { addr: b.addr });
                 }
             }
@@ -1001,18 +1004,24 @@ pub fn cpu_loop(
                 let cr = cr.borrow();
                 for w in &watchpoints {
                     if cr.read(w.addr) != ram[usize::from(w.addr)] {
-                        reason = StopReason::Watch(PC { addr: oldpc }, Location { addr: w.addr });
+                        reason = StopReason::Watch(PC { addr: tick_pc }, Location { addr: w.addr });
                         break;
                     }
                 }
             }
             if reason != StopReason::Run {
                 is_running = false;
+                *d.full.borrow_mut() = false;
             }
             let st = Box::new(Stop {
                 state: Box::new(d.state.borrow().clone()),
                 reason,
             });
+            // Reset RAM to clear as we might have copied this time and
+            // future ones should start clean.
+            if running_ram_snapshot {
+                d.state.borrow_mut().ram = [0; MAX_SIZE];
+            }
             cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
         }
 
@@ -1142,6 +1151,12 @@ pub fn cpu_loop(
                     state: Box::new(d.state.borrow().clone()),
                     reason,
                 });
+                // Reset RAM to clear as we might have copied this time and
+                // future ones should start clean.
+                if capture_ram {
+                    d.state.borrow_mut().ram = [0; MAX_SIZE];
+                    *d.full.borrow_mut() = false;
+                }
                 cpucommandresptx.send(Ok(CommandResponse::Step(st)))?;
             }
             Command::Tick(capture_ram) => {
@@ -1154,7 +1169,12 @@ pub fn cpu_loop(
                     // If we have watchpoints get a memory snapshot.
                     cpu.ram().borrow().ram(&mut ram);
                 }
-                let oldpc = cpu.pc();
+
+                // On a new instruction is when we save the old PC.
+                cpu.debug();
+                if d.state.borrow().op_tick == Tick::Reset {
+                    tick_pc = cpu.pc();
+                }
                 *d.full.borrow_mut() = capture_ram;
                 let r = cpu.tick();
                 if let Err(e) = r {
@@ -1173,7 +1193,7 @@ pub fn cpu_loop(
                     cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
                 let mut reason = StopReason::Tick;
                 for b in &breakpoints {
-                    if b.addr == cpu.pc() {
+                    if b.addr == tick_pc {
                         reason = StopReason::Break(Location { addr: b.addr });
                     }
                 }
@@ -1183,7 +1203,7 @@ pub fn cpu_loop(
                     for w in &watchpoints {
                         if cr.read(w.addr) != ram[usize::from(w.addr)] {
                             reason =
-                                StopReason::Watch(PC { addr: oldpc }, Location { addr: w.addr });
+                                StopReason::Watch(PC { addr: tick_pc }, Location { addr: w.addr });
                             break;
                         }
                     }
@@ -1192,6 +1212,12 @@ pub fn cpu_loop(
                     state: Box::new(d.state.borrow().clone()),
                     reason,
                 });
+                // Reset RAM to clear as we might have copied this time and
+                // future ones should start clean.
+                if capture_ram {
+                    d.state.borrow_mut().ram = [0; MAX_SIZE];
+                    *d.full.borrow_mut() = false;
+                }
                 cpucommandresptx.send(Ok(CommandResponse::Tick(st)))?;
             }
 

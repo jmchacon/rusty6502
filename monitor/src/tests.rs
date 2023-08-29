@@ -77,6 +77,66 @@ fn setup(
     Ok((inputtx, outputrx, ilh))
 }
 
+#[test]
+fn tick_init_test() -> Result<()> {
+    let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
+    // Should go immediately to a prompt since we didn't preload
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after startup? - {resp:?}");
+    }
+
+    // Send a TICK down but we're not init
+    inputtx.send("T".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(cpu, _) = resp {
+        assert!(
+            cpu.state.pc == 0x0001,
+            "PC not correct. Expected 0x0001 and got {cpu}"
+        );
+    } else {
+        panic!("Didn't get CPUState after tick? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after tick? - {resp:?}");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn step_init_test() -> Result<()> {
+    let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
+    // Should go immediately to a prompt since we didn't preload
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after startup? - {resp:?}");
+    }
+
+    // Send a TICK down but we're not init
+    inputtx.send("S".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(cpu, _) = resp {
+        assert!(
+            cpu.state.pc == 0x0000,
+            "PC not correct. Expected 0x0000 and got {cpu}"
+        );
+    } else {
+        panic!("Didn't get CPUState after step? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after tick? - {resp:?}");
+    }
+
+    Ok(())
+}
+
 macro_rules! basic_startup_quit_test {
     ($suite:ident, $($name:ident: $cpu:expr,)*) => {
         mod $suite {
@@ -91,7 +151,7 @@ macro_rules! basic_startup_quit_test {
                     let resp = outputrx.recv()?;
                     if let Output::Prompt(_) = resp {
                     } else {
-                        panic!("Didn't get prompt after startup load? - {resp:?}");
+                        panic!("Didn't get prompt after startup? - {resp:?}");
                     }
 
                     // Send a RESET down since it shouldn't be initialized
@@ -206,6 +266,7 @@ fn functionality_test() -> Result<()> {
     read_tests(&inputtx, &outputrx)?;
     write_tests(&inputtx, &outputrx)?;
     disassemble_tests(&inputtx, &outputrx)?;
+    step_tests(&inputtx, &outputrx)?;
 
     Ok(())
 }
@@ -985,12 +1046,311 @@ fn disassemble_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> R
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
+fn step_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+    // Send an invalid step
+    inputtx.send("S NO NO".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid step command");
+    } else {
+        panic!("Didn't get an error for invalid step command. Got {resp:?}");
+    }
+
+    // Send a regular step
+    inputtx.send("S".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        assert!(
+            st.reason == StopReason::Step,
+            "Reason incorrect. Should be Step and got {st}"
+        );
+        assert!(
+            st.state.pc == 0x0401,
+            "PC wrong. Should be 0x0401. Got {st}"
+        );
+        let expected = "0401 A2 FF      LDX #$FF";
+        assert!(
+            st.state.dis == expected,
+            "Disassembly wrong. Should be '{expected}' and got {st}"
+        );
+        assert!(
+            st.state.ram[0xFFFF] == 0x00,
+            "Didn't get blank RAM as expected. Got {st}"
+        );
+    } else {
+        panic!("Didn't get a CPU for valid step command. Got {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after step? - {resp:?}");
+    }
+
+    // Set a breakpoint at 0x0403 and validate we break there
+    inputtx.send("B 0x0403".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after breakpoint? - {resp:?}");
+    }
+    inputtx.send("S".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        let StopReason::Break(ref b) = st.reason else {
+            panic!("reason incorrect. Should be Break and got {st}");
+        };
+        assert!(
+            b.addr == 0x0403,
+            "Invalid break address. Should be 0x0403 and got {st}"
+        );
+        assert!(
+            st.state.pc == 0x0403,
+            "PC wrong. Should be 0x0403. Got {st}"
+        );
+        let expected = "0403 9A         TXS";
+        assert!(
+            st.state.dis == expected,
+            "Disassembly wrong. Should be '{expected}' and got {st}"
+        );
+        assert!(
+            st.state.ram[0xFFFF] == 0x00,
+            "Didn't get blank RAM as expected. Got {st}"
+        );
+    } else {
+        panic!("Didn't get a CPU for valid step command. Got {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after step? - {resp:?}");
+    }
+
+    // Write 0x01 to 0x0405 so it triggers the watchpoint
+    inputtx.send("W 0x0405 0x01".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+    // Do 3 more steps. The 3rd one should result in a watchpoint stop reason
+    for _ in 0..2 {
+        inputtx.send("S".into())?;
+        let resp: Output = outputrx.recv()?;
+        if let Output::CPU(st, _) = resp {
+            assert!(
+                st.reason == StopReason::Step,
+                "Reason incorrect. Should be Step and got {st}"
+            );
+        } else {
+            panic!("Didn't get a CPU for valid step command. Got {resp:?}");
+        }
+        let resp: Output = outputrx.recv()?;
+        if let Output::Prompt(_) = resp {
+        } else {
+            panic!("Didn't get prompt after step? - {resp:?}");
+        }
+    }
+    inputtx.send("S".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        let StopReason::Watch(ref pc, ref b) = st.reason else {
+            panic!("reason incorrect. Should be Watch and got {st}");
+        };
+        assert!(
+            b.addr == 0x0200,
+            "Invalid watch address. Should be 0x0200 and got {st}"
+        );
+        assert!(
+            pc.addr == 0x0406,
+            "Invalid watch PC. Should be 0x0406 and got {st}"
+        );
+        assert!(
+            st.state.pc == 0x0409,
+            "PC wrong. Should be 0x0409. Got {st}"
+        );
+    } else {
+        panic!("Didn't get a CPU for valid step command. Got {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after step? - {resp:?}");
+    }
+
+    // Now step but include RAM which we'll validate
+    inputtx.send("S TRUE".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        assert!(
+            st.reason == StopReason::Step,
+            "Reason incorrect. Should be Step and got {st}"
+        );
+        assert!(
+            st.state.ram[0x0200] == 0x01,
+            "Didn't get back written RAM from step"
+        );
+    } else {
+        panic!("Didn't get a CPU for valid step command. Got {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after step? - {resp:?}");
+    }
+    // Set PC back to 0x0406 so we can run tick tests.
+    inputtx.send("PC 0x0406".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(cpu, _) = resp {
+        assert!(
+            cpu.state.pc == 0x0406,
+            "PC not correct. Expected 0x0400 and got {cpu}"
+        );
+    } else {
+        panic!("Didn't get CPUState after CPU? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after CPU? - {resp:?}");
+    }
+    // Set 0x0200 back to 0x00 so the next set of ticks, etc will work
+    inputtx.send("W 0x0200 0x00".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+
+    // Send an invalid Tick
+    inputtx.send("T NO NO".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid tick command");
+    } else {
+        panic!("Didn't get an error for invalid tick command. Got {resp:?}");
+    }
+
+    // Send a regular tick
+    inputtx.send("T".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        assert!(
+            st.reason == StopReason::Tick,
+            "Reason incorrect. Should be Tick and got {st}"
+        );
+        assert!(
+            st.state.pc == 0x0407,
+            "PC wrong. Should be 0x0406. Got {st}"
+        );
+        assert!(
+            st.state.ram[0xFFFF] == 0x00,
+            "Didn't get blank RAM as expected. Got {st}"
+        );
+    } else {
+        panic!("Didn't get a CPU for valid tick command. Got {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after tick? - {resp:?}");
+    }
+
+    // Run 2 more ticks off which should almost complete things
+    for i in 0..2 {
+        inputtx.send("T".into())?;
+        let resp: Output = outputrx.recv()?;
+        if let Output::CPU(st, _) = resp {
+            assert!(
+                st.reason == StopReason::Tick,
+                "Reason incorrect. Should be Tick and got {st} on iteration {i}"
+            );
+        } else {
+            panic!("Didn't get a CPU for valid tick command. Got {resp:?}");
+        }
+        let resp: Output = outputrx.recv()?;
+        if let Output::Prompt(_) = resp {
+        } else {
+            panic!("Didn't get prompt after tick? - {resp:?}");
+        }
+    }
+    // The last tick should trigger a watchpoint
+    inputtx.send("T".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        let StopReason::Watch(ref pc, ref b) = st.reason else {
+            panic!("reason incorrect. Should be Watch and got {st}");
+        };
+        assert!(
+            b.addr == 0x0200,
+            "Invalid watch address. Should be 0x0200 and got {b:?}"
+        );
+        assert!(
+            pc.addr == 0x0406,
+            "Invalid watch PC. Should be 0x0406 and got {pc:?}"
+        );
+        assert!(
+            st.state.pc == 0x0409,
+            "PC wrong. Should be 0x0409. Got {st}"
+        );
+    } else {
+        panic!("Didn't get a CPU for valid tick command. Got {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after tick? - {resp:?}");
+    }
+
+    // Set a breakpoint at 0x0409 and tick into it with RAM snapshots.
+    inputtx.send("B 0x0409".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after breakpoint? - {resp:?}");
+    }
+    inputtx.send("T TRUE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        let StopReason::Break(ref b) = st.reason else {
+            panic!("reason incorrect. Should be Break and got {st}");
+        };
+        assert!(
+            b.addr == 0x0409,
+            "Invalid break address. Should be 0x0409 and got {st}"
+        );
+        assert!(
+            st.state.pc == 0x040A,
+            "PC wrong. Should be 0x040A. Got {st}"
+        );
+        assert!(
+            st.state.ram[0x0200] == 0x01,
+            "Didn't get set RAM as expected. Got {st}"
+        );
+    } else {
+        panic!("Didn't get a CPU for valid step command. Got {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after step? - {resp:?}");
+    }
+
+    Ok(())
+}
+
 #[test]
 fn test_trim() {
     let mut input: String = "test\r\n".into();
     trim_newline(&mut input);
     assert!(
         input == "test",
+        "Didn't trim everything off input? '{input}'"
+    );
+    input = "test2".into();
+    trim_newline(&mut input);
+    assert!(
+        input == "test2",
         "Didn't trim everything off input? '{input}'"
     );
 }
