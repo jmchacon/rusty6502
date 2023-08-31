@@ -42,7 +42,9 @@ pub enum Output {
 ///
 /// # Errors
 /// Any premature close of the channels will result in an error.
-/// Additionally any invalid state transitions will result in an error.
+///
+/// # Panics
+/// Additionally any invalid state transitions will result in an panic.
 #[allow(clippy::too_many_lines)]
 pub fn input_loop(
     cpucommandtx: &Sender<Command>,
@@ -69,6 +71,18 @@ pub fn input_loop(
                 }
                 if !parts.is_empty() {
                     let cmd = parts[0].to_uppercase();
+
+                    if running > 0 {
+                        match cmd.as_str() {
+                            "H" | "HELP" | "QUIT" | "Q" | "RUN" | "C" | "STOP" => {}
+                            _ => {
+                                outputtx.send(Output::Error(format!(
+                                    "ERROR: Invalid command during RUN - {line}"
+                                )))?;
+                                continue;
+                            }
+                        }
+                    }
 
                     match cmd.as_str() {
                         "H" | "HELP" => {
@@ -125,17 +139,6 @@ QUIT | Q - Exit the monitor"#
                         }
                         "STOP" => {
                             cpucommandtx.send(Command::Stop)?;
-                            let r = cpucommandresprx.recv()?;
-                            match r {
-                                Ok(CommandResponse::Stop(st)) => {
-                                    outputtx.send(Output::CPU(st, None))?;
-                                }
-                                Err(e) => {
-                                    outputtx.send(Output::Error(format!("Stop error - {e}")))?;
-                                }
-                                _ => return Err(eyre!("Invalid return from Stop - {r:?}")),
-                            }
-                            running = 0;
                         }
                         "B" => {
                             if parts.len() != 2 {
@@ -156,9 +159,7 @@ QUIT | Q - Exit the monitor"#
                                             )))?;
                                             continue;
                                         }
-                                        _ => {
-                                            return Err(eyre!("Invalid return from Break - {r:?}"))
-                                        }
+                                        _ => panic!("Invalid return from Break - {r:?}"),
                                     }
                                 }
                                 Err(e) => {
@@ -187,7 +188,7 @@ QUIT | Q - Exit the monitor"#
                                         .send(Output::Error(format!("BreakList error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from BreakList - {r:?}")),
+                                _ => panic!("Invalid return from BreakList - {r:?}"),
                             }
                         }
                         "DB" => {
@@ -211,9 +212,7 @@ QUIT | Q - Exit the monitor"#
                                             continue;
                                         }
                                         _ => {
-                                            return Err(eyre!(
-                                                "Invalid return from Delete Breakpoint - {r:?}"
-                                            ))
+                                            panic!("Invalid return from Delete Breakpoint - {r:?}")
                                         }
                                     }
                                 }
@@ -237,13 +236,20 @@ QUIT | Q - Exit the monitor"#
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Step(st)) => {
-                                    outputtx.send(Output::CPU(st, None))?;
+                                    let mut pre = None;
+                                    if let StopReason::Break(addr) = &st.reason {
+                                        pre = Some(format!("\nBreakpoint at {:04X}", addr.addr));
+                                    }
+                                    if let StopReason::Watch(pc, addr) = &st.reason {
+                                        pre = Some(format!("\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})", addr.addr, pc.addr, st.state.pc));
+                                    }
+                                    outputtx.send(Output::CPU(st, pre))?;
                                 }
                                 Err(e) => {
                                     outputtx.send(Output::Error(format!("Step error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Step - {r:?}")),
+                                _ => panic!("Invalid return from Step - {r:?}"),
                             }
                         }
                         "T" => {
@@ -258,13 +264,20 @@ QUIT | Q - Exit the monitor"#
                             let r = cpucommandresprx.recv()?;
                             match r {
                                 Ok(CommandResponse::Tick(st)) => {
-                                    outputtx.send(Output::CPU(st, None))?;
+                                    let mut pre = None;
+                                    if let StopReason::Break(addr) = &st.reason {
+                                        pre = Some(format!("\nBreakpoint at {:04X}", addr.addr));
+                                    }
+                                    if let StopReason::Watch(pc, addr) = &st.reason {
+                                        pre = Some(format!("\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})", addr.addr, pc.addr, st.state.pc));
+                                    }
+                                    outputtx.send(Output::CPU(st, pre))?;
                                 }
                                 Err(e) => {
                                     outputtx.send(Output::Error(format!("Tick error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Tick - {r:?}")),
+                                _ => panic!("Invalid return from Tick - {r:?}"),
                             }
                         }
                         "R" => {
@@ -288,7 +301,7 @@ QUIT | Q - Exit the monitor"#
                                             )))?;
                                             continue;
                                         }
-                                        _ => return Err(eyre!("Invalid return from Read - {r:?}")),
+                                        _ => panic!("Invalid return from Read - {r:?}"),
                                     }
                                 }
                                 Err(e) => {
@@ -343,7 +356,7 @@ QUIT | Q - Exit the monitor"#
                                         .send(Output::Error(format!("Read Range error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Read Range - {r:?}")),
+                                _ => panic!("Invalid return from Read Range - {r:?}"),
                             }
                         }
                         "W" => {
@@ -381,7 +394,7 @@ QUIT | Q - Exit the monitor"#
                                     outputtx.send(Output::Error(format!("Write error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Write - {r:?}")),
+                                _ => panic!("Invalid return from Write - {r:?}"),
                             }
                         }
                         "WR" => {
@@ -431,7 +444,7 @@ QUIT | Q - Exit the monitor"#
                                         .send(Output::Error(format!("Write Range error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Write Range - {r:?}")),
+                                _ => panic!("Invalid return from Write Range - {r:?}"),
                             }
                         }
                         "CPU" => {
@@ -451,7 +464,7 @@ QUIT | Q - Exit the monitor"#
                                     outputtx.send(Output::Error(format!("Cpu error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Cpu - {r:?}")),
+                                _ => panic!("Invalid return from Cpu - {r:?}"),
                             }
                         }
                         "RAM" => {
@@ -465,7 +478,7 @@ QUIT | Q - Exit the monitor"#
                                     outputtx.send(Output::Error(format!("Ram error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Ram - {r:?}")),
+                                _ => panic!("Invalid return from Ram - {r:?}"),
                             }
                         }
                         "D" => {
@@ -489,11 +502,7 @@ QUIT | Q - Exit the monitor"#
                                             )))?;
                                             continue;
                                         }
-                                        _ => {
-                                            return Err(eyre!(
-                                                "Invalid return from Disassemble - {r:?}"
-                                            ))
-                                        }
+                                        _ => panic!("Invalid return from Disassemble - {r:?}"),
                                     }
                                 }
                                 Err(e) => {
@@ -547,11 +556,7 @@ QUIT | Q - Exit the monitor"#
                                     )))?;
                                     continue;
                                 }
-                                _ => {
-                                    return Err(eyre!(
-                                        "Invalid return from Disassemble Range - {r:?}"
-                                    ))
-                                }
+                                _ => panic!("Invalid return from Disassemble Range - {r:?}"),
                             }
                         }
                         "WP" => {
@@ -573,9 +578,7 @@ QUIT | Q - Exit the monitor"#
                                             )))?;
                                             continue;
                                         }
-                                        _ => {
-                                            return Err(eyre!("Invalid return from Watch - {r:?}"))
-                                        }
+                                        _ => panic!("Invalid return from Watch - {r:?}"),
                                     }
                                 }
                                 Err(e) => {
@@ -604,7 +607,7 @@ QUIT | Q - Exit the monitor"#
                                         .send(Output::Error(format!("WatchList error - {e}\n")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from WatchList - {r:?}")),
+                                _ => panic!("Invalid return from WatchList - {r:?}"),
                             }
                         }
                         "DW" => {
@@ -628,9 +631,7 @@ QUIT | Q - Exit the monitor"#
                                             continue;
                                         }
                                         _ => {
-                                            return Err(eyre!(
-                                                "Invalid return from Delete Watchpoint - {r:?}"
-                                            ))
+                                            panic!("Invalid return from Delete Watchpoint - {r:?}")
                                         }
                                     }
                                 }
@@ -692,7 +693,7 @@ QUIT | Q - Exit the monitor"#
                                     outputtx.send(Output::Error(format!("Load error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Load - {r:?}")),
+                                _ => panic!("Invalid return from Load - {r:?}"),
                             }
                         }
                         "BIN" => {
@@ -712,7 +713,7 @@ QUIT | Q - Exit the monitor"#
                                     outputtx.send(Output::Error(format!("Dump error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Dump - {r:?}")),
+                                _ => panic!("Invalid return from Dump - {r:?}"),
                             }
                         }
                         "PC" => {
@@ -747,7 +748,7 @@ QUIT | Q - Exit the monitor"#
                                     outputtx.send(Output::Error(format!("PC error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from PC - {r:?}")),
+                                _ => panic!("Invalid return from PC - {r:?}"),
                             }
                         }
                         "RESET" => {
@@ -767,7 +768,7 @@ QUIT | Q - Exit the monitor"#
                                     outputtx.send(Output::Error(format!("Reset error - {e}")))?;
                                     continue;
                                 }
-                                _ => return Err(eyre!("Invalid return from Reset - {r:?}")),
+                                _ => panic!("Invalid return from Reset - {r:?}"),
                             }
                             running = 0;
                         }
@@ -809,28 +810,13 @@ QUIT | Q - Exit the monitor"#
                                     writeln!(pre, "\nBreakpoint at {:04X}", addr.addr)?;
                                 }
                                 if let StopReason::Watch(pc, addr) = &st.reason {
-                                    writeln!(pre, "\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})", addr.addr, pc.addr, st.state.pc,
-                                )?;
-                                    cpucommandtx
-                                        .send(Command::Disassemble(Location { addr: pc.addr }))?;
-                                    let r = cpucommandresprx.recv()?;
-                                    match r {
-                                        Ok(CommandResponse::Disassemble(d)) => {
-                                            write!(pre, "{d}")?;
-                                        }
-                                        Err(e) => writeln!(pre, "Disassemble error - {e}")?,
-                                        _ => {
-                                            return Err(eyre!(
-                                                "Invalid return from Disassemble - {r:?}"
-                                            ))
-                                        }
-                                    }
+                                    writeln!(pre, "\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})", addr.addr, pc.addr, st.state.pc)?;
                                 }
                                 outputtx.send(Output::CPU(st, Some(pre)))?;
                                 outputtx.send(Output::Prompt(None))?;
                             }
                         }
-                        _ => return Err(eyre!("invalid response from run: {ret:?}")),
+                        _ => panic!("invalid response from run: {ret:?}"),
                     },
                     Err(e) => outputtx.send(Output::Error(format!("Error from Run - {e}")))?,
                 },
@@ -1004,7 +990,11 @@ pub fn cpu_loop(
                 let cr = cr.borrow();
                 for w in &watchpoints {
                     if cr.read(w.addr) != ram[usize::from(w.addr)] {
+                        println!("Watchpoint {} hit", w.addr);
                         reason = StopReason::Watch(PC { addr: tick_pc }, Location { addr: w.addr });
+                        let (mut pre, _) = cpu.disassemble(tick_pc, cpu.ram().borrow().as_ref());
+                        write!(pre, "\n{}", d.state.borrow().dis)?;
+                        d.state.borrow_mut().dis = pre;
                         break;
                     }
                 }
@@ -1143,6 +1133,9 @@ pub fn cpu_loop(
                         if cr.read(w.addr) != ram[usize::from(w.addr)] {
                             reason =
                                 StopReason::Watch(PC { addr: oldpc }, Location { addr: w.addr });
+                            let (mut pre, _) = cpu.disassemble(oldpc, cpu.ram().borrow().as_ref());
+                            write!(pre, "\n{}", d.state.borrow().dis)?;
+                            d.state.borrow_mut().dis = pre;
                             break;
                         }
                     }
@@ -1180,13 +1173,13 @@ pub fn cpu_loop(
                 if let Err(e) = r {
                     let e = eyre!("tick error: {e}");
                     cpucommandresptx.send(Err(e))?;
-                    return Err(eyre!("tick error"));
+                    continue;
                 }
                 let r = cpu.tick_done();
                 if let Err(e) = r {
                     let e = eyre!("tick done error: {e}");
                     cpucommandresptx.send(Err(e))?;
-                    return Err(eyre!("tick done error"));
+                    continue;
                 }
                 cpu.debug();
                 (d.state.borrow_mut().dis, _) =
@@ -1204,6 +1197,10 @@ pub fn cpu_loop(
                         if cr.read(w.addr) != ram[usize::from(w.addr)] {
                             reason =
                                 StopReason::Watch(PC { addr: tick_pc }, Location { addr: w.addr });
+                            let (mut pre, _) =
+                                cpu.disassemble(tick_pc, cpu.ram().borrow().as_ref());
+                            write!(pre, "\n{}", d.state.borrow().dis)?;
+                            d.state.borrow_mut().dis = pre;
                             break;
                         }
                     }

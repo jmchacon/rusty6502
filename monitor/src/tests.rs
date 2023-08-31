@@ -31,7 +31,7 @@ fn setup(
     passcpu.spawn(move || -> Result<()> {
         loop {
             let resp = passcpucommandrx.recv()?;
-            println!("Recevied Command: {resp:?}");
+            //println!("Received Command: {resp:#?}");
             cpucommandtx.send(resp)?;
         }
     })?;
@@ -45,7 +45,7 @@ fn setup(
     passcpuresp.spawn(move || -> Result<()> {
         loop {
             let resp = passcpucommandresprx.recv()?;
-            println!("Recevied Response: {resp:?}");
+            //println!("Received Response: {resp:#?}");
             cpucommandresptx.send(resp)?;
         }
     })?;
@@ -78,6 +78,7 @@ fn setup(
 }
 
 #[test]
+#[timeout(60000)]
 fn tick_init_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
@@ -108,6 +109,7 @@ fn tick_init_test() -> Result<()> {
 }
 
 #[test]
+#[timeout(60000)]
 fn step_init_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
@@ -133,6 +135,24 @@ fn step_init_test() -> Result<()> {
     } else {
         panic!("Didn't get prompt after tick? - {resp:?}");
     }
+
+    Ok(())
+}
+
+#[test]
+#[timeout(60000)]
+fn run_init_test() -> Result<()> {
+    let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
+    // Should go immediately to a prompt since we didn't preload
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after startup? - {resp:?}");
+    }
+
+    // Send a RUN down but we're not init
+    inputtx.send("C".into())?;
+    inputtx.send("Q".into())?;
 
     Ok(())
 }
@@ -1336,6 +1356,109 @@ fn step_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<(
         panic!("Didn't get prompt after step? - {resp:?}");
     }
 
+    // Delete all the breakpoints, reset 0x0200 to 0x00 and PC to 0x0400
+    // WP left at 0x0200. Set a BP at 0x0401 to stop right away.
+    inputtx.send("DB 0".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(s) = resp {
+        println!("Prompt: {s:?}");
+    } else {
+        panic!("Didn't get prompt after DB? - {resp:?}");
+    }
+    inputtx.send("DB 0".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(s) = resp {
+        println!("Prompt: {s:?}");
+    } else {
+        panic!("Didn't get prompt after DB? - {resp:?}");
+    }
+    inputtx.send("DB 0".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(s) = resp {
+        println!("Prompt: {s:?}");
+    } else {
+        panic!("Didn't get prompt after DB? - {resp:?}");
+    }
+    inputtx.send("B 0x0401".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(s) = resp {
+        println!("Prompt: {s:?}");
+    } else {
+        panic!("Didn't get prompt after B? - {resp:?}");
+    }
+    inputtx.send("W 0x0200 0x00".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+
+    inputtx.send("PC 0x0400".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::CPU(cpu, _) = resp {
+        assert!(
+            cpu.state.pc == 0x0400,
+            "PC not correct. Expected 0x0400 and got {cpu}"
+        );
+    } else {
+        panic!("Didn't get CPUState after CPU? - {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(s) = resp {
+        println!("Prompt: {s:?}");
+    } else {
+        panic!("Didn't get prompt after CPU? - {resp:?}");
+    }
+
+    // Now tell it to run and then we send an immediate stop
+    println!("Trying RUN tests");
+    inputtx.send("C".into())?;
+
+    // Send a bad command and validate we get an error.
+    let mut errors = 0;
+    let mut prompt = 0;
+    let mut run = 0;
+    let mut cont = true;
+
+    inputtx.send("B 0x0400".into())?;
+    loop {
+        let resp = outputrx.recv()?;
+        println!("Working {resp:#?}");
+        match resp {
+            Output::Prompt(_) => {
+                prompt += 1;
+                assert!(prompt < 10, "Got additional prompts");
+            }
+            Output::Error(ref e) => {
+                println!("Error: {e}");
+                errors += 1;
+                assert!(errors < 3, "Got additional error back? {resp:?}");
+            }
+            Output::CPU(ref cpu, _) => match cpu.reason {
+                StopReason::Run => {
+                    run += 1;
+                    if run == 2 {
+                        inputtx.send("STOP".into())?;
+                    }
+                }
+                StopReason::Stop => {
+                    // Continue after STOP and the WP should kick in eventually
+                    inputtx.send("C TRUE".into())?;
+                }
+                StopReason::Break(_) => {
+                    if cont {
+                        inputtx.send("C".into())?;
+                        cont = false;
+                    }
+                    continue;
+                }
+                StopReason::Watch(_, _) => break,
+                _ => panic!("Unknown reason - {resp:?}"),
+            },
+
+            Output::RAM(_) => panic!("Unknown response after C, B, STOP - {resp:?}"),
+        }
+    }
     Ok(())
 }
 
