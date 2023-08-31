@@ -150,9 +150,25 @@ fn run_init_test() -> Result<()> {
         panic!("Didn't get prompt after startup? - {resp:?}");
     }
 
+    // Send an invalud RUN down
+    inputtx.send("C NO NO".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid RUN");
+    } else {
+        panic!("Didn't get an error for invalid RUN. Got {resp:?}");
+    }
+
     // Send a RUN down but we're not init
     inputtx.send("C".into())?;
-    inputtx.send("Q".into())?;
+
+    drop(inputtx);
+    drop(outputrx);
+
+    // Give time for the threads to notice and exit
+    std::thread::sleep(std::time::Duration::from_millis(6000));
+
+    //inputtx.send("Q".into())?;
 
     Ok(())
 }

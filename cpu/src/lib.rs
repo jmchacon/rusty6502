@@ -565,7 +565,7 @@ impl Tick {
 }
 
 // Reset tick states
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum ResetTick {
     /// Tick1 and 2 are burn off cycles.
     Tick1,

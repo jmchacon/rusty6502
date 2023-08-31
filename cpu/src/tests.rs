@@ -241,6 +241,17 @@ fn invalid_states() -> Result<()> {
         "Clone didn't work for CPUType?"
     );
 
+    let tick = ResetTick::Tick1;
+    #[allow(clippy::clone_on_copy)]
+    let tickcopy = tick.clone();
+    assert!(
+        tick == tickcopy,
+        "ticks differ - {tick:?} vs copy {tickcopy:?}"
+    );
+    println!("{tick:?} {tickcopy:?}");
+    let cpu = CPUState::default();
+    let _ = cpu.clone();
+
     let d = Debug::<CPUState>::new(128, 1);
     let debug = { || d.debug() };
     let nmi_addr = 0x1212;
