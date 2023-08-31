@@ -232,7 +232,8 @@ basic_startup_quit_test!(
 // NOTE: We use timeout on this function to avoid having to test each
 // recv. Instead let an overall timeout control things.
 #[test]
-#[timeout(60000)]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
 fn functionality_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, true)?;
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
