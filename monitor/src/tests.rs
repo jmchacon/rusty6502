@@ -31,7 +31,7 @@ fn setup(
     passcpu.spawn(move || -> Result<()> {
         loop {
             let resp = passcpucommandrx.recv()?;
-            //println!("Received Command: {resp:#?}");
+            println!("Received Command: {resp:#?}");
             cpucommandtx.send(resp)?;
         }
     })?;
@@ -45,7 +45,7 @@ fn setup(
     passcpuresp.spawn(move || -> Result<()> {
         loop {
             let resp = passcpucommandresprx.recv()?;
-            //println!("Received Response: {resp:#?}");
+            println!("Received Response: {resp:#?}");
             cpucommandresptx.send(resp)?;
         }
     })?;
