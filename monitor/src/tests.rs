@@ -1124,6 +1124,23 @@ fn step_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<(
         panic!("Didn't get prompt after step? - {resp:?}");
     }
 
+    // Advance one more
+    inputtx.send("S".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        assert!(
+            st.reason == StopReason::Step,
+            "Reason incorrect. Should be Step and got {st}"
+        );
+    } else {
+        panic!("Didn't get a CPU for valid step command. Got {resp:?}");
+    }
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after step? - {resp:?}");
+    }
+
     // Set a breakpoint at 0x0403 and validate we break there
     inputtx.send("B 0x0403".into())?;
     let resp = outputrx.recv()?;

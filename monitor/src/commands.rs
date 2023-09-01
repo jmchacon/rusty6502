@@ -52,7 +52,7 @@ pub struct Val {
     pub val: u8,
 }
 
-#[derive(Debug, Display, PartialEq)]
+#[derive(Clone, Debug, Display, PartialEq)]
 pub enum StopReason {
     Run,
     Step,
