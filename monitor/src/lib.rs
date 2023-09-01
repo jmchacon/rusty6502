@@ -972,11 +972,12 @@ pub fn cpu_loop(
         Ok(())
     };
 
-    let do_step = |cpu: &mut dyn CPU,
+    let advance = |cpu: &mut dyn CPU,
                    snapshot: bool,
                    tick_pc: &mut u16,
                    breakpoints: &Vec<Location>,
-                   watchpoints: &Vec<Location>|
+                   watchpoints: &Vec<Location>,
+                   do_tick: bool|
      -> Result<StopReason> {
         let mut ram = [0; MAX_SIZE];
         if !watchpoints.is_empty() {
@@ -995,6 +996,8 @@ pub fn cpu_loop(
         let mut reason = StopReason::Run;
         for b in breakpoints {
             if b.addr == *tick_pc {
+                (d.state.borrow_mut().dis, _) =
+                    cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
                 reason = StopReason::Break(Location { addr: b.addr });
                 // Progress one tick into the next instruction. This moves PC
                 // forward so hitting "C" after a breakpoint will "just work".
@@ -1008,13 +1011,27 @@ pub fn cpu_loop(
             }
         }
 
-        let r = step(cpu);
-        if let Err(e) = r {
-            let e = eyre!("step error: {e}");
-            cpucommandresptx.send(Err(e))?;
-            return Ok(StopReason::None);
+        if do_tick {
+            let r = cpu.tick();
+            if let Err(e) = r {
+                let e = eyre!("tick error: {e}");
+                cpucommandresptx.send(Err(e))?;
+                return Ok(StopReason::None);
+            }
+            let r = cpu.tick_done();
+            if let Err(e) = r {
+                let e = eyre!("tick done error: {e}");
+                cpucommandresptx.send(Err(e))?;
+                return Ok(StopReason::None);
+            }
+        } else {
+            let r = step(cpu);
+            if let Err(e) = r {
+                let e = eyre!("step error: {e}");
+                cpucommandresptx.send(Err(e))?;
+                return Ok(StopReason::None);
+            }
         }
-
         cpu.debug();
         (d.state.borrow_mut().dis, _) = cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
         if !watchpoints.is_empty() {
@@ -1038,12 +1055,13 @@ pub fn cpu_loop(
 
     loop {
         if is_running {
-            let reason = do_step(
+            let reason = advance(
                 cpu,
                 running_ram_snapshot,
                 &mut tick_pc,
                 &breakpoints,
                 &watchpoints,
+                false,
             )?;
             if reason != StopReason::Run {
                 is_running = false;
@@ -1146,8 +1164,14 @@ pub fn cpu_loop(
                     is_init = true;
                     cpu.power_on()?;
                 }
-                let mut reason =
-                    do_step(cpu, capture_ram, &mut tick_pc, &breakpoints, &watchpoints)?;
+                let mut reason = advance(
+                    cpu,
+                    capture_ram,
+                    &mut tick_pc,
+                    &breakpoints,
+                    &watchpoints,
+                    false,
+                )?;
                 // The closure assumes run. Since we're doing single step only change
                 // that when returned or things go off contract.
                 if reason == StopReason::Run {
@@ -1164,67 +1188,23 @@ pub fn cpu_loop(
                     is_init = true;
                     cpu.power_on()?;
                 }
-                let mut ram = [0; MAX_SIZE];
-                if !watchpoints.is_empty() {
-                    // If we have watchpoints get a memory snapshot.
-                    cpu.ram().borrow().ram(&mut ram);
-                }
-                // Reset RAM to clear as we might have copied before this time and
-                // future ones should start clean.
-                d.state.borrow_mut().ram = [0; MAX_SIZE];
-
-                // On a new instruction is when we save the old PC.
-                cpu.debug();
-                if d.state.borrow().op_tick == Tick::Reset {
-                    tick_pc = cpu.pc();
-                }
-                *d.full.borrow_mut() = capture_ram;
-                let r = cpu.tick();
-                if let Err(e) = r {
-                    let e = eyre!("tick error: {e}");
-                    cpucommandresptx.send(Err(e))?;
-                    continue;
-                }
-                let r = cpu.tick_done();
-                if let Err(e) = r {
-                    let e = eyre!("tick done error: {e}");
-                    cpucommandresptx.send(Err(e))?;
-                    continue;
-                }
-                cpu.debug();
-                (d.state.borrow_mut().dis, _) =
-                    cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                let mut reason = StopReason::Tick;
-                for b in &breakpoints {
-                    if b.addr == tick_pc {
-                        reason = StopReason::Break(Location { addr: b.addr });
-                    }
-                }
-                if !watchpoints.is_empty() {
-                    let cr = cpu.ram();
-                    let cr = cr.borrow();
-                    for w in &watchpoints {
-                        if cr.read(w.addr) != ram[usize::from(w.addr)] {
-                            reason =
-                                StopReason::Watch(PC { addr: tick_pc }, Location { addr: w.addr });
-                            let (mut pre, _) =
-                                cpu.disassemble(tick_pc, cpu.ram().borrow().as_ref());
-                            write!(pre, "\n{}", d.state.borrow().dis)?;
-                            d.state.borrow_mut().dis = pre;
-                            break;
-                        }
-                    }
+                let mut reason = advance(
+                    cpu,
+                    capture_ram,
+                    &mut tick_pc,
+                    &breakpoints,
+                    &watchpoints,
+                    true,
+                )?;
+                // The closure assumes run. Since we're doing single step only change
+                // that when returned or things go off contract.
+                if reason == StopReason::Run {
+                    reason = StopReason::Tick;
                 }
                 let st = Box::new(Stop {
                     state: Box::new(d.state.borrow().clone()),
                     reason,
                 });
-                // Reset RAM to clear as we might have copied this time and
-                // future ones should start clean.
-                if capture_ram {
-                    d.state.borrow_mut().ram = [0; MAX_SIZE];
-                    *d.full.borrow_mut() = false;
-                }
                 cpucommandresptx.send(Ok(CommandResponse::Tick(st)))?;
             }
 

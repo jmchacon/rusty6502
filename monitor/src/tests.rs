@@ -1374,8 +1374,8 @@ fn step_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<(
             "Invalid break address. Should be 0x0409 and got {st}"
         );
         assert!(
-            st.state.pc == 0x040A,
-            "PC wrong. Should be 0x040A. Got {st}"
+            st.state.pc == 0x0409,
+            "PC wrong. Should be 0x0409. Got {st}"
         );
         assert!(
             st.state.ram[0x0200] == 0x01,
