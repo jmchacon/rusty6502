@@ -958,6 +958,20 @@ pub fn cpu_loop(
 
     let mut running_ram_snapshot = false;
     let mut tick_pc = 0_u16;
+    let reset = |cpu: &mut dyn CPU| -> Result<()> {
+        loop {
+            match cpu.reset() {
+                Ok(OpState::Done) => break,
+                Ok(OpState::Processing) => continue,
+                Err(e) => {
+                    cpucommandresptx.send(Err(eyre!("reset error: {e}")))?;
+                    break;
+                }
+            }
+        }
+        Ok(())
+    };
+
     loop {
         if is_running {
             let mut ram = [0; MAX_SIZE];
@@ -973,7 +987,8 @@ pub fn cpu_loop(
             if let Err(e) = r {
                 let e = eyre!("step error: {e}");
                 cpucommandresptx.send(Err(e))?;
-                return Err(eyre!("step error"));
+                is_running = false;
+                continue;
             }
 
             *d.full.borrow_mut() = running_ram_snapshot;
@@ -1320,35 +1335,22 @@ pub fn cpu_loop(
                             is_init = true;
                             cpu.power_on()?;
                         }
-                        loop {
-                            match cpu.reset() {
-                                Ok(OpState::Done) => {
-                                    if let Some(start) = start {
-                                        cpu.pc_mut(start.addr);
-                                    } else {
-                                        // We don't always reset so force start PC
-                                        // to reset vector always.
-                                        let addr =
-                                            u16::from(cpu.ram().borrow().read(RESET_VECTOR + 1))
-                                                << 8
-                                                | u16::from(cpu.ram().borrow().read(RESET_VECTOR));
-                                        cpu.pc_mut(addr);
-                                    }
-                                    cpu.debug();
-                                    (d.state.borrow_mut().dis, _) =
-                                        cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                                    cpucommandresptx.send(Ok(CommandResponse::Load(Box::new(
-                                        d.state.borrow().clone(),
-                                    ))))?;
-                                    break;
-                                }
-                                Ok(OpState::Processing) => continue,
-                                Err(e) => {
-                                    cpucommandresptx.send(Err(eyre!("reset error: {e}")))?;
-                                    break;
-                                }
-                            }
+                        reset(cpu)?;
+                        if let Some(start) = start {
+                            cpu.pc_mut(start.addr);
+                        } else {
+                            // We don't always reset so force start PC
+                            // to reset vector always.
+                            let addr = u16::from(cpu.ram().borrow().read(RESET_VECTOR + 1)) << 8
+                                | u16::from(cpu.ram().borrow().read(RESET_VECTOR));
+                            cpu.pc_mut(addr);
                         }
+                        cpu.debug();
+                        (d.state.borrow_mut().dis, _) =
+                            cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
+                        cpucommandresptx.send(Ok(CommandResponse::Load(Box::new(
+                            d.state.borrow().clone(),
+                        ))))?;
                     }
                     Err(e) => {
                         cpucommandresptx.send(Err(eyre!("can't read file: {e}")))?;
@@ -1389,24 +1391,13 @@ pub fn cpu_loop(
                     ))))?;
                     continue;
                 }
-                loop {
-                    match cpu.reset() {
-                        Ok(OpState::Done) => {
-                            cpu.debug();
-                            (d.state.borrow_mut().dis, _) =
-                                cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
-                            cpucommandresptx.send(Ok(CommandResponse::Reset(Box::new(
-                                d.state.borrow().clone(),
-                            ))))?;
-                            break;
-                        }
-                        Ok(OpState::Processing) => continue,
-                        Err(e) => {
-                            cpucommandresptx.send(Err(eyre!("reset error: {e}")))?;
-                            break;
-                        }
-                    }
-                }
+                reset(cpu)?;
+                cpu.debug();
+                (d.state.borrow_mut().dis, _) =
+                    cpu.disassemble(cpu.pc(), cpu.ram().borrow().as_ref());
+                cpucommandresptx.send(Ok(CommandResponse::Reset(Box::new(
+                    d.state.borrow().clone(),
+                ))))?;
             }
         }
     }
