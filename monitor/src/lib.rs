@@ -10,7 +10,10 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
 mod commands;
-use commands::{Command, CommandResponse, Location, LocationRange, Stop, StopReason, Val, PC};
+use commands::{
+    Command, CommandResponse, Location, LocationRange, StepN, StepNReason, Stop, StopReason, Val,
+    PC,
+};
 
 #[cfg(test)]
 mod tests;
@@ -27,6 +30,8 @@ pub enum Output {
     /// No prompt should be printed here as this is often used for repeating output
     /// such as during RUN.
     CPU(Box<Stop>, Option<String>),
+    /// When running N steps returns a vector of states to emit
+    StepN(Vec<CPUState>),
     /// A RAM dump. No prompt should be printed after this as it's often used
     /// in non interactive areas.
     RAM(Box<[u8; MAX_SIZE]>),
@@ -72,6 +77,9 @@ pub fn input_loop(
                 if !parts.is_empty() {
                     let cmd = parts[0].to_uppercase();
 
+                    // If we're running prevent commands as the other thread is filling the response
+                    // channel which means everything below which assumes synchronous command+response
+                    // will likely fail and panic. Instead just reject outright.
                     if running > 0 {
                         match cmd.as_str() {
                             "H" | "HELP" | "QUIT" | "Q" | "RUN" | "C" | "STOP" => {}
@@ -96,9 +104,12 @@ BP <addr> - Break when PC is equal to the addr
 BPL - List all breakpoints
 DB <num> - Delete the given breakpoint
 S [true] - Step instruction (2-8 clock cycles)
-           If the bool is set to true then a RAM snapshot will be taken on each instruction.
+           If the bool is set to true then a RAM snapshot (expensive) will be taken on each instruction.
+STEPN <count> <report> <true|X> - Step count instructions and return <report> length vector
+                                  of the last ones executed. If the last param is true
+                                  a RAM snapshot (expensive) will be taken on each instruction.
 T [true] - Tick instruction (one clock cycle)
-           If the bool is set to true then a RAM snapshot will be taken on each tick.
+           If the bool is set to true then a RAM snapshot (expensive) will be taken on each tick.
 R <addr> - Read the given memory location and return its value
 RR <addr> <len> - Read starting at the given location for len times.
                   NOTE: When printing this will show a memory dump but the only
@@ -226,12 +237,13 @@ QUIT | Q - Exit the monitor"#
                         }
                         "S" => {
                             if parts.len() > 2 {
-                                outputtx.send(Output::Error(String::from(
-                                    "Error - Step can only optionally be follow by true: S [true]",
-                                )))?;
+                                outputtx.send(Output::Error(
+                                    "Error - Step can only optionally be follow by true: S [true]"
+                                        .into(),
+                                ))?;
                                 continue;
                             }
-                            let ram = parts.len() == 2 && parts[1] == "TRUE";
+                            let ram = parts.len() == 2 && parts[1].to_uppercase() == "TRUE";
                             cpucommandtx.send(Command::Step(ram))?;
                             let r = cpucommandresprx.recv()?;
                             match r {
@@ -252,6 +264,56 @@ QUIT | Q - Exit the monitor"#
                                 _ => panic!("Invalid return from Step - {r:?}"),
                             }
                         }
+                        "STEPN" => {
+                            if parts.len() != 4 {
+                                outputtx.send(Output::Error("Error - STEPN must be followed by a count, repeat and RAM snapshot indicator".into()))?;
+                                continue;
+                            }
+                            let reps = match parse_u16(parts[1]) {
+                                Ok(reps) => usize::from(reps),
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on count: {e}"
+                                    )))?;
+                                    continue;
+                                }
+                            };
+                            let capture = match parse_u16(parts[2]) {
+                                Ok(capture) => usize::from(capture),
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!(
+                                        "Error - parse error on repeat: {e}"
+                                    )))?;
+                                    continue;
+                                }
+                            };
+                            let ram = parts[3].to_uppercase() == "TRUE";
+                            cpucommandtx.send(Command::StepN(StepN { reps, capture, ram }))?;
+                            let r = cpucommandresprx.recv()?;
+                            match r {
+                                Ok(CommandResponse::StepN(st)) => match st {
+                                    StepNReason::Stop(stop) => {
+                                        let mut pre = None;
+                                        if let StopReason::Break(addr) = &stop.reason {
+                                            pre =
+                                                Some(format!("\nBreakpoint at {:04X}", addr.addr));
+                                        }
+                                        if let StopReason::Watch(pc, addr) = &stop.reason {
+                                            pre = Some(format!("\nWatchpoint triggered for addr {:04X} at {:04X} (next PC at {:04X})", addr.addr, pc.addr, stop.state.pc));
+                                        }
+                                        outputtx.send(Output::CPU(stop, pre))?;
+                                    }
+                                    StepNReason::StepN(stepn) => {
+                                        outputtx.send(Output::StepN(stepn))?;
+                                    }
+                                },
+                                Err(e) => {
+                                    outputtx.send(Output::Error(format!("StepN error - {e}")))?;
+                                    continue;
+                                }
+                                _ => panic!("Invalid return from Stepn - {r:?}"),
+                            }
+                        }
                         "T" => {
                             if parts.len() > 2 {
                                 outputtx.send(Output::Error(String::from(
@@ -259,7 +321,7 @@ QUIT | Q - Exit the monitor"#
                                 )))?;
                                 continue;
                             }
-                            let ram = parts.len() == 2 && parts[1] == "TRUE";
+                            let ram = parts.len() == 2 && parts[1].to_uppercase() == "TRUE";
                             cpucommandtx.send(Command::Tick(ram))?;
                             let r = cpucommandresprx.recv()?;
                             match r {
@@ -984,11 +1046,10 @@ pub fn cpu_loop(
             // If we have watchpoints get a memory snapshot.
             cpu.ram().borrow().ram(&mut ram);
         }
-        // Reset RAM to clear as we might have copied before this time and
-        // future ones should start clean.
-        d.state.borrow_mut().ram = [0; MAX_SIZE];
         cpu.debug();
-        *d.full.borrow_mut() = snapshot;
+        if snapshot {
+            *d.full.borrow_mut() = snapshot;
+        }
         if d.state.borrow().op_tick == Tick::Reset {
             *tick_pc = cpu.pc();
         }
@@ -1048,8 +1109,10 @@ pub fn cpu_loop(
             }
         }
 
-        // Always set snapshot back to false as each step has to determine this.
-        *d.full.borrow_mut() = false;
+        // Always set snapshot back to false if we did this as each step has to determine this.
+        if snapshot {
+            *d.full.borrow_mut() = false;
+        }
         Ok(reason)
     };
 
@@ -1172,6 +1235,11 @@ pub fn cpu_loop(
                     &watchpoints,
                     false,
                 )?;
+                if !capture_ram {
+                    // Reset RAM to clear as we might have copied before this time and
+                    // future ones should start clean.
+                    d.state.borrow_mut().ram = [0; MAX_SIZE];
+                }
                 // The closure assumes run. Since we're doing single step only change
                 // that when returned or things go off contract.
                 if reason == StopReason::Run {
@@ -1182,6 +1250,48 @@ pub fn cpu_loop(
                     reason,
                 });
                 cpucommandresptx.send(Ok(CommandResponse::Step(st)))?;
+            }
+            Command::StepN(stepn) => {
+                let mut early = false;
+                let mut out = Vec::with_capacity(stepn.capture);
+
+                // Reset RAM to clear as we might have copied before this time and
+                // future ones should start clean.
+                d.state.borrow_mut().ram = [0; MAX_SIZE];
+                for i in 0..stepn.reps {
+                    // The first N we go as fast as we can and never capture/record.
+                    let ram = if i < stepn.reps - stepn.capture {
+                        false
+                    } else {
+                        stepn.ram
+                    };
+                    let reason =
+                        advance(cpu, ram, &mut tick_pc, &breakpoints, &watchpoints, false)?;
+                    // Might have triggered a break/watch so return early then.
+                    if reason != StopReason::Run {
+                        // If needed grab a RAM snapshot for this time.
+                        if stepn.ram {
+                            *d.full.borrow_mut() = stepn.ram;
+                            cpu.debug();
+                            *d.full.borrow_mut() = false;
+                        }
+                        let st = Box::new(Stop {
+                            state: Box::new(d.state.borrow().clone()),
+                            reason,
+                        });
+                        cpucommandresptx.send(Ok(CommandResponse::StepN(StepNReason::Stop(st))))?;
+                        early = true;
+                        break;
+                    }
+                    // Don't record till the end.
+                    if i >= stepn.reps - stepn.capture {
+                        out.push(d.state.borrow().clone());
+                    }
+                }
+                if early {
+                    continue;
+                }
+                cpucommandresptx.send(Ok(CommandResponse::StepN(StepNReason::StepN(out))))?;
             }
             Command::Tick(capture_ram) => {
                 if !is_init {
@@ -1196,6 +1306,12 @@ pub fn cpu_loop(
                     &watchpoints,
                     true,
                 )?;
+                if !capture_ram {
+                    // Reset RAM to clear as we might have copied before this time and
+                    // future ones should start clean.
+                    d.state.borrow_mut().ram = [0; MAX_SIZE];
+                }
+
                 // The closure assumes run. Since we're doing single step only change
                 // that when returned or things go off contract.
                 if reason == StopReason::Run {

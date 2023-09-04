@@ -1,3 +1,4 @@
+use crate::commands::{Command, CommandResponse, Location};
 // Setup a stdin/stdout command pair
 // Fire up things like tui does it.
 //
@@ -79,6 +80,43 @@ fn setup(
 
 #[test]
 #[timeout(60000)]
+fn run_invalid_commands() -> Result<()> {
+    // The command channel.
+    let (cpucommandtx, cpucommandrx) = channel();
+    // The response channel.
+    let (cpucommandresptx, cpucommandresprx) = channel();
+
+    let cl = thread::Builder::new().name("cpu_loop".into());
+    cl.spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &cpucommandresptx))?;
+
+    cpucommandtx.send(Command::Run(false))?;
+    cpucommandtx.send(Command::Break(Location { addr: 0x0400 }))?;
+    cpucommandtx.send(Command::Stop)?;
+
+    let mut errors = 0;
+    loop {
+        match cpucommandresprx.recv()? {
+            Ok(st) => match st {
+                CommandResponse::Stop(stop) => match stop.reason {
+                    StopReason::Run => continue,
+                    StopReason::Stop => break,
+                    _ => panic!("Invalid stop reason while running: {stop}"),
+                },
+                _ => panic!("Invalid response while running: {st}"),
+            },
+            Err(e) => {
+                println!("Got error {e:?}");
+                errors += 1;
+                assert!(errors < 2, "Too many errors");
+            }
+        }
+    }
+    assert!(errors == 1, "Didn't get an error?");
+    Ok(())
+}
+
+#[test]
+#[timeout(60000)]
 fn tick_init_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
@@ -109,7 +147,8 @@ fn tick_init_test() -> Result<()> {
 }
 
 #[test]
-#[timeout(60000)]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
 fn step_init_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
@@ -119,7 +158,7 @@ fn step_init_test() -> Result<()> {
         panic!("Didn't get prompt after startup? - {resp:?}");
     }
 
-    // Send a TICK down but we're not init
+    // Send a STEP down but we're not init
     inputtx.send("S".into())?;
     let resp = outputrx.recv()?;
     if let Output::CPU(cpu, _) = resp {
@@ -133,14 +172,180 @@ fn step_init_test() -> Result<()> {
     let resp = outputrx.recv()?;
     if let Output::Prompt(_) = resp {
     } else {
-        panic!("Didn't get prompt after tick? - {resp:?}");
+        panic!("Didn't get prompt after step? - {resp:?}");
     }
 
+    drop(inputtx);
+    drop(outputrx);
+
+    // Reset for STEPN tests
+    let (inputtx, outputrx, _) = setup(CPUType::NMOS, true)?;
+
+    // We should get a CPU and a prompt since we did a preload.
+    let resp = outputrx.recv()?;
+    println!("Output - {resp:?}");
+    if let Output::CPU(c, _) = resp {
+        println!("Stop - {c}");
+        assert!(
+            c.reason == StopReason::None,
+            "Invalid stop reason after startup load. Should be None - {c}"
+        );
+        assert!(
+            c.state.pc == 0x0400,
+            "Didn't stop on correct PC. Shoud be 0x0400 and is {:04X} - {c}",
+            c.state.pc
+        );
+    } else {
+        panic!("Didn't get PC after startup load? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after startup load? - {resp:?}");
+    }
+
+    // Send an invalid command to cover all of STEPN
+    inputtx.send("STEPN".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from invalid watchpoint (no PC) command");
+    } else {
+        panic!("Didn't get an error for invalid watchpoint (no PC) command. Got {resp:?}");
+    }
+
+    // Send an invalid number
+    inputtx.send("STEPN 0x 12 FALSE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        assert!(
+            s.contains("parse error on count"),
+            "didn't get correct error got {s} instead"
+        );
+        println!("Got expected error: {s} from invalid watchpoint (no PC) command");
+    } else {
+        panic!("Didn't get an error for invalid watchpoint (no PC) command. Got {resp:?}");
+    }
+    inputtx.send("STEPN 12 0x FALSE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        assert!(
+            s.contains("parse error on repeat"),
+            "didn't get correct error got {s} instead"
+        );
+        println!("Got expected error: {s} from invalid watchpoint (no PC) command");
+    } else {
+        panic!("Didn't get an error for invalid watchpoint (no PC) command. Got {resp:?}");
+    }
+
+    // Set a breakpoint so we can STEPN into it
+    inputtx.send("B 0x0403".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after breakpoint? - {resp:?}");
+    }
+
+    // StepN to the breakpoint
+    // TODO(jchacon): should this return more than just the BP state?
+    inputtx.send("STEPN 5 0 TRUE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        if let StopReason::Break(_) = st.reason {
+        } else {
+            panic!("Stop reason incorrect. Got {st}");
+        }
+        println!("Got expected stop output: {st}");
+    } else {
+        panic!("Didn't get stepn after startup load? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get stop after breakpoint for stepn? - {resp:?}");
+    }
+
+    // Set a watchpoint and write 0x01 to 0x0405 so it'll trigger quickly
+    inputtx.send("WP 0x0200".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after watchpoint2? - {resp:?}");
+    }
+    inputtx.send("W 0x0405 0x01".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+    inputtx.send("STEPN 5 0 TRUE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        if let StopReason::Watch(_, _) = st.reason {
+        } else {
+            panic!("Stop reason incorrect. Got {st}");
+        }
+        println!("Got expected stop output: {st}");
+    } else {
+        panic!("Didn't get stop from stepn? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after breakpoint? - {resp:?}");
+    }
+
+    // Delete the breakpoint and watchpoint so it doesn't trigger below
+    inputtx.send("DB 0".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(s) = resp {
+        println!("Prompt: {s:?}");
+    } else {
+        panic!("Didn't get prompt after DB? - {resp:?}");
+    }
+    inputtx.send("DW 0".into())?;
+    let resp: Output = outputrx.recv()?;
+    if let Output::Prompt(s) = resp {
+        println!("Prompt: {s:?}");
+    } else {
+        panic!("Didn't get prompt after DW? - {resp:?}");
+    }
+
+    // Run the expected steps now.
+
+    // Let's validate things like a GUI version will work where
+    // it needs to do X steps per refresh period.
+    //
+    // NES is 1.7Mhz and refresh is 1/60th of a second so we need
+    // 1/60 / 1.7Mhz == 29830 clocks per refresh to stay at original speed.
+    // Average CPI is 4 for a 6502 so assume we need to run 29830 / 4 == 7457
+    let now = std::time::Instant::now();
+    inputtx.send("STEPN 7457 64 TRUE".into())?;
+    let resp = outputrx.recv()?;
+    let n = now.elapsed();
+
+    if let Output::StepN(_) = resp {
+    } else {
+        panic!("Didn't get stepn after startup load? - {resp:?}");
+    }
+
+    // CI and coverage this may run slower so let it do 33ms which is 30 fps
+    #[cfg(not(miri))]
+    let timeout = std::time::Duration::from_millis(33);
+    // Miri takes an eon so just give it 10m
+    #[cfg(miri)]
+    let timeout = std::time::Duration::from_secs(600);
+
+    assert!(
+        n <= timeout,
+        "too slow - time for instructions - {n:#?} vs {timeout:#?}"
+    );
+    println!("time for instructions - {n:#?}");
     Ok(())
 }
 
 #[test]
-#[timeout(60000)]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
 fn run_init_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
@@ -167,9 +372,6 @@ fn run_init_test() -> Result<()> {
 
     // Give time for the threads to notice and exit
     std::thread::sleep(std::time::Duration::from_millis(6000));
-
-    //inputtx.send("Q".into())?;
-
     Ok(())
 }
 
@@ -235,31 +437,7 @@ basic_startup_quit_test!(
 #[cfg_attr(not(miri), timeout(60000))]
 #[cfg_attr(miri, timeout(600000))]
 fn functionality_test() -> Result<()> {
-    let (inputtx, outputrx, _) = setup(CPUType::NMOS, true)?;
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
-
-    // We should get a CPU and a prompt since we did a preload.
-    let resp = outputrx.recv()?;
-    println!("Output - {resp:?}");
-    if let Output::CPU(c, _) = resp {
-        println!("Stop - {c}");
-        assert!(
-            c.reason == StopReason::None,
-            "Invalid stop reason after startup load. Should be None - {c}"
-        );
-        assert!(
-            c.state.pc == 0x0400,
-            "Didn't stop on correct PC. Shoud be 0x0400 and is {:04X} - {c}",
-            c.state.pc
-        );
-    } else {
-        panic!("Didn't get PC after startup load? - {resp:?}");
-    }
-    let resp = outputrx.recv()?;
-    if let Output::Prompt(_) = resp {
-    } else {
-        panic!("Didn't get prompt after startup load? - {resp:?}");
-    }
+    let (inputtx, outputrx) = init_with_load()?;
 
     // Go ahead and ask for HELP to validate the prompt pre strings
     inputtx.send("H".into())?;
@@ -288,27 +466,44 @@ fn functionality_test() -> Result<()> {
         panic!("Didn't get an error for invalid command. Got {resp:?}");
     }
 
-    // NOTE: Trying to inline all the tests will eventually overflow the stack
-    //       for this test (likely local vars piling up, etc). Also for readability
-    //       this makes sense so each command variation goes in it's own function.
-
-    load_tests(&inputtx, &outputrx, &path)?;
-    breakpoint_tests(&inputtx, &outputrx)?;
-    watchpoint_tests(&inputtx, &outputrx)?;
-    bin_tests(&inputtx, &outputrx, &path)?;
-    reset_tests(&inputtx, &outputrx)?;
-    pc_tests(&inputtx, &outputrx)?;
-    ram_tests(&inputtx, &outputrx)?;
-    cpu_tests(&inputtx, &outputrx)?;
-    read_tests(&inputtx, &outputrx)?;
-    write_tests(&inputtx, &outputrx)?;
-    disassemble_tests(&inputtx, &outputrx)?;
-    step_tests(&inputtx, &outputrx)?;
-
     Ok(())
 }
 
-fn load_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>, path: &Path) -> Result<()> {
+fn init_with_load() -> Result<(Sender<String>, Receiver<Output>)> {
+    let (inputtx, outputrx, _) = setup(CPUType::NMOS, true)?;
+
+    // We should get a CPU and a prompt since we did a preload.
+    let resp = outputrx.recv()?;
+    println!("Output - {resp:?}");
+    if let Output::CPU(c, _) = resp {
+        println!("Stop - {c}");
+        assert!(
+            c.reason == StopReason::None,
+            "Invalid stop reason after startup load. Should be None - {c}"
+        );
+        assert!(
+            c.state.pc == 0x0400,
+            "Didn't stop on correct PC. Shoud be 0x0400 and is {:04X} - {c}",
+            c.state.pc
+        );
+    } else {
+        panic!("Didn't get PC after startup load? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after startup load? - {resp:?}");
+    }
+    Ok((inputtx, outputrx))
+}
+
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn load_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
+
     // Send an invalid load command
     inputtx.send("L".into())?;
     let resp = outputrx.recv()?;
@@ -403,7 +598,12 @@ fn load_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>, path: &Path
     Ok(())
 }
 
-fn breakpoint_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn breakpoint_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Set a break point
     inputtx.send("B 0x0200".into())?;
     let resp = outputrx.recv()?;
@@ -494,10 +694,23 @@ fn breakpoint_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Re
         panic!("Didn't get an error for invalid delete breakpoint (invalid index2) command. Got {resp:?}");
     }
 
+    // Delete the breakpoint so we leave state correct.
+    inputtx.send("DB 0".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after delete breakpoint? - {resp:?}");
+    }
+
     Ok(())
 }
 
-fn watchpoint_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn watchpoint_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Set a watchpoint
     inputtx.send("WP 0x0200".into())?;
     let resp = outputrx.recv()?;
@@ -588,10 +801,23 @@ fn watchpoint_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Re
         panic!("Didn't get an error for invalid delete watchpoint (invalid index2) command. Got {resp:?}");
     }
 
+    // Delete the watchpoint so we leave state consistent.
+    inputtx.send("DW 0".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after delete watchpoint? - {resp:?}");
+    }
     Ok(())
 }
 
-fn bin_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>, path: &Path) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn bin_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
+
     // Send an invalid BIN command
     inputtx.send("BIN".into())?;
     let resp = outputrx.recv()?;
@@ -630,7 +856,12 @@ fn bin_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>, path: &Path)
     Ok(())
 }
 
-fn reset_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn reset_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Reset and validate it
     inputtx.send("RESET".into())?;
     let resp = outputrx.recv()?;
@@ -650,7 +881,12 @@ fn reset_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<
 
     Ok(())
 }
-fn pc_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn pc_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Send an invalid PC command
     inputtx.send("PC".into())?;
     let resp = outputrx.recv()?;
@@ -689,7 +925,12 @@ fn pc_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()>
     Ok(())
 }
 
-fn ram_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn ram_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Get RAM and validate it
     inputtx.send("RAM".into())?;
     let resp = outputrx.recv()?;
@@ -711,7 +952,12 @@ fn ram_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()
     Ok(())
 }
 
-fn cpu_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn cpu_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Get CPU and validate it
     inputtx.send("CPU".into())?;
     let resp = outputrx.recv()?;
@@ -732,7 +978,12 @@ fn cpu_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()
     Ok(())
 }
 
-fn read_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn read_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Send an invalid read command
     inputtx.send("R".into())?;
     let resp = outputrx.recv()?;
@@ -827,8 +1078,13 @@ fn read_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<(
     Ok(())
 }
 
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
 #[allow(clippy::too_many_lines)]
-fn write_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+fn write_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Send an invalid write command
     inputtx.send("W".into())?;
     let resp = outputrx.recv()?;
@@ -1000,7 +1256,12 @@ fn write_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<
     Ok(())
 }
 
-fn disassemble_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
+fn disassemble_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
     // Send an invalid disassemble
     inputtx.send("D".into())?;
     let resp = outputrx.recv()?;
@@ -1083,8 +1344,12 @@ fn disassemble_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> R
     Ok(())
 }
 
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(600000))]
 #[allow(clippy::too_many_lines)]
-fn step_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<()> {
+fn step_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
     // Send an invalid step
     inputtx.send("S NO NO".into())?;
     let resp = outputrx.recv()?;
@@ -1178,6 +1443,14 @@ fn step_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<(
     if let Output::Prompt(_) = resp {
     } else {
         panic!("Didn't get prompt after step? - {resp:?}");
+    }
+
+    // Set a watchpoint at 0x0200
+    inputtx.send("WP 0x0200".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after watchpoint2? - {resp:?}");
     }
 
     // Write 0x01 to 0x0405 so it triggers the watchpoint
@@ -1406,13 +1679,6 @@ fn step_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<(
     } else {
         panic!("Didn't get prompt after DB? - {resp:?}");
     }
-    inputtx.send("DB 0".into())?;
-    let resp: Output = outputrx.recv()?;
-    if let Output::Prompt(s) = resp {
-        println!("Prompt: {s:?}");
-    } else {
-        panic!("Didn't get prompt after DB? - {resp:?}");
-    }
     inputtx.send("B 0x0401".into())?;
     let resp: Output = outputrx.recv()?;
     if let Output::Prompt(s) = resp {
@@ -1490,7 +1756,7 @@ fn step_tests(inputtx: &Sender<String>, outputrx: &Receiver<Output>) -> Result<(
                 _ => panic!("Unknown reason - {resp:?}"),
             },
 
-            Output::RAM(_) => panic!("Unknown response after C, B, STOP - {resp:?}"),
+            _ => panic!("Unknown response after C, B, STOP - {resp:?}"),
         }
     }
     Ok(())

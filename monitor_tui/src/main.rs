@@ -49,6 +49,10 @@ macro_rules! check_thread {
     };
 }
 
+fn print_cpustate(st: &CPUState) {
+    println!("{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}", st.dis, st.a, st.x, st.y, st.s, st.p, st.op_val, st.op_addr, st.op_tick, st.clocks);
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args: Args = Args::parse();
@@ -104,10 +108,15 @@ fn main() -> Result<()> {
                     if let Some(pre) = pre {
                         println!("{pre}");
                     }
-                    println!("{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}", st.state.dis, st.state.a, st.state.x, st.state.y, st.state.s, st.state.p, st.state.op_val, st.state.op_addr, st.state.op_tick, st.state.clocks);
+                    print_cpustate(&st.state);
                 }
                 monitor::Output::RAM(r) => {
                     print!("{}", r.as_ref() as &dyn Memory);
+                }
+                monitor::Output::StepN(stepn) => {
+                    for st in &stepn {
+                        print_cpustate(st);
+                    }
                 }
             }
             // Different from just using Display for CPUState since we don't want the

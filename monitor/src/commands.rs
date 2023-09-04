@@ -12,6 +12,8 @@ pub enum Command {
     DeleteBreakpoint(usize),
     // Bool indicates whether to snapshot RAM on each instruction (expensive).
     Step(bool),
+    // Step N instructions and return the last X
+    StepN(StepN),
     // Bool indicates whether to snapshot RAM on each instruction (expensive).
     Tick(bool),
     Read(Location),
@@ -29,6 +31,13 @@ pub enum Command {
     Dump(String),
     PC(Location),
     Reset,
+}
+
+#[derive(Debug)]
+pub struct StepN {
+    pub reps: usize,
+    pub capture: usize,
+    pub ram: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,6 +85,11 @@ impl fmt::Display for Stop {
     }
 }
 
+pub enum StepNReason {
+    Stop(Box<Stop>),
+    StepN(Vec<CPUState>),
+}
+
 #[derive(Display)]
 pub enum CommandResponse {
     // NOTE: There is no Run response as it uses Stop to indicate updates.
@@ -85,6 +99,7 @@ pub enum CommandResponse {
     BreakList(Vec<Location>),
     DeleteBreakpoint,
     Step(Box<Stop>),
+    StepN(StepNReason),
     Tick(Box<Stop>),
     Read(Val),
     ReadRange(Vec<Val>),
