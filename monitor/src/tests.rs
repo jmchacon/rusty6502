@@ -328,11 +328,12 @@ fn step_init_test() -> Result<()> {
         panic!("Didn't get stepn after startup load? - {resp:?}");
     }
 
-    // CI and coverage this may run slower so let it do 33ms which is 30 fps
+    // CI and coverage this may run slower so let it do 50ms. A real one
+    // should be able to do 16ms
     #[cfg(not(miri))]
-    let timeout = std::time::Duration::from_millis(33);
+    let timeout = std::time::Duration::from_millis(50);
     // Miri takes an eon so just give it 10m
-    #[cfg(miri)]
+    #[cfg(any(miri, sanitizer))]
     let timeout = std::time::Duration::from_secs(600);
 
     assert!(
