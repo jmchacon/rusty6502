@@ -1,10 +1,10 @@
 use crate::{
     AddressMode, CPUError, CPUInternal, CPUNmosInternal, CPURicoh, CPUState, ChipDef, Flags,
-    FlatRAM, InstructionMode, InterruptState, InterruptStyle, OpState, Opcode, Register, State,
-    Tick, Vectors, CPU, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
+    FlatRAM, InstructionMode, InterruptState, InterruptStyle, OpState, Opcode, Register, ResetTick,
+    State, Tick, Vectors, CPU, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
     P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
-use chip::Chip;
+use chip::{CPUType, Chip};
 use color_eyre::eyre::{eyre, Result};
 use irq::Sender;
 use memory::{Memory, MAX_SIZE};
@@ -123,7 +123,7 @@ macro_rules! setup_cpu {
             // This should halt the cpu if a test goes off the rails since
             // endless execution will eventually end up at the NMI vector (it's the first
             // one) which contains HLT instructions.
-            let r = FlatRAM::new()
+            let r = FlatRAM::default()
                 .vectors(Vectors {
                     nmi: hlt,
                     reset: RESET,
@@ -232,6 +232,26 @@ fn invalid_states() -> Result<()> {
     #[allow(clippy::clone_on_copy)]
     let x = a.clone();
     assert!(x.to_string() == "A", "Clone didn't work for register?");
+
+    let cpu = CPUType::NMOS;
+    #[allow(clippy::clone_on_copy)]
+    let cpucopy = cpu.clone();
+    assert!(
+        cpucopy.to_string() == "NMOS",
+        "Clone didn't work for CPUType?"
+    );
+
+    let tick = ResetTick::Tick1;
+    #[allow(clippy::clone_on_copy)]
+    let tickcopy = tick.clone();
+    assert!(
+        tick == tickcopy,
+        "ticks differ - {tick:?} vs copy {tickcopy:?}"
+    );
+    println!("{tick:?} {tickcopy:?}");
+    let cpu = CPUState::default();
+    let _ = cpu.clone();
+
     let d = Debug::<CPUState>::new(128, 1);
     let debug = { || d.debug() };
     let nmi_addr = 0x1212;
@@ -256,17 +276,8 @@ fn invalid_states() -> Result<()> {
 
     // Make sure the bad states in reset error.
     cpu.reset()?;
-    cpu.reset_tick = Tick::Tick5;
-    let ret = cpu.reset();
-    assert!(ret.is_err(), "didn't get reset error for tick5?");
-    #[allow(clippy::unwrap_used)]
-    let errs = ret.err().unwrap().to_string();
-    assert!(
-        errs.contains("invalid reset_tick"),
-        "wrong error for invalid reset_tick: {errs}"
-    );
 
-    cpu.reset_tick = Tick::Tick3;
+    cpu.reset_tick = ResetTick::Tick3;
     cpu.op_tick = Tick::Tick8;
     let ret = cpu.reset();
     assert!(ret.is_err(), "didn't get op_tick reset error?");
@@ -295,20 +306,40 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for addr mode func addr_absolute"
     );
+    let ret = nmos.addr_absolute(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_absolute"
+    );
     let ret = cpu.addr_absolute_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_absolute_x"
+    );
+    let ret = nmos.addr_absolute_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_absolute_x"
     );
     let ret = cpu.addr_immediate(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_immediate"
     );
+    let ret = nmos.addr_immediate(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_immediate"
+    );
     let ret = cpu.addr_indirect_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_indirect_x"
+    );
+    let ret = nmos.addr_indirect_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_indirect_x"
     );
     let ret = cpu.addr_indirect(&InstructionMode::Load);
     assert!(
@@ -320,15 +351,30 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for addr mode func addr_indirect_y"
     );
+    let ret = nmos.addr_indirect_y(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_indirect_y"
+    );
     let ret = cpu.addr_zp(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_zp"
     );
+    let ret = nmos.addr_zp(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_zp"
+    );
     let ret = cpu.addr_zp_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_zp_x"
+    );
+    let ret = nmos.addr_zp_x(&InstructionMode::Load);
+    assert!(
+        ret.is_err(),
+        "didn't get an error for NMOS addr mode func addr_zp_x"
     );
 
     let ret = cpu.perform_branch();
@@ -337,6 +383,8 @@ fn invalid_states() -> Result<()> {
     assert!(ret.is_err(), "didn't get an error for branch_nop");
     let ret = cpu.run_interrupt(0x1234, false);
     assert!(ret.is_err(), "didn't get an error for run_interrupt");
+    let ret = nmos.run_interrupt(0x1234, false);
+    assert!(ret.is_err(), "didn't get an error for NMOS run_interrupt");
 
     let ret = cpu.bbr(1);
     assert!(ret.is_err(), "didn't get an error for bbr1");
@@ -345,6 +393,8 @@ fn invalid_states() -> Result<()> {
     assert!(ret.is_err(), "didn't get an error for jmp");
     let ret = cpu.jmp_indirect();
     assert!(ret.is_err(), "didn't get an error for jmp_indirect");
+    let ret = nmos.jmp_indirect();
+    assert!(ret.is_err(), "didn't get an error for NMOS jmp_indirect");
     let ret = cpu.jmp_indirect_x();
     assert!(ret.is_err(), "didn't get an error for jmp_indirect_x");
     let ret = cpu.jsr();
@@ -518,23 +568,23 @@ fn disassemble_test() -> Result<()> {
 
     // All of our tests use CMOS since it's the superset of all modes
     let tests = [
-        (vec![0xA9, 0x69], "LDA #69"),                  // Immediate
-        (vec![0xA5, 0x69], "LDA 69"),                   // ZP
-        (vec![0xB5, 0x69], "LDA 69,X"),                 // ZPX
-        (vec![0xB6, 0x69], "LDX 69,Y"),                 // ZPY
-        (vec![0xB2, 0x69], "LDA (69)"),                 // Indirect
-        (vec![0xA1, 0x69], "LDA (69,X)"),               // Indirect X
-        (vec![0xB1, 0x69], "LDA (69),Y"),               // Indirect Y
-        (vec![0xAD, 0x69, 0x55], "LDA 5569"),           // Absolute
-        (vec![0xBD, 0x69, 0x55], "LDA 5569,X"),         // Absolute X
-        (vec![0xB9, 0x69, 0x55], "LDA 5569,Y"),         // Absolute Y
-        (vec![0x6C, 0x69, 0x55], "JMP (5569)"),         // Absolute Indirect
-        (vec![0x7C, 0x69, 0x55], "JMP (5569,X)"),       // Absolute Indirect
-        (vec![0x1A], "INC"),                            // Implied
-        (vec![0x03], "NOP"),                            // NOPCmos
-        (vec![0x5C, 0x34, 0x12], "NOP 1234"),           // AbsoluteNOP
-        (vec![0x80, 0x69], "BRA 69 (006A)"),            // Relative,
-        (vec![0x1F, 0x55, 0x69], "BBR 1,55,69 (006A)"), // Zero Page Relative
+        (vec![0xA9, 0x69], "LDA #$69"),                    // Immediate
+        (vec![0xA5, 0x69], "LDA $69"),                     // ZP
+        (vec![0xB5, 0x69], "LDA $69,X"),                   // ZPX
+        (vec![0xB6, 0x69], "LDX $69,Y"),                   // ZPY
+        (vec![0xB2, 0x69], "LDA ($69)"),                   // Indirect
+        (vec![0xA1, 0x69], "LDA ($69,X)"),                 // Indirect X
+        (vec![0xB1, 0x69], "LDA ($69),Y"),                 // Indirect Y
+        (vec![0xAD, 0x69, 0x55], "LDA $5569"),             // Absolute
+        (vec![0xBD, 0x69, 0x55], "LDA $5569,X"),           // Absolute X
+        (vec![0xB9, 0x69, 0x55], "LDA $5569,Y"),           // Absolute Y
+        (vec![0x6C, 0x69, 0x55], "JMP ($5569)"),           // Absolute Indirect
+        (vec![0x7C, 0x69, 0x55], "JMP ($5569,X)"),         // Absolute Indirect
+        (vec![0x1A], "INC"),                               // Implied
+        (vec![0x03], "NOP"),                               // NOPCmos
+        (vec![0x5C, 0x34, 0x12], "NOP $1234"),             // AbsoluteNOP
+        (vec![0x80, 0x69], "BRA $69 ($006A)"),             // Relative,
+        (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
     ];
 
     // Set addr at end of RAM to test wrapping.
@@ -756,103 +806,103 @@ fn c6510_io_tests() {
 }
 
 macro_rules! init_test {
-        ($suite:ident, $($name:ident: $type:expr, $fill:expr, $rand:expr,)*) => {
-            mod $suite {
-                use super::*;
+    ($suite:ident, $($name:ident: $type:expr, $fill:expr, $rand:expr,)*) => {
+        mod $suite {
+            use super::*;
 
-                $(
-                    #[test]
-                    fn $name() -> Result<()> {
-                        let mut iter: usize = 0;
-                        let mut track = HashSet::new();
-                        // If decimal state is random run 100 iterations
-                        // and validate both states showed up. Yes..this could
-                        // fail but 0.5^100 is a fairly small chance there...
-                        if $rand {
-                            iter = 100;
-                        }
-                        for _ in 0..=iter {
-                            let r = Irq {
-                                raised: RefCell::new(false),
-                            };
-                            let fill = $fill;
-
-                            let d = Debug::<CPUState>::new(128, usize::MAX);
-                            let debug = { || d.debug() };
-                            let mut cpu = $type(0x1212, fill, None, None, Some(&r), Some(&debug));
-
-                            // This should fail
-                            assert!(cpu.reset().is_err(), "reset worked before power_on");
-
-                            // Now it should work.
-                            cpu.power_on()?;
-                            if cpu.p&P_DECIMAL == P_DECIMAL {
-                                track.insert(true);
-                            } else {
-                                track.insert(false);
-                            }
-
-                            // Now run through a reset ourselves and see that
-                            // tick fails partially through it.
-                            cpu.reset()?;
-                            let ret = cpu.tick();
-                            assert!(ret.is_err(), "Tick didn't return error during reset");
-                            loop {
-                                match cpu.reset() {
-                                    Ok(OpState::Done) => break,
-                                    Ok(OpState::Processing) => continue,
-                                    Err(e) => panic!("error from reset: {e:?}"),
-                                }
-                            }
-
-                            // Pull RDY high and tick should return true but not advance.
-                            let tick = cpu.op_tick;
-                            let clocks = cpu.clocks;
-                            *r.raised.borrow_mut() = true;
-                            let ret = cpu.tick();
-                            assert!(ret.is_ok(), "Tick didn't return true - RDY high - {ret:?}");
-                            let ret = cpu.tick_done();
-                            assert!(ret.is_ok(), "Tick done didn't return true - RDY high - {ret:?}");
-                            assert!(tick == cpu.op_tick, "op_tick advanced with RDY high?");
-                            assert!(clocks == cpu.clocks, "clocks advanced with RDY high?");
-                            *r.raised.borrow_mut() = false;
-
-                            // This should fail now.
-                            assert!(cpu.power_on().is_err(), "power_on passes twice");
-
-                            // First tick should pass
-                            assert!(cpu.tick().is_ok(), "Tick didn't pass");
-                            assert!(cpu.tick_done().is_ok(), "Tick done didn't pass");
-
-                            // Now we should get an error but it's from HLT itself.
-                            let res = cpu.tick();
-                            assert!(res.is_err(), "Tick didn't produce a halted error? {cpu}");
-                            assert!(cpu.state == State::Halted, "CPU isn't halted?");
-
-                            // This next error should be a halt error from tick itself since state
-                            // is halted now.
-                            let res = cpu.tick();
-                            assert!(res.is_err(), "Tick didn't produce a halted error? {cpu}");
-
-                            // SAFETY: We know it's an error so unwrap_err is fine.
-                            let err = res.unwrap_err();
-                            println!("Got err: {err:?}");
-                            match err.root_cause().downcast_ref::<CPUError>() {
-                              Some(CPUError::Halted{op: _}) => {},
-                                  _ => {
-                                      assert!(false, "Error isn't a CPUError::Halted. Is '{err}'");
-                                  }
-                            }
-                        }
-                        if $rand {
-                            assert!(track.len() == 2, "didn't get both decimal states");
-                        }
-                        Ok(())
+            $(
+                #[test]
+                fn $name() -> Result<()> {
+                    let mut iter: usize = 0;
+                    let mut track = HashSet::new();
+                    // If decimal state is random run 100 iterations
+                    // and validate both states showed up. Yes..this could
+                    // fail but 0.5^100 is a fairly small chance there...
+                    if $rand {
+                        iter = 100;
                     }
-                )*
-            }
+                    for _ in 0..=iter {
+                        let r = Irq {
+                            raised: RefCell::new(false),
+                        };
+                        let fill = $fill;
+
+                        let d = Debug::<CPUState>::new(128, usize::MAX);
+                        let debug = { || d.debug() };
+                        let mut cpu = $type(0x1212, fill, None, None, Some(&r), Some(&debug));
+
+                        // This should fail
+                        assert!(cpu.reset().is_err(), "reset worked before power_on");
+
+                        // Now it should work.
+                        cpu.power_on()?;
+                        if cpu.p&P_DECIMAL == P_DECIMAL {
+                            track.insert(true);
+                        } else {
+                            track.insert(false);
+                        }
+
+                        // Now run through a reset ourselves and see that
+                        // tick fails partially through it.
+                        cpu.reset()?;
+                        let ret = cpu.tick();
+                        assert!(ret.is_err(), "Tick didn't return error during reset");
+                        loop {
+                            match cpu.reset() {
+                                Ok(OpState::Done) => break,
+                                Ok(OpState::Processing) => continue,
+                                Err(e) => panic!("error from reset: {e:?}"),
+                            }
+                        }
+
+                        // Pull RDY high and tick should return true but not advance.
+                        let tick = cpu.op_tick;
+                        let clocks = cpu.clocks;
+                        *r.raised.borrow_mut() = true;
+                        let ret = cpu.tick();
+                        assert!(ret.is_ok(), "Tick didn't return true - RDY high - {ret:?}");
+                        let ret = cpu.tick_done();
+                        assert!(ret.is_ok(), "Tick done didn't return true - RDY high - {ret:?}");
+                        assert!(tick == cpu.op_tick, "op_tick advanced with RDY high?");
+                        assert!(clocks == cpu.clocks, "clocks advanced with RDY high?");
+                        *r.raised.borrow_mut() = false;
+
+                        // This should fail now.
+                        assert!(cpu.power_on().is_err(), "power_on passes twice");
+
+                        // First tick should pass
+                        assert!(cpu.tick().is_ok(), "Tick didn't pass");
+                        assert!(cpu.tick_done().is_ok(), "Tick done didn't pass");
+
+                        // Now we should get an error but it's from HLT itself.
+                        let res = cpu.tick();
+                        assert!(res.is_err(), "Tick didn't produce a halted error? {cpu}");
+                        assert!(cpu.state == State::Halted, "CPU isn't halted?");
+
+                        // This next error should be a halt error from tick itself since state
+                        // is halted now.
+                        let res = cpu.tick();
+                        assert!(res.is_err(), "Tick didn't produce a halted error? {cpu}");
+
+                        // SAFETY: We know it's an error so unwrap_err is fine.
+                        let err = res.unwrap_err();
+                        println!("Got err: {err:?}");
+                        match err.root_cause().downcast_ref::<CPUError>() {
+                            Some(CPUError::Halted{op: _}) => {},
+                            _ => {
+                                assert!(false, "Error isn't a CPUError::Halted. Is '{err}'");
+                            }
+                        }
+                    }
+                    if $rand {
+                        assert!(track.len() == 2, "didn't get both decimal states");
+                    }
+                    Ok(())
+                }
+            )*
         }
     }
+}
 
 init_test!(
     init_tests,
@@ -867,60 +917,60 @@ init_test!(
 );
 
 macro_rules! tick_test {
-        ($suite:ident, $($name:ident: $type:ident,)*) => {
-            mod $suite {
-                use super::*;
+    ($suite:ident, $($name:ident: $type:ident,)*) => {
+        mod $suite {
+            use super::*;
 
-                $(
-                    #[test]
-                    fn $name() -> Result<()> {
-                        let mut cpu = $type(0x1212, 0xAA, None, None, None, None);
+            $(
+                #[test]
+                fn $name() -> Result<()> {
+                    let mut cpu = $type(0x1212, 0xAA, None, None, None, None);
 
-                        // This should fail as we haven't powered on/reset.
-                        {
-                            let ret = cpu.tick();
-                            assert!(ret.is_err(), "tick worked before reset");
-                        }
-                        cpu.power_on()?;
-
-                        // Now start a reset sequence and then attempt to tick. This should fail also.
-                        cpu.reset()?;
-                        {
-                            let ret = cpu.tick();
-                            assert!(ret.is_err(), "tick worked while inside reset");
-                        }
-
-                        // Finish reset
-                        loop {
-                            match cpu.reset() {
-                                Ok(OpState::Done) => break,
-                                Ok(OpState::Processing) => continue,
-                                Err(e) => return Err(e),
-                            }
-                        }
-
-                        // Should work now to advance a few ticks.
-                        for _ in 0..4 {
-                            cpu.tick()?;
-                            cpu.tick_done()?;
-                        }
-
-                        // Now validate you can't call tick_done() twice in a row or tick twice in a row.
-                        {
-                            let ret = cpu.tick_done();
-                            assert!(ret.is_err(), "tick_done called twice");
-                        }
-                        {
-                            cpu.tick()?;
-                            let ret = cpu.tick();
-                            assert!(ret.is_err(), "tick called twice");
-                        }
-                        Ok(())
+                    // This should fail as we haven't powered on/reset.
+                    {
+                        let ret = cpu.tick();
+                        assert!(ret.is_err(), "tick worked before reset");
                     }
-                )*
-            }
+                    cpu.power_on()?;
+
+                    // Now start a reset sequence and then attempt to tick. This should fail also.
+                    cpu.reset()?;
+                    {
+                        let ret = cpu.tick();
+                        assert!(ret.is_err(), "tick worked while inside reset");
+                    }
+
+                    // Finish reset
+                    loop {
+                        match cpu.reset() {
+                            Ok(OpState::Done) => break,
+                            Ok(OpState::Processing) => continue,
+                            Err(e) => return Err(e),
+                        }
+                    }
+
+                    // Should work now to advance a few ticks.
+                    for _ in 0..4 {
+                        cpu.tick()?;
+                        cpu.tick_done()?;
+                    }
+
+                    // Now validate you can't call tick_done() twice in a row or tick twice in a row.
+                    {
+                        let ret = cpu.tick_done();
+                        assert!(ret.is_err(), "tick_done called twice");
+                    }
+                    {
+                        cpu.tick()?;
+                        let ret = cpu.tick();
+                        assert!(ret.is_err(), "tick called twice");
+                    }
+                    Ok(())
+                }
+            )*
         }
     }
+}
 
 tick_test!(
     tick_tests,

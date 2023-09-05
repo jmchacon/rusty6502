@@ -137,8 +137,8 @@ pub fn cpu_base_struct(args: TokenStream, input: TokenStream) -> TokenStream {
                 .parse2(quote! {
                   #[doc = " Tracking for reset when we need to clear the extra clocks"]
                   #[doc = " up front before simulating BRK. If `tick` is called and this"]
-                  #[doc = " isn't in Tick::Reset an error will result."]
-                  reset_tick: Tick
+                  #[doc = " isn't in ResetTick::Reset an error will result."]
+                  reset_tick: ResetTick
                 })
                 .unwrap(),
         );

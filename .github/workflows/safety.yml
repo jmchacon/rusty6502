@@ -67,15 +67,24 @@ jobs:
       - name: cargo miri test cpu
         run: |
             # Only test a subset and do them in separate runs or miri OOMs
-            for i in init_tests irq_and_nmi load_tests store_tests nop_hlt_tests::classic_nop_0x02_hlt rom_tests::undocumented_opcodes_test; do
+            for i in init_tests::nmos6510 irq_and_nmi load_tests store_tests nop_hlt_tests::classic_nop_0x02_hlt rom_tests::undocumented_opcodes_test c6510_io_tests disassemble_test ::flags_test invalid_states tick_next tick_tests; do
               echo Testing $i
               cargo miri test -p cpu $i
             done
         env:
-          # Ignore leaks - cpu test does this on purpose.
           # Disable isolation as we load external input files/images.
           # Stacked borrows because eyre doesn't work.
-          MIRIFLAGS: "-Zmiri-ignore-leaks -Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
+          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
+      - name: cargo miri test monitor
+        run: |
+            # One test doesn't work so exclude it but do all the others
+            for i in `cargo t -p monitor -- --list 2> /dev/null|egrep ^tests|awk '{print $1}'|sed -e 's:.$::g'|egrep -v tests::step_tests`; do
+              cargo miri test -p monitor $i -- --exact
+            done
+        env:
+          # Disable isolation as we load external input files/images.
+          # Stacked borrows because eyre doesn't work.
+          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
   #loom:
   #  runs-on: ubuntu-latest
   #  steps:
