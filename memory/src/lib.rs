@@ -22,9 +22,15 @@ pub trait Memory {
     fn ram(&self, dest: &mut [u8; MAX_SIZE]);
 }
 
+impl std::fmt::Debug for dyn Memory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
 impl std::fmt::Display for dyn Memory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Get a copy of the RAM image
+        // Get a copy of the RAM image after accounting for banks/mirroring/etc.
         let mut r = [0; MAX_SIZE];
         self.ram(&mut r);
 

@@ -6,4 +6,3 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-proc-macro2 = { workspace = true }

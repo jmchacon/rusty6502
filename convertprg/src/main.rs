@@ -3,6 +3,7 @@
 //! running as a test cart.
 
 use clap::Parser;
+use clap_num::maybe_hex;
 use color_eyre::eyre::Result;
 use std::{ffi::OsStr, fs::read, fs::write, path::Path};
 
@@ -29,7 +30,7 @@ struct Args {
 
     #[arg(
         long,
-        default_value_t = 0,
+        default_value_t = 0, value_parser=maybe_hex::<u16>,
         help = "The PC value to start running via a JSR from 0xD000"
     )]
     start_pc: u16,
