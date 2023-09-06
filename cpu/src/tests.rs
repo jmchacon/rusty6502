@@ -66,13 +66,13 @@ impl Debug<CPUState> {
         writeln!(out, "\nFAIL: {s}\n\nExecution buffer:\n").unwrap();
         if *self.wrapped.borrow() {
             for i in *self.cur.borrow()..self.state.len() {
-                let s;
+                let mut s = String::with_capacity(32);
                 {
                     // Late bind disassembly since this is expensive to
                     // generate the String. So only do it on actual dumps.
                     let pc = self.state[i].borrow().pc;
                     let r = &self.state[i].borrow().ram;
-                    (s, _) = cpu.disassemble(pc, r);
+                    _ = cpu.disassemble(&mut s, pc, r);
                 }
                 self.state[i].borrow_mut().dis = s;
                 writeln!(out, "{}", self.state[i].borrow()).unwrap();
@@ -586,6 +586,7 @@ fn disassemble_test() -> Result<()> {
         (vec![0x80, 0x69], "BRA $69 ($006A)"),             // Relative,
         (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
     ];
+    let mut s = String::with_capacity(32);
 
     // Set addr at end of RAM to test wrapping.
     let addr = Wrapping(0xFFFF);
@@ -607,8 +608,8 @@ fn disassemble_test() -> Result<()> {
         };
         write!(out, "{}", t.1)?;
 
-        let (d, _) = cpu.disassemble(addr.0, cpu.ram.borrow().as_ref());
-        assert!(d == out, "Expected output\n{out}\n\nDoesn't match\n{d}");
+        cpu.disassemble(&mut s, addr.0, cpu.ram.borrow().as_ref());
+        assert!(s == out, "Expected output\n{out}\n\nDoesn't match\n{s}");
     }
     Ok(())
 }

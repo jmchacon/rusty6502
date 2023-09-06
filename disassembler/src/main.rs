@@ -115,7 +115,6 @@ fn main() -> Result<()> {
             pc = res.1;
         }
     }
-    let mut dis;
     let mut newpc: u16;
     println!("start: {start:04X} len {:04X}", bytes.len());
     // Set the most we'll do. If start was moved this will limit further.
@@ -133,9 +132,9 @@ fn main() -> Result<()> {
         CPUType::NMOS6510 => &c6510,
         CPUType::CMOS => &cmos,
     };
-
+    let mut dis = String::with_capacity(32);
     loop {
-        (dis, newpc) = cpu.disassemble(pc, &ram);
+        newpc = cpu.disassemble(&mut dis, pc, &ram);
         println!("{dis}");
         // Check if we went off the end, or the newpc wrapped
         // as step() can overflow.

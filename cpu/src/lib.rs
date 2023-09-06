@@ -818,6 +818,24 @@ pub struct CPUState {
     pub op_tick: Tick,
 }
 
+impl CPUState {
+    /// Perform a shallow copy (exclude the expensive ram)
+    pub fn shallow(&self, dest: &mut Self) {
+        dest.state = self.state;
+        dest.a = self.a;
+        dest.x = self.x;
+        dest.y = self.y;
+        dest.s = self.s;
+        dest.p = self.p;
+        dest.pc = self.pc;
+        dest.clocks = self.clocks;
+        dest.op_val = self.op_val;
+        dest.op_addr = self.op_addr;
+        dest.dis = self.dis.clone();
+        dest.op_tick = self.op_tick;
+    }
+}
+
 impl Default for CPUState {
     fn default() -> Self {
         Self {
@@ -832,7 +850,7 @@ impl Default for CPUState {
             op_val: 0x00,
             op_addr: 0x0000,
             ram: [0; MAX_SIZE],
-            dis: String::new(),
+            dis: String::with_capacity(32),
             op_tick: Tick::default(),
         }
     }
@@ -941,16 +959,23 @@ pub trait CPU<'a>: Chip {
 
     /// pc returns the current PC value.
     fn pc(&self) -> u16;
+
     /// `pc_mut` sets PC to the given address.
     fn pc_mut(&mut self, new: u16);
 
+    /// `op_tick` returns the current Tick value for the operation in progress.
+    fn op_tick(&self) -> Tick;
+
     /// disassemble will take the given pc and Memory implementation and disassemble the segment
-    /// at that location. It will return a string of the dissembly as well as the next pc
+    /// at that location. It will write to the string passed of the dissembly and return the next pc
     /// to continue disassembling.
+    /// NOTE: Passing a string of at least 32 chars is best to avoid any allocations.
+    ///
     /// As a real 6502 will wrap around if it's asked to step off the end
     /// this will do the same. i.e. disassembling 0xFFFF with a multi-byte opcode will result
     /// in reading 0x0000 and 0x0001 and returning a pc from that area as well.
-    fn disassemble(&self, pc: u16, r: &dyn Memory) -> (String, u16) {
+    fn disassemble(&self, out: &mut String, pc: u16, r: &dyn Memory) -> u16 {
+        out.clear();
         let pc1 = r.read((Wrapping(pc) + Wrapping(1)).0);
         let pc2 = r.read((Wrapping(pc) + Wrapping(2)).0);
 
@@ -967,7 +992,7 @@ pub trait CPU<'a>: Chip {
             (operation.op.to_string(), operation.mode)
         };
 
-        let mut out = format!("{pc:04X} {op:02X} ");
+        write!(out, "{pc:04X} {op:02X} ").unwrap();
         let mut count = Wrapping(pc) + Wrapping(2);
 
         match mode {
@@ -987,25 +1012,25 @@ pub trait CPU<'a>: Chip {
                 write!(out, "{pc1:02X}      {opcode} (${pc1:02X})").unwrap();
             }
             AddressMode::IndirectX => {
-                write!(out, "{pc1:02X}      {opcode} (${pc1:02X},X)",).unwrap();
+                write!(out, "{pc1:02X}      {opcode} (${pc1:02X},X)").unwrap();
             }
             AddressMode::IndirectY => {
                 write!(out, "{pc1:02X}      {opcode} (${pc1:02X}),Y").unwrap();
             }
             AddressMode::Absolute | AddressMode::AbsoluteNOP => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X}",).unwrap();
+                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X}").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteX => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X},X",).unwrap();
+                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X},X").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteY => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X},Y",).unwrap();
+                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X},Y").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteIndirect => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} (${pc2:02X}{pc1:02X})",).unwrap();
+                write!(out, "{pc1:02X} {pc2:02X}   {opcode} (${pc2:02X}{pc1:02X})").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteIndirectX => {
@@ -1039,7 +1064,7 @@ pub trait CPU<'a>: Chip {
             }
         }
 
-        (out, count.0)
+        count.0
     }
 }
 
@@ -1090,12 +1115,12 @@ macro_rules! common_cpu_funcs {
 
       impl fmt::Display for $cpu<'_> {
           fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-              let (dis, _) = self.disassemble(self.pc.0, self.ram.borrow().as_ref());
+              let _ = self.disassemble(&mut self.disassemble.borrow_mut(), self.pc.0, self.ram.borrow().as_ref());
 
               write!(
                   f,
-                  "{:>6} {dis:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X}",
-                  self.clocks, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr
+                  "{:>6} {:>24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X}",
+                  self.clocks, self.disassemble.borrow(), self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr
               )
           }
       }
@@ -2265,9 +2290,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     fn addr_done(&self) -> OpState;
     // addr_done_mut sets the internal addr_done state.
     fn addr_done_mut(&mut self, new: OpState);
-
-    // op_tick returns the current Tick value for the operation in progress.
-    fn op_tick(&self) -> Tick;
 
     // skip_interrupt returns the current SkipInterrupt state.
     fn skip_interrupt(&self) -> SkipInterrupt;
@@ -3846,11 +3868,6 @@ macro_rules! cpu_internal {
             self.addr_done = new;
         }
 
-        // op_tick returns the current Tick value for the operation in progress.
-        fn op_tick(&self) -> Tick {
-            self.op_tick
-        }
-
         // skip_interrupt returns the current SkipInterrupt state.
         fn skip_interrupt(&self) -> SkipInterrupt {
             self.skip_interrupt
@@ -4760,6 +4777,11 @@ macro_rules! cpu_impl {
         fn pc_mut(&mut self, new: u16) {
             self.pc = Wrapping(new);
         }
+
+        // op_tick returns the current Tick value for the operation in progress.
+        fn op_tick(&self) -> Tick {
+            self.op_tick
+        }
     };
 }
 
@@ -5434,6 +5456,7 @@ macro_rules! cpu_new {
                 addr_done: OpState::Done,
                 halt_opcode: 0x00,
                 halt_pc: 0x0000,
+                disassemble: RefCell::new(String::with_capacity(32)),
             }
         }
     };
@@ -5491,6 +5514,7 @@ impl<'a> CPU6510<'a> {
             addr_done: OpState::Done,
             halt_opcode: 0x00,
             halt_pc: 0x0000,
+            disassemble: RefCell::new(String::with_capacity(32)),
             io,
         }
     }

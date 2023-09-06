@@ -36,7 +36,7 @@ pub enum Command {
 #[derive(Debug)]
 pub struct StepN {
     pub reps: usize,
-    pub capture: usize,
+    pub capture: Vec<CPUState>,
     pub ram: bool,
 }
 
@@ -67,7 +67,7 @@ pub enum StopReason {
     Step,
     Tick,
     Break(Location),
-    Watch(PC, Location),
+    Watch(PC, Location, String),
     Stop,
     None,
 }

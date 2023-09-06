@@ -227,6 +227,14 @@ pub fn cpu_base_struct(args: TokenStream, input: TokenStream) -> TokenStream {
                 })
                 .unwrap(),
         );
+        fields.named.push(
+            syn::Field::parse_named
+                .parse2(quote! {
+                  #[doc = " Preallocated dissassembly buffer for debugging."]
+                  disassemble: RefCell<String>
+                })
+                .unwrap(),
+        );
     }
 
     quote! {
