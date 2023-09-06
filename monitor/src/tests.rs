@@ -110,7 +110,8 @@ fn run_invalid_commands() -> Result<()> {
 }
 
 #[test]
-#[timeout(60000)]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
 fn check_speed() -> Result<()> {
     // The command channel.
     let (cpucommandtx, cpucommandrx) = channel();
@@ -142,6 +143,12 @@ fn check_speed() -> Result<()> {
     }))?;
     let resp = cpucommandresprx.recv()?;
     let n = now.elapsed();
+    #[cfg(not(miri))]
+    let max = std::time::Duration::from_millis(16);
+    // Miri takes an eon so just give it 10m
+    #[cfg(any(miri, sanitizer))]
+    let max = std::time::Duration::from_secs(600);
+
     match resp {
         Ok(CommandResponse::StepN(StepNReason::StepN(res))) => {
             #[allow(clippy::unwrap_used)]
@@ -152,10 +159,7 @@ fn check_speed() -> Result<()> {
                 "length should be {cap} and is {}",
                 res.len()
             );
-            assert!(
-                n <= std::time::Duration::from_millis(16),
-                "too slow. got {n:#?}"
-            );
+            assert!(n <= max, "too slow. got {n:#?}");
         }
         _ => panic!("Unknown resp: {resp:?}"),
     }
