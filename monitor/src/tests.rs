@@ -145,8 +145,10 @@ fn check_speed() -> Result<()> {
     let n = now.elapsed();
     #[cfg(not(miri))]
     let max = std::time::Duration::from_millis(16);
-    // Miri takes an eon so just give it 10m
-    #[cfg(any(miri, sanitizer))]
+    // Miri takes an eon so just give it 15m. Allow here because we dynamically
+    // include sanitizer (which is nightly only) for those tests.
+    #[allow(clippy::non_minimal_cfg)]
+    #[cfg(any(miri))]
     let max = std::time::Duration::from_secs(600);
 
     match resp {
@@ -383,15 +385,17 @@ fn step_init_test() -> Result<()> {
     // slowness for others we should be able to do this in double that.
     #[cfg(not(miri))]
     let timeout = std::time::Duration::from_millis(17);
-    // Miri takes an eon so just give it 10m
-    #[cfg(any(miri, sanitizer))]
-    let timeout = std::time::Duration::from_secs(600);
+    // Miri takes an eon so just give it 15m. Allow here because we dynamically
+    // include sanitizer (which is nightly only) for those tests.
+    #[allow(clippy::non_minimal_cfg)]
+    #[cfg(any(miri))]
+    let timeout = std::time::Duration::from_secs(900);
 
     assert!(
         n <= timeout,
         "too slow - time for instructions - {n:#?} vs {timeout:#?}"
     );
-    println!("time for instructions - {n:#?}");
+    println!("time for instructions - {n:#?} vs {timeout:#?}");
     Ok(())
 }
 
