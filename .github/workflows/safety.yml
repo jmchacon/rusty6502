@@ -37,7 +37,7 @@ jobs:
       - name: cargo test -Zsanitizer=address
         # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
         run: |
-            sed -i -e 's:\(any(miri,\):\1sanitize="address::g' monitor/src/tests.rs
+            sed -i -e 's:\(any(miri,\):\1sanitize="address",:g' monitor/src/tests.rs
             echo '#![feature(cfg_sanitize)]' > /tmp/foo
             cat monitor/src/lib.rs >> /tmp/foo
             cp /tmp/foo monitor/src/lib.rs

@@ -147,8 +147,7 @@ fn check_speed() -> Result<()> {
     let max = std::time::Duration::from_millis(16);
     // Miri takes an eon so just give it 15m. Allow here because we dynamically
     // include sanitizer (which is nightly only) for those tests.
-    #[allow(clippy::non_minimal_cfg)]
-    #[cfg(any(miri))]
+    #[cfg(any(miri, coverage))]
     let max = std::time::Duration::from_secs(600);
 
     match resp {
@@ -387,8 +386,7 @@ fn step_init_test() -> Result<()> {
     let timeout = std::time::Duration::from_millis(17);
     // Miri takes an eon so just give it 15m. Allow here because we dynamically
     // include sanitizer (which is nightly only) for those tests.
-    #[allow(clippy::non_minimal_cfg)]
-    #[cfg(any(miri))]
+    #[cfg(any(miri, coverage))]
     let timeout = std::time::Duration::from_secs(900);
 
     assert!(
