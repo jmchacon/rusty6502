@@ -820,7 +820,7 @@ pub struct CPUState {
 
 impl CPUState {
     /// Perform a shallow copy (exclude the expensive ram)
-    pub fn shallow(&self, dest: &mut Self) {
+    pub fn shallow_copy(&self, dest: &mut Self) {
         dest.state = self.state;
         dest.a = self.a;
         dest.x = self.x;

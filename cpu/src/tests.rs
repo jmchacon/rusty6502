@@ -224,6 +224,35 @@ fn tick_next() {
 }
 
 #[test]
+fn shallow_cpustate() {
+    // Validate shallow copy skips ram.
+    let mut cpustate = CPUState::default();
+    let mut shallow = CPUState::default();
+    cpustate.a = 0x01;
+    cpustate.s = 0xCC;
+    cpustate.ram[0x1234] = 0x56;
+    cpustate.shallow_copy(&mut shallow);
+    assert!(
+        shallow.a == 0x01,
+        "A differs: orig {} new {}",
+        cpustate.a,
+        shallow.a
+    );
+    assert!(
+        shallow.s == 0xCC,
+        "S differs: orig {} new {}",
+        cpustate.s,
+        shallow.s
+    );
+    assert!(
+        shallow.ram[0x1234] != cpustate.ram[0x1234],
+        "RAM wrong should be different - orig: {:02X} new {:02X}",
+        cpustate.ram[0x1234],
+        shallow.ram[0x1234],
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn invalid_states() -> Result<()> {
     // These tests are a little ridiculous but eliminating that one place

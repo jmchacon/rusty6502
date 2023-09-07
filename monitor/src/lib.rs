@@ -1361,7 +1361,7 @@ pub fn cpu_loop(
                         if stepn.ram {
                             out[idx] = d.state.borrow().clone();
                         } else {
-                            d.state.borrow().shallow(&mut out[idx]);
+                            d.state.borrow().shallow_copy(&mut out[idx]);
                         }
                         //out.push(d.state.borrow().clone());
                     }
