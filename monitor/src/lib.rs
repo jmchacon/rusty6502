@@ -1110,18 +1110,16 @@ pub fn cpu_loop(
 
     loop {
         if is_running {
-            let reason;
-            {
-                reason = advance(
-                    cpu,
-                    cpucommandresptx,
-                    &mut ram,
-                    &mut tick_pc,
-                    &breakpoints,
-                    &watchpoints,
-                    false,
-                )?;
-            }
+            let reason = advance(
+                cpu,
+                cpucommandresptx,
+                &mut ram,
+                &mut tick_pc,
+                &breakpoints,
+                &watchpoints,
+                false,
+            )?;
+
             if reason != StopReason::Run {
                 is_running = false;
             }
