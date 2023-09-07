@@ -66,13 +66,13 @@ impl Debug<CPUState> {
         writeln!(out, "\nFAIL: {s}\n\nExecution buffer:\n").unwrap();
         if *self.wrapped.borrow() {
             for i in *self.cur.borrow()..self.state.len() {
-                let s;
+                let mut s = String::with_capacity(32);
                 {
                     // Late bind disassembly since this is expensive to
                     // generate the String. So only do it on actual dumps.
                     let pc = self.state[i].borrow().pc;
                     let r = &self.state[i].borrow().ram;
-                    (s, _) = cpu.disassemble(pc, r);
+                    _ = cpu.disassemble(&mut s, pc, r);
                 }
                 self.state[i].borrow_mut().dis = s;
                 writeln!(out, "{}", self.state[i].borrow()).unwrap();
@@ -221,6 +221,35 @@ fn tick_next() {
     assert!(ticker == Tick::Tick8, "didn't advance to tick8");
     ticker = ticker.next();
     assert!(ticker == Tick::Tick8, "didn't continue to stay in tick8");
+}
+
+#[test]
+fn shallow_cpustate() {
+    // Validate shallow copy skips ram.
+    let mut cpustate = CPUState::default();
+    let mut shallow = CPUState::default();
+    cpustate.a = 0x01;
+    cpustate.s = 0xCC;
+    cpustate.ram[0x1234] = 0x56;
+    cpustate.shallow_copy(&mut shallow);
+    assert!(
+        shallow.a == 0x01,
+        "A differs: orig {} new {}",
+        cpustate.a,
+        shallow.a
+    );
+    assert!(
+        shallow.s == 0xCC,
+        "S differs: orig {} new {}",
+        cpustate.s,
+        shallow.s
+    );
+    assert!(
+        shallow.ram[0x1234] != cpustate.ram[0x1234],
+        "RAM wrong should be different - orig: {:02X} new {:02X}",
+        cpustate.ram[0x1234],
+        shallow.ram[0x1234],
+    );
 }
 
 #[test]
@@ -586,6 +615,7 @@ fn disassemble_test() -> Result<()> {
         (vec![0x80, 0x69], "BRA $69 ($006A)"),             // Relative,
         (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
     ];
+    let mut s = String::with_capacity(32);
 
     // Set addr at end of RAM to test wrapping.
     let addr = Wrapping(0xFFFF);
@@ -607,8 +637,8 @@ fn disassemble_test() -> Result<()> {
         };
         write!(out, "{}", t.1)?;
 
-        let (d, _) = cpu.disassemble(addr.0, cpu.ram.borrow().as_ref());
-        assert!(d == out, "Expected output\n{out}\n\nDoesn't match\n{d}");
+        cpu.disassemble(&mut s, addr.0, cpu.ram.borrow().as_ref());
+        assert!(s == out, "Expected output\n{out}\n\nDoesn't match\n{s}");
     }
     Ok(())
 }

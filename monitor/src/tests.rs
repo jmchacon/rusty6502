@@ -1,10 +1,4 @@
-use crate::commands::{Command, CommandResponse, Location};
-// Setup a stdin/stdout command pair
-// Fire up things like tui does it.
-//
-// Send commands, validate outputs
-//
-// Separate test: See if we can close channels to trigger some failure modes
+use crate::commands::{Command, CommandResponse, Location, StepN, StepNReason, PC};
 use crate::{cpu_loop, input_loop, trim_newline, Output, StopReason};
 use color_eyre::eyre::{Report, Result};
 use ntest::timeout;
@@ -116,6 +110,64 @@ fn run_invalid_commands() -> Result<()> {
 }
 
 #[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn check_speed() -> Result<()> {
+    // The command channel.
+    let (cpucommandtx, cpucommandrx) = channel();
+    // The response channel.
+    let (cpucommandresptx, cpucommandresprx) = channel();
+
+    let cl = thread::Builder::new().name("cpu_loop".into());
+    cl.spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &cpucommandresptx))?;
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
+    cpucommandtx.send(Command::Load(
+        format!("{}", path.to_string_lossy()),
+        Some(Location { addr: 0 }),
+        Some(PC { addr: 0x0400 }),
+    ))?;
+    let resp = cpucommandresprx.recv()?;
+    if let Ok(CommandResponse::Load(_)) = resp {
+    } else {
+        panic!("didn't get load response got - {resp:?}")
+    }
+
+    let cap = 128;
+    let capture = vec![CPUState::default(); cap];
+    let now = std::time::Instant::now();
+    cpucommandtx.send(Command::StepN(StepN {
+        reps: 7457,
+        capture,
+        ram: true,
+    }))?;
+    let resp = cpucommandresprx.recv()?;
+    let n = now.elapsed();
+    #[cfg(not(miri))]
+    let max = std::time::Duration::from_millis(16);
+    // Miri takes an eon so just give it 15m. Allow here because we dynamically
+    // include sanitizer (which is nightly only) for those tests.
+    #[cfg(any(miri, coverage))]
+    let max = std::time::Duration::from_secs(600);
+
+    match resp {
+        Ok(CommandResponse::StepN(StepNReason::StepN(res))) => {
+            #[allow(clippy::unwrap_used)]
+            let last = res.last().unwrap();
+            println!("Elapsed: {n:#?} {last}");
+            assert!(
+                res.len() == cap,
+                "length should be {cap} and is {}",
+                res.len()
+            );
+            assert!(n <= max, "too slow. got {n:#?}");
+        }
+        _ => panic!("Unknown resp: {resp:?}"),
+    }
+    Ok(())
+}
+
+#[test]
 #[timeout(60000)]
 fn tick_init_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
@@ -148,7 +200,7 @@ fn tick_init_test() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn step_init_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
@@ -280,7 +332,7 @@ fn step_init_test() -> Result<()> {
     inputtx.send("STEPN 5 0 TRUE".into())?;
     let resp = outputrx.recv()?;
     if let Output::CPU(st, _) = resp {
-        if let StopReason::Watch(_, _) = st.reason {
+        if let StopReason::Watch(_, _, _) = st.reason {
         } else {
             panic!("Stop reason incorrect. Got {st}");
         }
@@ -328,25 +380,26 @@ fn step_init_test() -> Result<()> {
         panic!("Didn't get stepn after startup load? - {resp:?}");
     }
 
-    // CI and coverage this may run slower so let it do 50ms. A real one
-    // should be able to do 16ms
+    // A very fast Sapphire Rapids CPU can do this in 8ms so even assuming
+    // slowness for others we should be able to do this in double that.
     #[cfg(not(miri))]
-    let timeout = std::time::Duration::from_millis(50);
-    // Miri takes an eon so just give it 10m
-    #[cfg(any(miri, sanitizer))]
-    let timeout = std::time::Duration::from_secs(600);
+    let timeout = std::time::Duration::from_millis(17);
+    // Miri takes an eon so just give it 15m. Allow here because we dynamically
+    // include sanitizer (which is nightly only) for those tests.
+    #[cfg(any(miri, coverage))]
+    let timeout = std::time::Duration::from_secs(900);
 
     assert!(
         n <= timeout,
         "too slow - time for instructions - {n:#?} vs {timeout:#?}"
     );
-    println!("time for instructions - {n:#?}");
+    println!("time for instructions - {n:#?} vs {timeout:#?}");
     Ok(())
 }
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn run_init_test() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
@@ -436,7 +489,7 @@ basic_startup_quit_test!(
 // recv. Instead let an overall timeout control things.
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn functionality_test() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -500,7 +553,7 @@ fn init_with_load() -> Result<(Sender<String>, Receiver<Output>)> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn load_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
@@ -601,7 +654,7 @@ fn load_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn breakpoint_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -708,7 +761,7 @@ fn breakpoint_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn watchpoint_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -814,7 +867,7 @@ fn watchpoint_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn bin_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
@@ -859,7 +912,7 @@ fn bin_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn reset_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -884,7 +937,7 @@ fn reset_tests() -> Result<()> {
 }
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn pc_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -928,7 +981,7 @@ fn pc_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn ram_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -955,7 +1008,7 @@ fn ram_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn cpu_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -981,7 +1034,7 @@ fn cpu_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn read_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -1081,7 +1134,7 @@ fn read_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 #[allow(clippy::too_many_lines)]
 fn write_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
@@ -1259,7 +1312,7 @@ fn write_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 fn disassemble_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
 
@@ -1347,7 +1400,7 @@ fn disassemble_tests() -> Result<()> {
 
 #[test]
 #[cfg_attr(not(miri), timeout(60000))]
-#[cfg_attr(miri, timeout(600000))]
+#[cfg_attr(miri, timeout(900000))]
 #[allow(clippy::too_many_lines)]
 fn step_tests() -> Result<()> {
     let (inputtx, outputrx) = init_with_load()?;
@@ -1482,7 +1535,7 @@ fn step_tests() -> Result<()> {
     inputtx.send("S".into())?;
     let resp: Output = outputrx.recv()?;
     if let Output::CPU(st, _) = resp {
-        let StopReason::Watch(ref pc, ref b) = st.reason else {
+        let StopReason::Watch(ref pc, ref b, _) = st.reason else {
             panic!("reason incorrect. Should be Watch and got {st}");
         };
         assert!(
@@ -1606,7 +1659,7 @@ fn step_tests() -> Result<()> {
     inputtx.send("T".into())?;
     let resp: Output = outputrx.recv()?;
     if let Output::CPU(st, _) = resp {
-        let StopReason::Watch(ref pc, ref b) = st.reason else {
+        let StopReason::Watch(ref pc, ref b, _) = st.reason else {
             panic!("reason incorrect. Should be Watch and got {st}");
         };
         assert!(
@@ -1753,7 +1806,7 @@ fn step_tests() -> Result<()> {
                     }
                     continue;
                 }
-                StopReason::Watch(_, _) => break,
+                StopReason::Watch(_, _, _) => break,
                 _ => panic!("Unknown reason - {resp:?}"),
             },
 
