@@ -882,8 +882,8 @@ impl fmt::Display for CPUState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "{:>6} {:<24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {}",
-            self.clocks, self.dis, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr, self.op_tick,
+            "{:>6} {:<24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} PC: {:04X} op_val: {:02X} op_addr: {:04X} op_tick: {}",
+            self.clocks, self.dis, self.a, self.x, self.y, self.s, self.p, self.pc, self.op_val, self.op_addr, self.op_tick,
         )?;
         writeln!(f, "Memory:")?;
         writeln!(f)?;
@@ -5184,11 +5184,6 @@ macro_rules! chip_impl_nmos {
                     if rdy.raised() {
                         return Ok(());
                     }
-                }
-
-                // If we're in WAI just return, no state changes.
-                if self.state == State::WaitingForInterrupt {
-                    return Ok(());
                 }
 
                 if self.state != State::Tick {

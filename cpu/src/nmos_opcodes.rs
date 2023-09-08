@@ -1,6 +1,7 @@
 use crate::{AddressMode, Opcode, Operation};
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
+#[cfg(not(coverage))]
 use strum::IntoEnumIterator;
 
 // TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
@@ -544,6 +545,7 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
         ]);
 
         // opcodes that are CMOS only so we can't validate they are in the map.
+        #[cfg(not(coverage))]
         let cmos = HashSet::from([
             Opcode::BBR,
             Opcode::BBS,
@@ -562,6 +564,7 @@ pub(crate) fn nmos_opcodes() -> &'static HashMap<Opcode, HashMap<AddressMode, Ve
         ]);
 
         // Make sure every other opcode in the enum has a map entry.
+        #[cfg(not(coverage))]
         assert!(
             !Opcode::iter().any(|op| !cmos.contains(&op) && m.get(&op).is_none()),
             "Not all opcodes covered! - {m:?}"
@@ -603,6 +606,7 @@ pub(crate) fn nmos_opcodes_values() -> &'static Vec<Operation> {
             }
         }
 
+        #[cfg(not(coverage))]
         assert!(
             hs.len() == (1 << 8),
             "Didn't fill out {} opcodes. Only defined {} - {m:?}",

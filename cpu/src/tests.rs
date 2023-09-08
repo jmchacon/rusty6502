@@ -79,6 +79,15 @@ impl Debug<CPUState> {
             }
         }
         for i in 0..*self.cur.borrow() {
+            let mut s = String::with_capacity(32);
+            {
+                // Late bind disassembly since this is expensive to
+                // generate the String. So only do it on actual dumps.
+                let pc = self.state[i].borrow().pc;
+                let r = &self.state[i].borrow().ram;
+                _ = cpu.disassemble(&mut s, pc, r);
+            }
+            self.state[i].borrow_mut().dis = s;
             writeln!(out, "{}", self.state[i].borrow()).unwrap();
         }
         out
@@ -1398,9 +1407,9 @@ macro_rules! irq_and_nmi_test {
                     cpu.ram.borrow_mut().write(RESET + 5, 0xD0); // BNE +2
                     cpu.ram.borrow_mut().write(RESET + 6, 0x00);
 
-                    // Set D on up front and I off
+                    // Set D on up front and I on
                     cpu.p |= P_DECIMAL;
-                    cpu.p &= !P_INTERRUPT;
+                    cpu.p |= P_INTERRUPT;
 
                     // Set A to 0
                     cpu.a = Wrapping(0x00);
@@ -1408,9 +1417,6 @@ macro_rules! irq_and_nmi_test {
                     // Now wrap this into a RefCell so we can create verify below and use it mutablely there
                     // but still be able to peek inside to check other invariants later.
                     let wrapped_cpu = RefCell::new(cpu);
-
-                    // Save a copy of P so we can compare
-                    let saved_p = wrapped_cpu.borrow().p;
 
                     let verify = |irq: bool, nmi: bool, state: &str, done: bool| -> Result<()> {
                         *i.raised.borrow_mut() = irq;
@@ -1425,10 +1431,63 @@ macro_rules! irq_and_nmi_test {
                         wrapped_cpu.borrow_mut().tick_done()?;
                         let c = wrapped_cpu.borrow();
                         println!("post: {state} tick: {} irq: {irq} nmi: {nmi} done: {done} irq_raised: {} skip: {} interrupt_state: {}", c.op_tick, c.irq_raised, c.skip_interrupt, c.interrupt_state);
-                        println!("{}", wrapped_cpu.borrow());
+                        println!("{c}");
                         Ok(())
                     };
 
+                    verify(false, false, "pre NOP", false)?;
+
+                    // IRQ but should finish instruction and skip IRQ and set PC to RESET+1
+                    let state = "pre 2nd NOP";
+                    verify(true, false, state, true)?;
+                    let got = wrapped_cpu.borrow().pc.0;
+                    let want = RESET + 1;
+                    tester!(
+                        got == want,
+                        d, wrapped_cpu.borrow().deref(),
+                        "{state}: got wrong PC {got:04X} want {want:04X}"
+                    );
+
+                    // Verify we move on
+                    let state = "pre 3rd NOP";
+                    verify(true, false, state, false)?;
+                    let got = wrapped_cpu.borrow().pc.0;
+                    let want = RESET + 2;
+                    tester!(
+                        got == want,
+                        d, wrapped_cpu.borrow().deref(),
+                        "{state}: got wrong PC {got:04X} want {want:04X}"
+                    );
+
+                    // But should be None as I is set.
+                    let st = wrapped_cpu.borrow().irq_raised;
+                    tester!(
+                        st == InterruptStyle::None,
+                        d, wrapped_cpu.borrow().deref(),
+                        "{state}: IRQ wasn't set to be handled post instruction - {st}"
+                    );
+                    // Verify P still has S1, I and D set
+                    let got = wrapped_cpu.borrow().p;
+                    let want = P_S1 | P_DECIMAL|P_INTERRUPT;
+                    tester!(got == want, d, wrapped_cpu.borrow().deref(), "{state}: got wrong flags {got} want {want}");
+
+                    // Reset PC and turn I off and make sure D is on.
+                    loop {
+                        match wrapped_cpu.borrow_mut().reset() {
+                          Ok(OpState::Done) => break,
+                          Ok(OpState::Processing) => continue,
+                          Err(e) => panic!("error from reset: {e:?}"),
+                        }
+                    }
+                    wrapped_cpu.borrow_mut().p |= P_DECIMAL;
+                    wrapped_cpu.borrow_mut().p &= !P_INTERRUPT;
+                    // Save a copy of P so we can compare
+                    let saved_p = wrapped_cpu.borrow().p;
+
+                    let got = wrapped_cpu.borrow().pc.0;
+                    tester!(got == RESET, d, wrapped_cpu.borrow().deref(), "{state}: PC's don't match want {RESET:04X} and got {got:04X}");
+
+                    // Now start fresh with no IRQ.
                     verify(false, false, "First NOP", false)?;
 
                     // IRQ but should finish instruction and set PC to RESET+1
@@ -1440,6 +1499,12 @@ macro_rules! irq_and_nmi_test {
                         got == want,
                         d, wrapped_cpu.borrow().deref(),
                         "{state}: got wrong PC {got:04X} want {want:04X}"
+                    );
+                    // Verify it'll try and run an IRQ next.
+                    tester!(
+                        wrapped_cpu.borrow().irq_raised == InterruptStyle::IRQ,
+                        d, wrapped_cpu.borrow().deref(),
+                        "{state}: IRQ wasn't set to be handled post instruction"
                     );
                     // Verify P still has S1 and D set
                     let got = wrapped_cpu.borrow().p;
@@ -1461,6 +1526,7 @@ macro_rules! irq_and_nmi_test {
                     );
                     // Verify the only things set in flags right now are S1 and I and maybe D.
                     // D shouldn't be cleared for NMOS but is for CMOS;
+                    println!("CPU: {}", wrapped_cpu.borrow());
                     let got = wrapped_cpu.borrow().p;
                     let want;
                     if $cmos {
