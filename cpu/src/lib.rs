@@ -2236,9 +2236,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // and must be implmented by the relevant struct in order to provide
     // access and mutability for the default trait methods below.
 
-    // debug_hook returns the optional debug function callback.
-    fn debug_hook(&self) -> Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>;
-
     // state returns the current CPU state.
     fn state(&self) -> State;
     // state_mut sets the current CPU state.
@@ -3772,11 +3769,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
 
 macro_rules! cpu_internal {
     () => {
-        // debug_hook returns the optional debug function callback.
-        fn debug_hook(&self) -> Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)> {
-            self.debug
-        }
-
         // state returns the current CPU state.
         fn state(&self) -> State {
             self.state
