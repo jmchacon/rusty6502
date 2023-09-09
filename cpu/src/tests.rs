@@ -1352,6 +1352,37 @@ store_test!(
     x_is_10: 0x55, 0x10, [0x551F, 0xA20A],
 );
 
+// The test ROM doesn't test that BBR at a page boudary actually happens so
+// we'll set one up and have it jump across the boundary and validate we ran
+// as many clocks as expected.
+#[test]
+fn cmos_bbr_extra_clocks() -> Result<()> {
+    let d = Debug::<CPUState>::new(128, 1);
+    let debug = { || d.debug() };
+    let mut cpu = setup_cpu_cmos(0xFFFF, 0x00, None, None, None, Some(&debug));
+    cpu.power_on()?;
+
+    let start = 0x1FFA;
+    cpu.ram.borrow_mut().write(start, 0x0F); // BBR 0,$00,$40
+    cpu.ram.borrow_mut().write(start + 1, 0x00);
+    cpu.ram.borrow_mut().write(start + 2, 0x40);
+
+    cpu.pc = Wrapping(start);
+    let cycles = step_cpu_cmos(&mut cpu)?;
+    let want = 7;
+    assert!(
+        cycles == want,
+        "Didn't get expected cycles {want} got {cycles}"
+    );
+    let want = start + 3 + 0x40;
+    assert!(
+        cpu.pc.0 == want,
+        "Didn't get expected PC. Want {want:04X} and got {:04X}",
+        cpu.pc.0
+    );
+    Ok(())
+}
+
 struct Irq {
     raised: RefCell<bool>,
 }
@@ -1376,6 +1407,7 @@ macro_rules! irq_and_nmi_test {
                     // So this has to be done clock by clock and conditions checked at each.
 
                     let nmi: u16 = 0x0202; // If executed should halt the processor but we'll put code at this PC.
+                    let irq = IRQ_ADDR;
                     let i = Irq {
                         raised: RefCell::new(false),
                     };
@@ -1409,6 +1441,12 @@ macro_rules! irq_and_nmi_test {
 
                     // Set D on up front and I on
                     cpu.p |= P_DECIMAL;
+                    cpu.p &= !P_INTERRUPT;
+
+                    // Save a copy of P so we can compare
+                    let saved_p = cpu.p;
+
+                    // Now turn on interrupt for initial tests below.
                     cpu.p |= P_INTERRUPT;
 
                     // Set A to 0
@@ -1471,6 +1509,63 @@ macro_rules! irq_and_nmi_test {
                     let want = P_S1 | P_DECIMAL|P_INTERRUPT;
                     tester!(got == want, d, wrapped_cpu.borrow().deref(), "{state}: got wrong flags {got} want {want}");
 
+                    // Turn off P_INTERRUPT so we can test it happening below
+                    wrapped_cpu.borrow_mut().p &= !P_INTERRUPT;
+
+                    // Start running BRK and interrupt part way through (with IRQ) which should complete BRK
+                    // but skip it upon return. This means running 5 ticks normally.
+                    // This only happens on NMOS. For CMOS the BRK runs, then the IRQ and then we continue.
+                    // NOTE: We already ran tick1 of this above.
+                    let state = "BRK w IRQ";
+                    for _ in 0..3 {
+                        verify(false, false, state, false)?;
+                    }
+                    // Now set IRQ
+                    verify(true, false, state, false)?;
+                    // Now should jump
+                    verify(false, false, state, false)?;
+                    verify(false, false, state, true)?;
+                    let want = irq;
+                    // For CMOS advance time until we're prepping for the IRQ
+                    // i.e. run out the BRK
+                    if $cmos {
+                        loop {
+                            if wrapped_cpu.borrow().pc.0 == want {
+                                break;
+                            }
+                            println!("cmos advance for IRQ");
+                            verify(false, false, state, false)?;
+                        }
+                    }
+                    let got = wrapped_cpu.borrow().pc.0;
+                    tester!(got == want, d, wrapped_cpu.borrow().deref(), "{state}: Got wrong PC {got:#06X} want {want:#06X}");
+                    // Pull P off the stack and verify the B bit didn't get set because by then we were in IRQ.
+                    let addr = (wrapped_cpu.borrow().s + Wrapping(1)).0;
+                    let got = Flags(wrapped_cpu.borrow().ram.borrow().read(STACK_START + u16::from(addr)));
+                    let mut want = saved_p;
+                    if $cmos {
+                        // In the CMOS case the BRK always runs so this will have B set.
+                        want |= P_B;
+                    }
+                    {
+                        let c = wrapped_cpu.borrow();
+                        tester!(got == want, d, c.deref(), "{state}: Flags aren't correct. Got {got} and want {want} - cpu: {c}");
+                    }
+                    {
+                        let mut want = &InterruptStyle::None;
+                        if $cmos {
+                            // In CMOS this is still raised since we need to run IRQ
+                            want = &InterruptStyle::IRQ;
+                        }
+                        let i = &wrapped_cpu.borrow().irq_raised;
+                        tester!(i == want, d, wrapped_cpu.borrow().deref(), "{state}: IRQ wasn't cleared after BRK - {i:?} vs {want:?}");
+                    }
+                    tester!(
+                        wrapped_cpu.borrow().interrupt_state == InterruptState::None,
+                        d, wrapped_cpu.borrow().deref(),
+                        "{state}: running interrupt still?"
+                    );
+
                     // Reset PC and turn I off and make sure D is on.
                     loop {
                         match wrapped_cpu.borrow_mut().reset() {
@@ -1481,8 +1576,6 @@ macro_rules! irq_and_nmi_test {
                     }
                     wrapped_cpu.borrow_mut().p |= P_DECIMAL;
                     wrapped_cpu.borrow_mut().p &= !P_INTERRUPT;
-                    // Save a copy of P so we can compare
-                    let saved_p = wrapped_cpu.borrow().p;
 
                     let got = wrapped_cpu.borrow().pc.0;
                     tester!(got == RESET, d, wrapped_cpu.borrow().deref(), "{state}: PC's don't match want {RESET:04X} and got {got:04X}");

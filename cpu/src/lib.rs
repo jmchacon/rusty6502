@@ -4348,6 +4348,7 @@ impl<'a> CPUInternal<'a> for CPU65C02<'a> {
                 if irq {
                     push &= !P_B;
                 }
+                println!("Pushing {push} with {irq}");
                 self.push_stack(push.0);
                 // Now set P after we've pushed.
 
@@ -4700,6 +4701,9 @@ macro_rules! cpu_nmos_power_reset {
                             self.reset_tick = ResetTick::Tick1;
                             self.op_tick = Tick::Reset;
                             self.state = State::Running;
+                            self.interrupt_state = InterruptState::None;
+                            self.irq_raised = InterruptStyle::None;
+                            self.skip_interrupt = SkipInterrupt::None;
                             Ok(OpState::Done)
                         }
                         // Technically both this and the reset_tick one below are impossible
@@ -4934,6 +4938,9 @@ macro_rules! cpu_cmos_ricoh_power_reset {
                             self.reset_tick = ResetTick::Tick1;
                             self.op_tick = Tick::Reset;
                             self.state = State::Running;
+                            self.interrupt_state = InterruptState::None;
+                            self.irq_raised = InterruptStyle::None;
+                            self.skip_interrupt = SkipInterrupt::None;
                             Ok(OpState::Done)
                         }
                         // Technically both this and the reset_tick one below are impossible
