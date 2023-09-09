@@ -740,10 +740,11 @@ fn c6510_io_tests() {
         rdy: None,
     };
 
+    #[allow(clippy::clone_on_copy)]
     let mut cpu = CPU6510::new(
         def,
         Some([
-            io::Style::In(&io::Pullup {}),
+            io::Style::In(&io::Pullup {}).clone(),
             io::Style::In(&io::Pullup {}),
             io::Style::In(&io::Pullup {}),
             io::Style::In(&io::Pullup {}),
