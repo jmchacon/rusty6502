@@ -89,6 +89,11 @@ assemble_test!(
         bin: "testasm.bin",
         cpus: vec![CPUType::NMOS, CPUType::NMOS6510, CPUType::RICOH],
     }
+    testasm_cmos_test: AssembleTest{
+        asm: "testasm-cmos.asm",
+        bin: "testasm-cmos.bin",
+        cpus: vec![CPUType::CMOS],
+    }
 );
 
 struct BadAssembleTest<'a> {
