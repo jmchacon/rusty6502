@@ -102,7 +102,7 @@ struct BadAssembleTest<'a> {
 }
 
 macro_rules! bad_assemble_test {
-    ($suite:ident, $($name:ident: $bad_assemble_test:expr)*) => {
+    ($suite:ident, $($name:ident: $bad_assemble_test:expr, $cpu:expr)*) => {
         mod $suite {
             use super::*;
 
@@ -117,8 +117,19 @@ macro_rules! bad_assemble_test {
                     let file = File::open(path)?;
                     let lines = io::BufReader::new(file).lines();
 
-                    let nmos = CPU6502::new(ChipDef::default());
-                    let asm = parse(&nmos, lines, true);
+                      let nmos = CPU6502::new(ChipDef::default());
+                      let ricoh = CPURicoh::new(ChipDef::default());
+                      let c6510 = CPU6510::new(ChipDef::default(), None);
+                      let cmos = CPU65C02::new(ChipDef::default());
+
+                      let cpu: &dyn CPU = match $cpu {
+                          CPUType::NMOS => &nmos,
+                          CPUType::RICOH => &ricoh,
+                          CPUType::NMOS6510 => &c6510,
+                          CPUType::CMOS => &cmos,
+                      };
+
+                    let asm = parse(cpu, lines, true);
                     assert!(asm.is_err(), "Didn't get error for {}", a.asm);
                     let e = asm.err().unwrap();
                     assert!(e.to_string().contains(a.error), "Missing error string {} for {e:?}", a.error);
@@ -135,73 +146,101 @@ bad_assemble_test!(
   invalid_label: BadAssembleTest{
       asm: "invalid_label.asm",
       error: "invalid label",
-  }
+  },
+  CPUType::NMOS
   invalid_equ: BadAssembleTest{
       asm: "invalid_equ.asm",
       error: "invalid EQU",
-  }
+  },
+  CPUType::NMOS
   dup_location: BadAssembleTest{
       asm: "dup_location.asm",
       error: "redefine location label",
-  }
+  },
+  CPUType::NMOS
   invalid_opcode: BadAssembleTest{
       asm: "invalid_opcode.asm",
       error: "invalid opcode",
-  }
+  },
+  CPUType::NMOS
   invalid_org: BadAssembleTest{
       asm: "invalid_org.asm",
       error: "invalid ORG",
-  }
+  },
+  CPUType::NMOS
   invalid_tokens: BadAssembleTest{
       asm: "invalid_tokens.asm",
       error: "only comment after",
-  }
+  },
+  CPUType::NMOS
   invalid_equ_value: BadAssembleTest{
       asm: "invalid_equ_value.asm",
       error: "not valid u8 or u16 for EQU",
-  }
+  },
+  CPUType::NMOS
   double_equ_ref: BadAssembleTest{
       asm: "double_equ_ref.asm",
       error: "can't redefine EQU label",
-  }
+  },
+  CPUType::NMOS
   bad_opcode_label: BadAssembleTest{
       asm: "bad_opcode_label.asm",
       error: "invalid opcode label",
-  }
+  },
+  CPUType::NMOS
   bad_org: BadAssembleTest{
       asm: "bad_org.asm",
       error: "missing data",
-  }
+  },
+  CPUType::NMOS
   bad_label: BadAssembleTest{
       asm: "bad_label.asm",
       error: "missing data",
-  }
+  },
+  CPUType::NMOS
   bad_label2: BadAssembleTest{
       asm: "bad_label2.asm",
       error: "Label START was never defined",
-  }
+  },
+  CPUType::NMOS
   bad_opcode: BadAssembleTest{
       asm: "bad_opcode.asm",
       error: "opcode LDA doesn't support mode",
-  }
+  },
+  CPUType::NMOS
   bad_opcode2: BadAssembleTest{
       asm: "bad_opcode2.asm",
       error: "opcode LDA doesn't support mode -",
-  }
+  },
+  CPUType::NMOS
   bad_opcode3: BadAssembleTest{
       asm: "bad_opcode3.asm",
       error: "Immediate must have an 8 bit arg",
-  }
+  },
+  CPUType::NMOS
   bad_opcode4: BadAssembleTest{
       asm: "bad_opcode4.asm",
       error: "Indirect must have a 16 bit arg",
-  }
+  },
+  CPUType::NMOS
   bad_token: BadAssembleTest{
       asm: "bad_token.asm",
       error: "Error parsing label",
-  }
+  },
+  CPUType::NMOS
   bad_branch: BadAssembleTest{
       asm: "bad_branch.asm",
       error: "either not 8 bit or out of range",
-  }
+  },
+  CPUType::NMOS
+  bad_bbr: BadAssembleTest{
+    asm: "cmos-bbr.asm",
+    error: "too many parts"
+  },
+  CPUType::CMOS
+  bad_bbr2: BadAssembleTest{
+    asm: "cmos-bbr2.asm",
+    error: "index too large"
+  },
+  CPUType::CMOS
 );

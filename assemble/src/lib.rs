@@ -304,14 +304,14 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         let parts: Vec<&str> = token.split(',').collect();
                         if parts.len() != 3 {
                             return Err(eyre!(
-                                "Invalid zero page relative on line {} - {token}",
+                                "Invalid zero page relative (too many parts) on line {} - {token}",
                                 line_num + 1
                             ));
                         }
                         let pre = parts[0].parse::<u8>().unwrap_or(10);
                         if pre > 7 {
                             return Err(eyre!(
-                                "Invalid zero page relative on line {} - {token}",
+                                "Invalid zero page relative (index too large) on line {} - {token}",
                                 line_num + 1
                             ));
                         }
@@ -471,12 +471,6 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                             // this isn't Implied and we need to use this to compute either ZeroPage or Absolute
                             match &o.op_val {
                                 Some(v) => {
-                                    if v.len() > 1 {
-                                        return Err(eyre!(
-                                            "Error parsing line {}: opcode {op} has invalid val: {v:?}",
-                                            line_num + 1
-                                        ));
-                                    }
                                     match &v[0] {
                                         OpVal::Label(l) => {
                                             let ld = get_label(&ast_output.labels, l);
@@ -523,12 +517,6 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                             let mut ok = false;
                             width = 2;
                             if let Some(v) = &o.op_val {
-                                if v.len() > 1 {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} has invalid val: {v:?}",
-                                        line_num + 1
-                                    ));
-                                }
                                 match &v[0] {
                                     OpVal::Label(l) => {
                                         if let Some(TokenVal::Val8(_)) =
@@ -560,12 +548,6 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                         | AddressMode::AbsoluteIndirectX => {
                             let mut ok = false;
                             if let Some(v) = &o.op_val {
-                                if v.len() > 1 {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: opcode {op} has invalid val: {v:?}",
-                                        line_num + 1
-                                    ));
-                                }
                                 match &v[0] {
                                     OpVal::Label(l) => {
                                         if let Some(TokenVal::Val16(_)) =
@@ -672,12 +654,6 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                     if o.mode == AddressMode::Relative || o.mode == AddressMode::ZeroPageRelative {
                         let mut ok = false;
                         if let Some(v) = &o.op_val {
-                            if v.len() != 1 && v.len() != 3 {
-                                return Err(eyre!(
-                                    "Error parsing line {}: operation {o:?} has invalid val: {v:?}",
-                                    line_num + 1
-                                ));
-                            }
                             let offset = if o.mode == AddressMode::Relative {
                                 &v[0]
                             } else {
@@ -744,7 +720,7 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                         // SAFETY: We know this is fine since we range checked it above.
                         let v = unsafe { o.op_val.as_ref().unwrap_unchecked() };
                         let OpVal::Val(TokenVal::Val8(offset)) = v[0] else {
-                            return Err(eyre!("First value of ZeroPageRelative must be a u8"));
+                            panic!("First value of ZeroPageRelative must be a u8");
                         };
                         res.bin[usize::from(o.pc)] = modes[usize::from(offset)];
                     } else {
