@@ -57,7 +57,7 @@ enum Token {
 struct Operation {
     op: Opcode,
     mode: AddressMode,
-    op_val: Option<OpVal>,
+    op_val: Option<Vec<OpVal>>,
     x_index: bool,
     y_index: bool,
     width: u16,
@@ -294,6 +294,45 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         operation.mode = AddressMode::Implied;
                         l.push(Token::Op(operation));
                         State::Comment(token[1..].into())
+                    } else if cpu
+                        .resolve_opcode(&operation.op, &AddressMode::ZeroPageRelative)
+                        .is_ok()
+                    {
+                        // Ops of this nature are also the only mode and since they have a different op_val
+                        // we'll parse it directly.
+                        operation.mode = AddressMode::ZeroPageRelative;
+                        let parts: Vec<&str> = token.split(',').collect();
+                        if parts.len() != 3 {
+                            return Err(eyre!(
+                                "Invalid zero page relative (too many parts) on line {} - {token}",
+                                line_num + 1
+                            ));
+                        }
+                        let pre = parts[0].parse::<u8>().unwrap_or(10);
+                        if pre > 7 {
+                            return Err(eyre!(
+                                "Invalid zero page relative (index too large) on line {} - {token}",
+                                line_num + 1
+                            ));
+                        }
+                        let zpaddr = token_to_val_or_label(
+                            parts[1],
+                            &mut operation,
+                            &mut ret,
+                            line_num,
+                            &line,
+                        )?;
+                        let dest = token_to_val_or_label(
+                            parts[2],
+                            &mut operation,
+                            &mut ret,
+                            line_num,
+                            &line,
+                        )?;
+                        operation.op_val =
+                            Some(vec![OpVal::Val(TokenVal::Val8(pre)), zpaddr, dest]);
+                        l.push(Token::Op(operation));
+                        State::Remainder
                     } else {
                         if cpu
                             .resolve_opcode(&operation.op, &AddressMode::Relative)
@@ -345,39 +384,13 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         //         and started with a valid utf8 str.
                         let op_val = unsafe { std::str::from_utf8(val).unwrap_unchecked() };
 
-                        operation.op_val = match parse_val(op_val, false) {
-                            Some(v) => {
-                                if operation.mode == AddressMode::Implied {
-                                    operation.mode = find_mode(v, &operation);
-                                }
-                                Some(OpVal::Val(v))
-                            }
-                            None => match parse_label(op_val) {
-                                Ok(label) => {
-                                    if let Some(ld) = ret.labels.get_mut(&label) {
-                                        ld.refs.push(line_num + 1);
-                                    } else {
-                                        // If this is the first mention of this label we'll have to create a placeholder
-                                        // definition.
-                                        ret.labels.insert(
-                                            label.clone(),
-                                            LabelDef {
-                                                val: None,
-                                                line: 0,
-                                                refs: vec![line_num + 1],
-                                            },
-                                        );
-                                    }
-                                    Some(OpVal::Label(label))
-                                }
-                                Err(err) => {
-                                    return Err(eyre!(
-                                        "Error parsing line {}: invalid opcode label {err} - {line}",
-                                        line_num + 1,
-                                    ));
-                                }
-                            },
-                        };
+                        operation.op_val = Some(vec![token_to_val_or_label(
+                            op_val,
+                            &mut operation,
+                            &mut ret,
+                            line_num,
+                            &line,
+                        )?]);
                         l.push(Token::Op(operation));
                         State::Remainder
                     }
@@ -457,16 +470,25 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                             // Check the operand and if there is one it means
                             // this isn't Implied and we need to use this to compute either ZeroPage or Absolute
                             match &o.op_val {
-                                Some(OpVal::Label(l)) => {
-                                    let ld = get_label(&ast_output.labels, l);
-                                    if let Some(TokenVal::Val8(_)) = ld.val {
-                                        o.mode = find_mode(TokenVal::Val8(0), o);
-                                        width = 2;
-                                    } else {
-                                        // Anything else is either 16 bit or a label we don't know which
-                                        // also must be 16 bit at this point.
-                                        o.mode = find_mode(TokenVal::Val16(0), o);
-                                        width = 3;
+                                Some(v) => {
+                                    match &v[0] {
+                                        OpVal::Label(l) => {
+                                            let ld = get_label(&ast_output.labels, l);
+                                            if let Some(TokenVal::Val8(_)) = ld.val {
+                                                o.mode = find_mode(TokenVal::Val8(0), o);
+                                                width = 2;
+                                            } else {
+                                                // Anything else is either 16 bit or a label we don't know which
+                                                // also must be 16 bit at this point.
+                                                o.mode = find_mode(TokenVal::Val16(0), o);
+                                                width = 3;
+                                            }
+                                        }
+                                        // Anything else was a direct value and already matched in pass1 or is actually implied.
+                                        // If it directly matched that'll resolve below.
+                                        OpVal::Val(_) => {
+                                            width = 1;
+                                        }
                                     }
                                 }
                                 // Anything else was a direct value and already matched in pass1 or is actually implied.
@@ -474,7 +496,7 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                                 _ => {
                                     width = 1;
                                 }
-                            };
+                            }
                             // Check mode here since it was either implied, ZP, or Absolute and didn't get
                             // checked yet for this opcode.
                             if cpu.resolve_opcode(op, &o.mode).is_err() {
@@ -495,7 +517,7 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                             let mut ok = false;
                             width = 2;
                             if let Some(v) = &o.op_val {
-                                match v {
+                                match &v[0] {
                                     OpVal::Label(l) => {
                                         if let Some(TokenVal::Val8(_)) =
                                             get_label(&ast_output.labels, l).val
@@ -526,7 +548,7 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                         | AddressMode::AbsoluteIndirectX => {
                             let mut ok = false;
                             if let Some(v) = &o.op_val {
-                                match v {
+                                match &v[0] {
                                     OpVal::Label(l) => {
                                         if let Some(TokenVal::Val16(_)) =
                                             get_label(&ast_output.labels, l).val
@@ -629,11 +651,15 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
 
                     // Things are mutable here as we may have to fixup op_val for branches before
                     // emitting bytes below.
-                    // TODO(jchacon): Handle ZeroPageRelative
-                    if o.mode == AddressMode::Relative {
+                    if o.mode == AddressMode::Relative || o.mode == AddressMode::ZeroPageRelative {
                         let mut ok = false;
                         if let Some(v) = &o.op_val {
-                            match v {
+                            let offset = if o.mode == AddressMode::Relative {
+                                &v[0]
+                            } else {
+                                &v[2]
+                            };
+                            match offset {
                                 OpVal::Label(l) => {
                                     let mut r: Option<u16> = None;
                                     // Handle * usages in branches.
@@ -662,7 +688,13 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                                             // it's in signed i8 range so bit casting to u8 is fine.
                                             #[allow(clippy::cast_sign_loss)]
                                             let val = (diff & 0x00FF) as u8;
-                                            o.op_val = Some(OpVal::Val(TokenVal::Val8(val)));
+                                            let new = OpVal::Val(TokenVal::Val8(val));
+                                            if o.mode == AddressMode::Relative {
+                                                o.op_val = Some(vec![new]);
+                                            } else {
+                                                o.op_val =
+                                                    Some(vec![v[0].clone(), v[1].clone(), new]);
+                                            }
                                         }
                                     }
                                 }
@@ -682,13 +714,28 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                     }
 
                     // Grab the first entry in the bytes vec for the opcode value.
-                    // TODO: If > 1 pick one randomly.
-                    res.bin[usize::from(o.pc)] = modes[0];
+                    // TODO(jchacon): If > 1 pick one randomly.
+                    if o.mode == AddressMode::ZeroPageRelative {
+                        // BBR/BBS are special. This is actually the vector offsets based on the first opval value.
+                        // SAFETY: We know this is fine since we range checked it above.
+                        let v = unsafe { o.op_val.as_ref().unwrap_unchecked() };
+                        let OpVal::Val(TokenVal::Val8(offset)) = v[0] else {
+                            panic!("First value of ZeroPageRelative must be a u8");
+                        };
+                        res.bin[usize::from(o.pc)] = modes[usize::from(offset)];
+                    } else {
+                        res.bin[usize::from(o.pc)] = modes[0];
+                    }
                     if label_out.is_empty() {
                         label_out = "        ".into();
                     }
-                    if let Some(val) = &o.op_val {
-                        let val = match val {
+                    if let Some(v) = &o.op_val {
+                        let test = if o.mode == AddressMode::ZeroPageRelative {
+                            &v[2]
+                        } else {
+                            &v[0]
+                        };
+                        let val = match test {
                             OpVal::Label(s) => {
                                 // SAFETY: We just checked labels above has everything referenced and filled in.
                                 // The one exception is * which we just handled.
@@ -698,15 +745,46 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                         };
                         match val {
                             TokenVal::Val8(b) => {
-                                assert!(o.width == 2,"Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode);
+                                // ZP Relative is odd...It's width 3 but is all 8 bit values.
+                                if o.mode == AddressMode::ZeroPageRelative {
+                                    assert!(o.width == 3,"Internal error on line {}: got wrong data for ZP rel on op {} and mode {}", line_num+1, o.op, o.mode);
 
-                                res.bin[usize::from(o.pc + 1)] = b;
-                                write!(
-                                    output,
-                                    "{:04X} {:02X} {b:02X}    {label_out} ",
-                                    o.pc, modes[0]
-                                )
-                                .unwrap();
+                                    let zpval = match &v[1] {
+                                        OpVal::Label(s) => {
+                                            // SAFETY: We just checked labels above has everything referenced and filled in.
+                                            // The one exception is * which we just handled.
+                                            unsafe {
+                                                get_label(&ast_output.labels, s)
+                                                    .val
+                                                    .unwrap_unchecked()
+                                            }
+                                        }
+                                        OpVal::Val(t) => *t,
+                                    };
+                                    let TokenVal::Val8(zp) = zpval else {
+                                        return Err(eyre!("{}: Invalid value for ZP address for ZP Relative on op {} and mode {}", line_num+1, o.op, o.mode));
+                                    };
+
+                                    res.bin[usize::from(o.pc + 1)] = zp;
+                                    res.bin[usize::from(o.pc + 2)] = b;
+                                    write!(
+                                        output,
+                                        "{:04X} {:02X} {zp:02X} {b:02X} {label_out} ",
+                                        o.pc,
+                                        res.bin[usize::from(o.pc)]
+                                    )
+                                    .unwrap();
+                                } else {
+                                    assert!(o.width == 2,"Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode);
+
+                                    res.bin[usize::from(o.pc + 1)] = b;
+                                    write!(
+                                        output,
+                                        "{:04X} {:02X} {b:02X}    {label_out} ",
+                                        o.pc, modes[0]
+                                    )
+                                    .unwrap();
+                                }
                             }
                             TokenVal::Val16(b) => {
                                 assert!(o.width == 3,"Internal error on line {}: got 16 bit value and expect 8 bit for op {} and mode {}", line_num+1, o.op, o.mode);
@@ -728,7 +806,15 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                         let val: String;
                         // SAFETY: we already know this has a value
                         unsafe {
-                            val = format!("{}", o.op_val.as_ref().unwrap_unchecked());
+                            if o.mode == AddressMode::ZeroPageRelative {
+                                let v = o.op_val.as_ref().unwrap_unchecked();
+                                let OpVal::Val(TokenVal::Val8(index)) = v[0] else {
+                                    panic!("Internal error on line {}: Invalid ZP Relative token for {o:?}", line_num+1);
+                                };
+                                val = format!("{},{},{}", index, v[1], v[2]);
+                            } else {
+                                val = format!("{}", o.op_val.as_ref().unwrap_unchecked()[0]);
+                            }
                         }
 
                         // TODO(jchacon): Can we use disassemble here instead
@@ -935,4 +1021,47 @@ fn find_mode(v: TokenVal, operation: &Operation) -> AddressMode {
             }
         },
     }
+}
+
+fn token_to_val_or_label(
+    val: &str,
+    operation: &mut Operation,
+    ret: &mut ASTOutput,
+    line_num: usize,
+    line: &str,
+) -> Result<OpVal> {
+    let x = match parse_val(val, false) {
+        Some(v) => {
+            if operation.mode == AddressMode::Implied {
+                operation.mode = find_mode(v, operation);
+            }
+            OpVal::Val(v)
+        }
+        None => match parse_label(val) {
+            Ok(label) => {
+                if let Some(ld) = ret.labels.get_mut(&label) {
+                    ld.refs.push(line_num + 1);
+                } else {
+                    // If this is the first mention of this label we'll have to create a placeholder
+                    // definition.
+                    ret.labels.insert(
+                        label.clone(),
+                        LabelDef {
+                            val: None,
+                            line: 0,
+                            refs: vec![line_num + 1],
+                        },
+                    );
+                }
+                OpVal::Label(label)
+            }
+            Err(err) => {
+                return Err(eyre!(
+                    "Error parsing line {}: invalid opcode label for zpaddr {err} - {line}",
+                    line_num + 1,
+                ));
+            }
+        },
+    };
+    Ok(x)
 }

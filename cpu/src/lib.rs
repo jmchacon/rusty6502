@@ -882,8 +882,8 @@ impl fmt::Display for CPUState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "{:>6} {:<24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {}",
-            self.clocks, self.dis, self.a, self.x, self.y, self.s, self.p, self.op_val, self.op_addr, self.op_tick,
+            "{:>6} {:<24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} PC: {:04X} op_val: {:02X} op_addr: {:04X} op_tick: {}",
+            self.clocks, self.dis, self.a, self.x, self.y, self.s, self.p, self.pc, self.op_val, self.op_addr, self.op_tick,
         )?;
         writeln!(f, "Memory:")?;
         writeln!(f)?;
@@ -2235,9 +2235,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // The following methods are all ones which cannot be defaulted
     // and must be implmented by the relevant struct in order to provide
     // access and mutability for the default trait methods below.
-
-    // debug_hook returns the optional debug function callback.
-    fn debug_hook(&self) -> Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>;
 
     // state returns the current CPU state.
     fn state(&self) -> State;
@@ -3772,11 +3769,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
 
 macro_rules! cpu_internal {
     () => {
-        // debug_hook returns the optional debug function callback.
-        fn debug_hook(&self) -> Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)> {
-            self.debug
-        }
-
         // state returns the current CPU state.
         fn state(&self) -> State {
             self.state
@@ -4356,6 +4348,7 @@ impl<'a> CPUInternal<'a> for CPU65C02<'a> {
                 if irq {
                     push &= !P_B;
                 }
+                println!("Pushing {push} with {irq}");
                 self.push_stack(push.0);
                 // Now set P after we've pushed.
 
@@ -4708,6 +4701,9 @@ macro_rules! cpu_nmos_power_reset {
                             self.reset_tick = ResetTick::Tick1;
                             self.op_tick = Tick::Reset;
                             self.state = State::Running;
+                            self.interrupt_state = InterruptState::None;
+                            self.irq_raised = InterruptStyle::None;
+                            self.skip_interrupt = SkipInterrupt::None;
                             Ok(OpState::Done)
                         }
                         // Technically both this and the reset_tick one below are impossible
@@ -4942,6 +4938,9 @@ macro_rules! cpu_cmos_ricoh_power_reset {
                             self.reset_tick = ResetTick::Tick1;
                             self.op_tick = Tick::Reset;
                             self.state = State::Running;
+                            self.interrupt_state = InterruptState::None;
+                            self.irq_raised = InterruptStyle::None;
+                            self.skip_interrupt = SkipInterrupt::None;
                             Ok(OpState::Done)
                         }
                         // Technically both this and the reset_tick one below are impossible
@@ -5184,11 +5183,6 @@ macro_rules! chip_impl_nmos {
                     if rdy.raised() {
                         return Ok(());
                     }
-                }
-
-                // If we're in WAI just return, no state changes.
-                if self.state == State::WaitingForInterrupt {
-                    return Ok(());
                 }
 
                 if self.state != State::Tick {
