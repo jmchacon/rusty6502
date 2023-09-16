@@ -70,7 +70,7 @@ jobs:
         run: cargo test --locked --all-features --all-targets
   coverage:
     runs-on: ubuntu-latest
-    # TODO(jchacon): This should be stable but calloop requires this to be nightly
+    # TODO(jchacon): Calloop needs nightly but isn't up to date so doesn't work on it.
     name: ubuntu / nightly / coverage
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +86,7 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo llvm-cov
-        run: cargo +nightly llvm-cov --locked --all-features --lcov --output-path lcov.info
+        run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info --exclude monitor_gui --workspace
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v3
         with:
