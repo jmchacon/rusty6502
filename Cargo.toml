@@ -62,7 +62,7 @@ rusty6502 = { path = "./", version = "~0.1" }
 strum_macros = "0.24.1"
 strum = "0.24.1"
 tempfile = "3.8.0"
-thiserror = "1.0.48"
+thiserror = "1.0.49"
 
 [workspace.package]
 edition = "2021"
