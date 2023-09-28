@@ -9,7 +9,7 @@ authors.workspace = true
 rusty6502 = { workspace = true }
 
 color-eyre = { workspace = true }
-eframe = "0.22.0"
+eframe = "0.23.0"
 egui = "0.22.0"
 
 monitor = { workspace = true }
