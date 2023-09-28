@@ -1,8 +1,8 @@
 //! `monitor_gui` implements a basic monitor GUII program for running a 65xx device.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use eframe::egui;
 use ::egui::{FontFamily, FontId, RichText, TextStyle};
+use eframe::egui;
 
 use color_eyre::eyre::Result;
 use monitor::{cpu_loop, input_loop};
