@@ -51,6 +51,8 @@ clap = { version = "~4.0", features = ["derive", "wrap_help"] }
 clap-num = "1.0.2"
 color-eyre = { version = "0.6.2", default-features = false }
 cpu_proc_macros = { path = "./cpu_proc_macros", version = "~0.1" }
+eframe = "0.23.0"
+egui = "0.23.0"
 io = { path = "./io", version = "~0.1" }
 irq = { path = "./irq", version = "~0.1" }
 memory = { path = "./memory", version = "~0.1" }
