@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
 use eframe::egui;
-use egui::{FontFamily, FontId, RichText, TextStyle};
+use ::egui::{FontFamily, FontId, RichText, TextStyle};
 
 use color_eyre::eyre::Result;
 use monitor::{cpu_loop, input_loop};
