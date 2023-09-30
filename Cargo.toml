@@ -44,6 +44,7 @@ debug = true
 debug = true
 
 [workspace.dependencies]
+ahash = "0.8.3"
 assemble = { path = "./assemble", version = "~0.1" }
 c64basic = { path = "./c64basic", version = "~0.1" }
 chip = { path = "./chip", version = "~0.1" }
@@ -59,12 +60,16 @@ memory = { path = "./memory", version = "~0.1" }
 monitor = { path="./monitor", version = "~0.1" }
 ntest = "0.9.0"
 rand = "0.8.5"
-regex = "1"
+regex = "1.9.6"
 rusty6502 = { path = "./", version = "~0.1" }
 strum_macros = "0.24.1"
 strum = "0.24.1"
 tempfile = "3.8.0"
 thiserror = "1.0.49"
+
+proc-macro2 = "1.0.67"
+quote = "1.0.33"
+syn = { version = "2.0.37", features = ["extra-traits", "full"] }
 
 [workspace.package]
 edition = "2021"

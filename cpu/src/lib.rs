@@ -1,6 +1,6 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
+use ahash::AHashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 use std::fmt::Write;
 use std::num::Wrapping;
@@ -900,7 +900,7 @@ pub trait CPU<'a>: Chip {
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
         // Default impl is NMOS
-        let hm: &HashMap<AddressMode, Vec<u8>>;
+        let hm: &AHashMap<AddressMode, Vec<u8>>;
         // SAFETY: When we built NMOS_OPCODES we validated all Opcodes were present
         unsafe {
             hm = nmos_opcodes().get(op).unwrap_unchecked();
@@ -4971,7 +4971,7 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
     /// # Errors
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
-        let hm: &HashMap<AddressMode, Vec<u8>>;
+        let hm: &AHashMap<AddressMode, Vec<u8>>;
         // SAFETY: When we built NMOS_OPCODES we validated all Opcodes were present
         unsafe {
             hm = cmos_opcodes().get(op).unwrap_unchecked();
