@@ -140,7 +140,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
             let upper = token.to_uppercase();
 
             state = match state {
-                State::Begin => match upper.as_str().as_bytes() {
+                State::Begin => match upper.as_bytes() {
                     // We can match an ORG or comment here directly.
                     [b'O', b'R', b'G', ..] => State::Org,
                     [b';', ..] => State::Comment(token[1..].into()),
