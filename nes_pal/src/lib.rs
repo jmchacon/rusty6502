@@ -3,7 +3,11 @@
 
 use color_eyre::eyre::{eyre, Result};
 
+#[cfg(test)]
+mod tests;
+
 /// `Color` describes a parsed PAL entry
+#[derive(Debug, PartialEq)]
 pub struct Color {
     /// Red
     pub r: u8,
