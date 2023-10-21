@@ -1123,6 +1123,7 @@ macro_rules! nop_hlt_test {
                         let want = want_clocks;
                         tester!(got == want, d, &cpu, "Invalid clock count. Got {got} clocks and want {want}");
                         // SAFETY: We know it's an error so unwrap_err is fine.
+                        #[allow(clippy::unwrap_used)]
                         let err = ret.unwrap_err();
                         match err.root_cause().downcast_ref::<CPUError>() {
                             Some(CPUError::Halted{op: _}) => {},

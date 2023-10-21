@@ -95,7 +95,7 @@ pub fn input_loop(
                     match cmd.as_str() {
                         "H" | "HELP" => {
                             pre = Some(
-                                r#"Usage:
+                                r"Usage:
 HELP | H - This usage information
 RUN | C [true] - run continually until either a breakpoint/watchpoint is hit or a STOP is sent.
                  If the bool is set to true then a RAM snapshot will be taken on each instruction.
@@ -130,7 +130,7 @@ L <path> [<start> [<pc>]] - Load a binary image and optionally start loading at 
 BIN <path> - Dump a memory image of RAM to the given path
 PC <addr> - Set the PC to the addr
 RESET - Run a reset sequence on the CPU
-QUIT | Q - Exit the monitor"#
+QUIT | Q - Exit the monitor"
                                     .into(),
                             );
                         }
