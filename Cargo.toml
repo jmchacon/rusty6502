@@ -15,6 +15,7 @@ members = [
     "./monitor",
     "./monitor_gui",
     "./monitor_tui",
+    "./nes_pal",
 ]
 default-members = [
     "./assemble",
@@ -32,6 +33,7 @@ default-members = [
     "./monitor",
     "./monitor_gui",
     "./monitor_tui",
+    "./nes_pal",
 ]
 
 [profile.test]
