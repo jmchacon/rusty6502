@@ -135,6 +135,7 @@ impl eframe::App for MyApp {
                 for t in &self.textures {
                     ui.label(t.name());
                     ui.image(t);
+                    ui.separator();
                 }
             });
     }
