@@ -15,7 +15,10 @@ use color_eyre::eyre::{eyre, Result};
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
-    #[arg(help = "Filenames containing .pal data")]
+    #[arg(
+        help = "Filenames containing .pal data (can be specified N times)",
+        long
+    )]
     filename: Vec<String>,
 }
 
