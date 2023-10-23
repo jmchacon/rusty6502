@@ -67,6 +67,7 @@ pub fn map_chr_rom(data: &[u8]) -> Result<Vec<Tile>> {
 /// Given a tile of data in palette lookup form (0-3 values) return
 /// a set of strings describing it where . == background (0) and 1-3
 /// for palette lookups.
+#[must_use]
 pub fn tile_print(data: &[u8; 64]) -> Vec<String> {
     let mut ret = Vec::new();
     for y in 0..8 {
