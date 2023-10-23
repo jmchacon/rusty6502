@@ -1,4 +1,4 @@
-use crate::map_chr_rom;
+use crate::{map_chr_rom, tile_print};
 use color_eyre::eyre::Result;
 
 #[test]
@@ -32,25 +32,14 @@ fn parse_tile() -> Result<()> {
         0x00, 0x02, 0x02, 0x02,
     ];
 
-    let tile_print = |data: &[u8; 64]| {
-        for y in 0..8 {
-            for x in 0..8 {
-                let e = data[y * 8 + x];
-                if e == 0x00 {
-                    print! {"."};
-                } else {
-                    print!("{e}");
-                }
-            }
-            println!();
-        }
-    };
     if tiles[0].data != want {
         println!("Tiles differ");
-        println!("Want:");
-        tile_print(&want);
-        println!("\nGot:");
-        tile_print(&tiles[0].data);
+        println!("Want:       Got:");
+        let w = tile_print(&want);
+        let g = tile_print(&tiles[0].data);
+        for i in 0..8 {
+            println!("{}    {}", w[i], g[i]);
+        }
         panic!();
     }
     Ok(())

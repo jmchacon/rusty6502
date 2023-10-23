@@ -2,6 +2,7 @@
 //! segments for the NES.
 
 use color_eyre::eyre::{eyre, Result};
+use std::fmt::Write;
 
 #[cfg(test)]
 mod tests;
@@ -61,4 +62,24 @@ pub fn map_chr_rom(data: &[u8]) -> Result<Vec<Tile>> {
         ret.push(tile);
     }
     Ok(ret)
+}
+
+/// Given a tile of data in palette lookup form (0-3 values) return
+/// a set of strings describing it where . == background (0) and 1-3
+/// for palette lookups.
+pub fn tile_print(data: &[u8; 64]) -> Vec<String> {
+    let mut ret = Vec::new();
+    for y in 0..8 {
+        let mut line = String::new();
+        for x in 0..8 {
+            let e = data[y * 8 + x];
+            if e == 0x00 {
+                write!(line, ".").unwrap();
+            } else {
+                write!(line, "{e}").unwrap();
+            }
+        }
+        ret.push(line);
+    }
+    ret
 }
