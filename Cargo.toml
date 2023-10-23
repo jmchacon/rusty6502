@@ -15,6 +15,7 @@ members = [
     "./monitor",
     "./monitor_gui",
     "./monitor_tui",
+    "./nes_chr",
     "./nes_pal",
     "./nes_pal_render",
 ]
@@ -34,6 +35,7 @@ default-members = [
     "./monitor",
     "./monitor_gui",
     "./monitor_tui",
+    "./nes_chr",
     "./nes_pal",
     "./nes_pal_render",
 ]

@@ -1648,6 +1648,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nes_chr"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+]
+
+[[package]]
 name = "nes_pal"
 version = "0.1.0"
 dependencies = [
