@@ -21,6 +21,7 @@ ignore:
   - "handasm/src/main.rs"
   - "monitor_gui/src/*.rs"
   - "monitor_tui/src/*.rs"
+  - "nes_pal_render/src/*.rs"
 
 # Make comments less noisy
 comment:

@@ -1648,6 +1648,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "nes_pal"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+]
+
+[[package]]
+name = "nes_pal_render"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "eframe",
+ "egui",
+ "env_logger",
+ "nes_pal",
+]
+
+[[package]]
 name = "nix"
 version = "0.24.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
