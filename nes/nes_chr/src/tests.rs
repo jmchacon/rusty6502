@@ -32,11 +32,11 @@ fn parse_tile() -> Result<()> {
         0x00, 0x02, 0x02, 0x02,
     ];
 
+    let w = tile_print(&want);
+    let g = tile_print(&tiles[0].data);
     if tiles[0].data != want {
         println!("Tiles differ");
         println!("Want:       Got:");
-        let w = tile_print(&want);
-        let g = tile_print(&tiles[0].data);
         for i in 0..8 {
             println!("{}    {}", w[i], g[i]);
         }

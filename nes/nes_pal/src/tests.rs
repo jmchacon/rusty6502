@@ -13,7 +13,7 @@ fn invalid_pal() {
 
 #[test]
 fn load_ntsc() -> Result<()> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/2C02G.pal");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/2C02G.pal");
     let mut file = File::open(path)?;
 
     let mut data = Vec::new();
