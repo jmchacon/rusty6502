@@ -1353,6 +1353,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ines"
+version = "0.1.0"
+dependencies = [
+ "color-eyre",
+ "strum",
+ "strum_macros",
+]
+
+[[package]]
+name = "ines_debug"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "ines",
+]
+
+[[package]]
 name = "instant"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

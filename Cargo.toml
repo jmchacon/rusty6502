@@ -15,6 +15,8 @@ members = [
     "./monitor",
     "./monitor_gui",
     "./monitor_tui",
+    "./nes/ines",
+    "./nes/ines_debug",
     "./nes/nes_chr",
     "./nes/nes_pal",
     "./nes/nes_pal_render",
@@ -35,6 +37,8 @@ default-members = [
     "./monitor",
     "./monitor_gui",
     "./monitor_tui",
+    "./nes/ines",
+    "./nes/ines_debug",
     "./nes/nes_chr",
     "./nes/nes_pal",
     "./nes/nes_pal_render",
@@ -61,6 +65,7 @@ color-eyre = { version = "0.6.2", default-features = false }
 cpu_proc_macros = { path = "./cpu_proc_macros", version = "~0.1" }
 eframe = "0.23.0"
 egui = "0.23.0"
+ines = { path = "./nes/ines", version = "~0.1" }
 io = { path = "./io", version = "~0.1" }
 irq = { path = "./irq", version = "~0.1" }
 memory = { path = "./memory", version = "~0.1" }

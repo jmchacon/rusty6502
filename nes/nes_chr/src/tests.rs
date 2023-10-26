@@ -6,6 +6,7 @@ fn invalid_chr() {
     let data: [u8; 6] = [0, 1, 2, 3, 4, 5];
 
     let res = map_chr_rom(&data);
+    println!("Got {res:?}"); // So Tile debug gets invoked.
     assert!(res.is_err(), "result isn't error? {res:?}");
 }
 
