@@ -109,7 +109,7 @@ impl Debug for NES {
             .field("chr segments", &self.chr.len())
             .field("nametable_mirror", &self.nametable_mirror)
             .field("battery", &self.battery)
-            .field("trainer", &self.trainer)
+            .field("trainer", &self.trainer.is_some_and(|x| !x.is_empty()))
             .field("four_screen_mode", &self.four_screen_mode)
             .field("console_type", &self.console_type)
             .field("mapper", &self.mapper)
@@ -121,7 +121,10 @@ impl Debug for NES {
             .field("cpu_timing", &self.cpu_timing)
             .field("vs_ppu", &self.vs_ppu)
             .field("vs_hw", &self.vs_hw)
-            .field("misc_rom", &self.misc_rom)
+            .field(
+                "misc_rom",
+                &self.misc_rom.as_ref().is_some_and(|x| !x.is_empty()),
+            )
             .field("num_misc_rom", &self.num_misc_rom)
             .field("expansion_device", &self.expansion_device)
             .field("cart_style", &self.cart_style)
@@ -131,8 +134,34 @@ impl Debug for NES {
 
 impl Display for NES {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The debug version is fine.
-        write!(f, "{self:?}")
+        writeln!(f, "NES: {}", self.cart_style)?;
+        writeln!(f, "prg segments: {}", self.prg.len())?;
+        writeln!(f, "chr segments: {}", self.chr.len())?;
+        writeln!(f, "nametable_mirror: {}", &self.nametable_mirror)?;
+        writeln!(f, "battery: {}", self.battery)?;
+        writeln!(
+            f,
+            "trainer: {}",
+            self.trainer.is_some_and(|x| !x.is_empty())
+        )?;
+        writeln!(f, "four_screen_mode: {}", self.four_screen_mode)?;
+        writeln!(f, "console_type: {}", self.console_type)?;
+        writeln!(f, "mapper: {}", self.mapper)?;
+        writeln!(f, "sub_mapper: {:?}", self.sub_mapper)?;
+        writeln!(f, "prg_ram: {}", self.prg_ram)?;
+        writeln!(f, "prg_nvram: {}", self.prg_nvram)?;
+        writeln!(f, "chr_ram: {}", self.chr_ram)?;
+        writeln!(f, "chr_nvram: {}", self.chr_nvram)?;
+        writeln!(f, "cpu_timing: {}", self.cpu_timing)?;
+        writeln!(f, "vs_ppu: {:?}", self.vs_ppu)?;
+        writeln!(f, "vs_hw: {:?}", self.vs_hw)?;
+        writeln!(
+            f,
+            "misc_rom: {}",
+            self.misc_rom.as_ref().is_some_and(|x| !x.is_empty())
+        )?;
+        writeln!(f, "num_misc_rom: {}", self.num_misc_rom)?;
+        writeln!(f, "expansion_device: {:?}", self.expansion_device)
     }
 }
 
@@ -610,15 +639,21 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
                 #[allow(clippy::cast_possible_truncation)]
                 u128::from(CHR_BLOCK_SIZE as u16 * chr_rom)
             };
-            // Over 512M, 1G just give up, we're not playing here.
-            if chr_size > 1 << 28 || prg_size < 1 << 29 {
-                return Err(eyre!(
-                    "CHR or PRG size too large (over 512M, 1G): prg_size {prg_size} chr_size {chr_size}"
-                ));
-            }
+            println!(
+                "{} < {}",
+                data.len(),
+                HEADER_SIZE as u128 + prg_size + chr_size
+            );
             if (data.len() as u128) < HEADER_SIZE as u128 + prg_size + chr_size {
                 CartStyle::ArchaicNES
             } else {
+                // Over 512M, 1G just give up, we're not playing here.
+                if chr_size > 1 << 28 || prg_size < 1 << 29 {
+                    return Err(eyre!(
+                    "CHR or PRG size too large (over 512M, 1G): prg_size {prg_size} chr_size {chr_size}"
+                ));
+                }
+
                 // 1G / 16K (max) will fit into a u16 so casts are fine.
                 // 2^30 / 2^14 = 2^16
                 #[allow(clippy::cast_possible_truncation)]
@@ -663,7 +698,12 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
     if chr_blocks > 1 {
         nes.chr.reserve_exact(chr_blocks - 1);
     }
-
+    // In the special case for old ines files chr_blocks == 0 means this is
+    // RAM actually so truncate the ROM vector.
+    if chr_blocks == 0 && nes.cart_style != CartStyle::NES20 {
+        nes.chr_ram = CHR_BLOCK_SIZE;
+        nes.chr = Vec::new();
+    }
     if nes.cart_style != CartStyle::ArchaicNES {
         nes.mapper |= u16::from(data[FLAGS_7_BYTE] & MAPPER_D4_D7_MASK);
     }
