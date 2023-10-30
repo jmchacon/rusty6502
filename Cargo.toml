@@ -77,7 +77,7 @@ regex = "1.10.2"
 rusty6502 = { path = "./", version = "~0.1" }
 strum_macros = "0.24.1"
 strum = "0.24.1"
-tempfile = "3.8.0"
+tempfile = "3.8.1"
 thiserror = "1.0.50"
 
 proc-macro2 = "1.0.69"
