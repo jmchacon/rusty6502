@@ -6,7 +6,6 @@ fn invalid_chr() {
     let data: [u8; 6] = [0, 1, 2, 3, 4, 5];
 
     let res = map_chr_rom(&data);
-    println!("Got {res:?}"); // So Tile debug gets invoked.
     assert!(res.is_err(), "result isn't error? {res:?}");
 }
 
@@ -24,6 +23,7 @@ fn parse_tile() -> Result<()> {
     unsafe { std::ptr::copy_nonoverlapping(tile.as_ptr(), data.as_mut_ptr(), tile.len()) }
 
     let tiles = map_chr_rom(&data)?;
+    println!("{:?}", tiles[0]); // So Tile debug gets invoked.
 
     let want: [u8; 64] = [
         0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x03,

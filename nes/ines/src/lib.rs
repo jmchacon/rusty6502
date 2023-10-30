@@ -8,13 +8,16 @@ use color_eyre::eyre::{eyre, Result};
 use std::fmt::{Debug, Display};
 use strum_macros::Display;
 
+#[cfg(test)]
+mod tests;
 /// The full description and data from a .ines file
+#[derive(PartialEq)]
 pub struct NES {
     /// PRG-ROM segments
-    pub prg: Vec<[u8; 16_384]>,
+    pub prg: Vec<[u8; PRG_BLOCK_SIZE_U]>,
 
     /// CHR-ROM segments
-    pub chr: Vec<[u8; 8_192]>,
+    pub chr: Vec<[u8; CHR_BLOCK_SIZE_U]>,
 
     /// Nametable mirroring
     pub nametable_mirror: NametableMirroring,
@@ -38,16 +41,16 @@ pub struct NES {
     pub sub_mapper: Option<u8>,
 
     /// PRG RAM size
-    pub prg_ram: usize,
+    pub prg_ram: u64,
 
     /// PRG NVRAM size
-    pub prg_nvram: usize,
+    pub prg_nvram: u64,
 
     /// CHR RAM size
-    pub chr_ram: usize,
+    pub chr_ram: u64,
 
     /// CHR NVRAM size
-    pub chr_nvram: usize,
+    pub chr_nvram: u64,
 
     /// CPU Timing
     pub cpu_timing: CPUTiming,
@@ -75,10 +78,11 @@ pub struct NES {
 impl Default for NES {
     fn default() -> Self {
         // Done by hand since the most basic is 1 PRG, 1 CHR (0 filled is still legal)
-        // and an NTSC NES with no mapper.
+        // and an NTSC NES with no mapper. Technically we can have 0 CHR and
+        // it does CHR RAM instead. That's handled in parse().
         Self {
-            prg: vec![[0; 16_384]],
-            chr: vec![[0; 8_192]],
+            prg: vec![[0; PRG_BLOCK_SIZE_U]],
+            chr: vec![[0; CHR_BLOCK_SIZE_U]],
             nametable_mirror: NametableMirroring::default(),
             battery: false,
             trainer: None,
@@ -166,7 +170,7 @@ impl Display for NES {
 }
 
 /// Nametable mirroring
-#[derive(Default, Debug, Display)]
+#[derive(Default, Debug, Display, PartialEq)]
 pub enum NametableMirroring {
     /// Horizonal
     #[default]
@@ -177,7 +181,7 @@ pub enum NametableMirroring {
 }
 
 /// Console type
-#[derive(Default, Debug, Display)]
+#[derive(Default, Debug, Display, PartialEq)]
 pub enum ConsoleType {
     /// NES
     #[default]
@@ -221,7 +225,7 @@ pub enum ConsoleType {
 }
 
 /// CPU Timing for cart
-#[derive(Default, Debug, Display)]
+#[derive(Default, Debug, Display, PartialEq)]
 pub enum CPUTiming {
     /// NTSC
     #[default]
@@ -238,7 +242,7 @@ pub enum CPUTiming {
 }
 
 /// Vs system PPU
-#[derive(Debug, Display)]
+#[derive(Debug, Display, PartialEq)]
 pub enum VsPPU {
     /// RP2C03B
     RP2C03B,
@@ -281,7 +285,7 @@ pub enum VsPPU {
 }
 
 /// Vs Hardware
-#[derive(Debug, Display)]
+#[derive(Debug, Display, PartialEq)]
 pub enum VsHardware {
     /// Unisystem
     Unisystem,
@@ -306,7 +310,7 @@ pub enum VsHardware {
 }
 
 /// Game expected devices for cart
-#[derive(Debug, Display)]
+#[derive(Debug, Display, PartialEq)]
 pub enum ExpansionDevice {
     /// Standard NES controller
     StandardNES,
@@ -504,10 +508,10 @@ const PRG_ROM_MSB_MASK: u8 = 0x0F;
 const CHR_ROM_MSB_MASK: u8 = 0xF0;
 const ROM_MSB_SHIFT: u16 = 8;
 
-const ROM_EXPONENT_MODE: u16 = 0x0F;
-const ROM_EXPONENT_MASK: u16 = 0xFC;
-const ROM_MULTIPLIER_MASK: u16 = 0x03;
-const ROM_EXPONENT_SHIFT: u16 = 2;
+const ROM_EXPONENT_MODE: u64 = 0x0F;
+const ROM_EXPONENT_MASK: u64 = 0xFC;
+const ROM_MULTIPLIER_MASK: u64 = 0x03;
+const ROM_EXPONENT_SHIFT: u64 = 2;
 
 const CHR_ROM_MSB_SHIFT: u8 = 4;
 
@@ -519,12 +523,17 @@ const MAPPER_D0_D3_SHIFT: usize = 4;
 const MAPPER_D8_D11_SHIFT: usize = 8;
 const MAPPER_SUBMAPPER_SHIFT: usize = 4;
 
-const TRAINER_SIZE: usize = 512;
-const HEADER_SIZE: usize = 16;
-const PRG_BLOCK_SIZE: usize = 16_384;
-const CHR_BLOCK_SIZE: usize = 8_192;
-const PRG_RAM_BLOCK_SIZE: usize = 8_192;
-const MIN_SIZE: usize = HEADER_SIZE + PRG_BLOCK_SIZE + CHR_BLOCK_SIZE;
+const TRAINER_SIZE: u64 = 512;
+const TRAINER_SIZE_U: usize = 512;
+const HEADER_SIZE: u64 = 16;
+const HEADER_SIZE_U: usize = 16;
+const PRG_BLOCK_SIZE: u64 = 16_384;
+const PRG_BLOCK_SIZE_U: usize = 16_384;
+const CHR_BLOCK_SIZE: u64 = 8_192;
+const CHR_BLOCK_SIZE_U: usize = 8_192;
+const PRG_RAM_BLOCK_SIZE: u64 = 8_192;
+const MIN_SIZE: u64 = HEADER_SIZE + PRG_BLOCK_SIZE;
+const MIN_SIZE_U: usize = HEADER_SIZE_U + PRG_BLOCK_SIZE_U;
 
 const SIG_BYTE_0: usize = 0;
 const SIG_BYTE_1: usize = 1;
@@ -557,6 +566,9 @@ const VS_HARDWARE_TYPE_SHIFT: u8 = 4;
 
 const INES1_TV_MASK: u8 = 0x01;
 
+const NES20_CART_SIG: u8 = 0x08;
+const INES_CART_SIG: u8 = 0x00;
+
 /// Parse a given set of .ines data into an NES struct. This can handle legacy
 /// and NES 2.0 data.
 ///
@@ -566,8 +578,8 @@ const INES1_TV_MASK: u8 = 0x01;
 pub fn parse(data: &[u8]) -> Result<Box<NES>> {
     let mut nes = Box::<NES>::default();
 
-    // The bare minimum size is the header, 1 PRG and 1 CHR.
-    if data.len() < MIN_SIZE {
+    // The bare minimum size is the header, and 1 PRG (CHR might be RAM)
+    if data.len() < MIN_SIZE_U {
         return Err(eyre!(
             "Minimum size {MIN_SIZE} not met. Data is only {} bytes",
             data.len()
@@ -583,8 +595,8 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
         return Err(eyre!("Doesn't have NES<EOF> header"));
     }
 
-    let mut prg_blocks = usize::from(data[PRG_BYTE]);
-    let mut chr_blocks = usize::from(data[CHR_BYTE]);
+    let mut prg_blocks = u64::from(data[PRG_BYTE]);
+    let mut chr_blocks = u64::from(data[CHR_BYTE]);
 
     if data[FLAGS_6_BYTE] & MIRROR_MASK != 0x00 {
         nes.nametable_mirror = NametableMirroring::Vertical;
@@ -592,83 +604,90 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
     nes.battery = data[FLAGS_6_BYTE] & BATTERY_MASK != 0x00;
 
     if data[FLAGS_6_BYTE] & TRAINER_MASK != 0x00 {
-        if data.len() < MIN_SIZE + TRAINER_SIZE {
+        if data.len() < (MIN_SIZE_U + TRAINER_SIZE_U) {
             return Err(eyre!(
                 "Can't have trainer as size {} < min size {}",
                 data.len(),
                 MIN_SIZE + TRAINER_SIZE
             ));
         }
-        let mut trainer = [0u8; TRAINER_SIZE];
+        let mut trainer = [0u8; TRAINER_SIZE_U];
         // SAFETY: We know this fits from the size checks above.
         // Copy the trainer data over.
-        unsafe { std::ptr::copy_nonoverlapping(&data[16], trainer.as_mut_ptr(), trainer.len()) }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &data[HEADER_SIZE_U],
+                trainer.as_mut_ptr(),
+                trainer.len(),
+            );
+        }
         nes.trainer = Some(trainer);
     }
 
     nes.four_screen_mode = data[FLAGS_6_BYTE] & FOUR_SCREEN_MASK != 0x00;
-    nes.mapper = u16::from(data[FLAGS_6_BYTE] & MAPPER_D0_D3_MASK >> MAPPER_D0_D3_SHIFT);
+    nes.mapper = u16::from(data[FLAGS_6_BYTE] & MAPPER_D0_D3_MASK) >> MAPPER_D0_D3_SHIFT;
 
     // Before moving on figure out the ROM type as that matters whether we even
     // care about the next byte.
     nes.cart_style = match data[FLAGS_7_BYTE] & CART_TYPE_MASK {
-        0x08 => {
-            let prg_msb = u16::from(data[PRG_CHR_MSB_BYTE] & PRG_ROM_MSB_MASK);
-            let chr_msb = u16::from(data[PRG_CHR_MSB_BYTE] & CHR_ROM_MSB_MASK) >> CHR_ROM_MSB_SHIFT;
-            #[allow(clippy::cast_possible_truncation)]
-            let prg_rom = (prg_msb << ROM_MSB_SHIFT) | prg_blocks as u16;
-            #[allow(clippy::cast_possible_truncation)]
-            let chr_rom = (chr_msb << ROM_MSB_SHIFT) | chr_blocks as u16;
+        NES20_CART_SIG => {
+            let prg_msb = u64::from(data[PRG_CHR_MSB_BYTE] & PRG_ROM_MSB_MASK);
+            let chr_msb = u64::from(data[PRG_CHR_MSB_BYTE] & CHR_ROM_MSB_MASK) >> CHR_ROM_MSB_SHIFT;
+            let prg_rom = (prg_msb << ROM_MSB_SHIFT) | prg_blocks;
+            let chr_rom = (chr_msb << ROM_MSB_SHIFT) | chr_blocks;
+
+            // NOTE: Spec says exponent mode can go to 64 and theoretically
+            //       the max value is 2^64*7 which is nuts.
+            //       No one needs multi-exabyte ROMs....
 
             // Blocks or exponent mode.
             let prg_size = if prg_msb == ROM_EXPONENT_MODE {
-                let exp = u32::from(prg_rom & ROM_EXPONENT_MASK >> ROM_EXPONENT_SHIFT);
+                let exp = (prg_rom & ROM_EXPONENT_MASK) >> ROM_EXPONENT_SHIFT;
+                if exp > 30 {
+                    return Err(eyre!("PRG size too large (over 1G) - 2^{exp}"));
+                }
                 // Multiplier is bottom 2 bits * 2 + 1 (so 1 3 5 or 7)
-                let mul = u128::from((prg_rom & ROM_MULTIPLIER_MASK) * 2 + 1);
-                2u128.pow(exp) * mul
+                let mul = (prg_rom & ROM_MULTIPLIER_MASK) * 2 + 1;
+                2u64.pow(exp.try_into()?) * mul
             } else {
-                #[allow(clippy::cast_possible_truncation)]
-                u128::from(PRG_BLOCK_SIZE as u16 * prg_rom)
+                PRG_BLOCK_SIZE * prg_rom
             };
             let chr_size = if chr_msb == ROM_EXPONENT_MODE {
-                let exp = u32::from(chr_rom & ROM_EXPONENT_MASK >> ROM_EXPONENT_SHIFT);
+                let exp = (chr_rom & ROM_EXPONENT_MASK) >> ROM_EXPONENT_SHIFT;
+                if exp > 29 {
+                    return Err(eyre!("CHR size too large (over 512M) - 2^{exp}"));
+                }
                 // Multiplier is bottom 2 bits * 2 + 1 (so 1 3 5 or 7)
-                let mul = u128::from((chr_rom & ROM_MULTIPLIER_MASK) * 2 + 1);
-                2u128.pow(exp) * mul
+                let mul = (chr_rom & ROM_MULTIPLIER_MASK) * 2 + 1;
+                2u64.pow(exp.try_into()?) * mul
             } else {
-                #[allow(clippy::cast_possible_truncation)]
-                u128::from(CHR_BLOCK_SIZE as u16 * chr_rom)
+                CHR_BLOCK_SIZE * chr_rom
             };
-            println!(
-                "{} < {}",
-                data.len(),
-                HEADER_SIZE as u128 + prg_size + chr_size
-            );
-            if (data.len() as u128) < HEADER_SIZE as u128 + prg_size + chr_size {
+            if (data.len() as u64) < (HEADER_SIZE + prg_size + chr_size)
+                || prg_size < PRG_BLOCK_SIZE
+            {
                 CartStyle::ArchaicNES
             } else {
-                // Over 512M, 1G just give up, we're not playing here.
-                if chr_size > 1 << 28 || prg_size < 1 << 29 {
-                    return Err(eyre!(
-                    "CHR or PRG size too large (over 512M, 1G): prg_size {prg_size} chr_size {chr_size}"
-                ));
-                }
-
                 // 1G / 16K (max) will fit into a u16 so casts are fine.
                 // 2^30 / 2^14 = 2^16
-                #[allow(clippy::cast_possible_truncation)]
-                let blocks = (prg_size / PRG_BLOCK_SIZE as u128) as usize;
-                prg_blocks = blocks;
+                prg_blocks = prg_size / PRG_BLOCK_SIZE;
+                // Pad for any remainder
+                if prg_size % PRG_BLOCK_SIZE != 0 {
+                    prg_blocks += 1;
+                }
 
                 // 512M / 8K (max) will fit into a u16 so casts are fine.
                 // 2^29 / 2^13 = 2^16
-                #[allow(clippy::cast_possible_truncation)]
-                let blocks = (chr_size / CHR_BLOCK_SIZE as u128) as usize;
-                chr_blocks = blocks;
+                chr_blocks = chr_size / CHR_BLOCK_SIZE;
+                // Pad for any remainder
+                if chr_size % CHR_BLOCK_SIZE != 0 {
+                    chr_blocks += 1;
+                }
+
                 CartStyle::NES20
             }
         }
-        0x00 => {
+        INES_CART_SIG => {
             if data[TIMING_BYTE..=EXPANSION_DEVICE_BYTE] == [0, 0, 0, 0] {
                 CartStyle::INES1
             } else {
@@ -685,25 +704,73 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
     if nes.trainer.is_some() {
         min_req += TRAINER_SIZE;
     }
-    if data.len() < min_req {
+    if data.len() < min_req.try_into()? {
         return Err(eyre!(
             "PRG + CHR (and optional trainer) and header data size {} doesn't match data len {}",
             min_req,
             data.len()
         ));
     }
-    if prg_blocks > 1 {
-        nes.chr.reserve_exact(prg_blocks - 1);
+
+    // After all parsing there must be at least 1 PRG block.
+    if prg_blocks == 0 {
+        return Err(eyre!("No PRG blocks?"));
     }
-    if chr_blocks > 1 {
-        nes.chr.reserve_exact(chr_blocks - 1);
+    for _ in 0..prg_blocks - 1 {
+        nes.prg.push([0; PRG_BLOCK_SIZE_U]);
     }
-    // In the special case for old ines files chr_blocks == 0 means this is
-    // RAM actually so truncate the ROM vector.
-    if chr_blocks == 0 && nes.cart_style != CartStyle::NES20 {
-        nes.chr_ram = CHR_BLOCK_SIZE;
+    // Copy over the data
+    let start = if nes.trainer.is_some() {
+        HEADER_SIZE_U + TRAINER_SIZE_U
+    } else {
+        HEADER_SIZE_U
+    };
+    for i in 0..nes.prg.len() {
+        // SAFETY: We know this fits from the size checks above.
+        // Copy the ROM data over.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                &data[start + i * PRG_BLOCK_SIZE_U],
+                nes.prg[i].as_mut_ptr(),
+                PRG_BLOCK_SIZE_U,
+            );
+        }
+    }
+
+    if chr_blocks > 0 {
+        for _ in 0..chr_blocks - 1 {
+            nes.chr.push([0; CHR_BLOCK_SIZE_U]);
+        }
+        // Copy over the data
+        let start = if nes.trainer.is_some() {
+            HEADER_SIZE_U + TRAINER_SIZE_U + nes.prg.len() * PRG_BLOCK_SIZE_U
+        } else {
+            HEADER_SIZE_U + nes.prg.len() * PRG_BLOCK_SIZE_U
+        };
+        for i in 0..nes.chr.len() {
+            // SAFETY: We know this fits from the size checks above.
+            // Copy the ROM data over.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    &data[start + i * CHR_BLOCK_SIZE_U],
+                    nes.chr[i].as_mut_ptr(),
+                    CHR_BLOCK_SIZE_U,
+                );
+            }
+        }
+    }
+
+    // If there are no CHR blocks we didn't copy and should eliminate the
+    // assumed one.
+    if chr_blocks == 0 {
+        // In the special case for old ines files chr_blocks == 0 means this is
+        // RAM actually so truncate the ROM vector.
         nes.chr = Vec::new();
+        if nes.cart_style != CartStyle::NES20 {
+            nes.chr_ram = CHR_BLOCK_SIZE;
+        }
     }
+
     if nes.cart_style != CartStyle::ArchaicNES {
         nes.mapper |= u16::from(data[FLAGS_7_BYTE] & MAPPER_D4_D7_MASK);
     }
@@ -712,10 +779,14 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
         CartStyle::INES1 => {
             // Very little otherwise to set. Could have a Vs system
             // and may specify PRG RAM and TV type but unlikely to be set/used.
-            if data[FLAGS_7_BYTE] & CONSOLE_TYPE_MASK == 0x01 {
-                nes.console_type = ConsoleType::NintendoVsSystem;
-            }
-            let blocks = usize::from(data[MAPPER_BYTE]);
+            nes.console_type = match data[FLAGS_7_BYTE] & CONSOLE_TYPE_MASK {
+                0x00 => ConsoleType::NintendoEntertainmentSystem,
+                0x01 => ConsoleType::NintendoVsSystem,
+                0x02 => ConsoleType::NintendoPlaychoice10,
+                _ => return Err(eyre!("Invalid console type 0x03 for INES1 format")),
+            };
+
+            let blocks = u64::from(data[MAPPER_BYTE]);
             nes.prg_ram = if blocks == 0 {
                 PRG_RAM_BLOCK_SIZE
             } else {
@@ -792,7 +863,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             if shift > 0 {
                 nes.prg_ram = 64 << shift;
             }
-            let shift = data[PRG_RAM_BYTE] & PRG_NVRAM_SHIFT_MASK >> PRG_NVRAM_SHIFT;
+            let shift = (data[PRG_RAM_BYTE] & PRG_NVRAM_SHIFT_MASK) >> PRG_NVRAM_SHIFT;
             if shift > 0 {
                 nes.prg_nvram = 64 << shift;
             }
@@ -800,7 +871,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             if shift > 0 {
                 nes.chr_ram = 64 << shift;
             }
-            let shift = data[CHR_RAM_BYTE] & CHR_NVRAM_SHIFT_MASK >> CHR_NVRAM_SHIFT;
+            let shift = (data[CHR_RAM_BYTE] & CHR_NVRAM_SHIFT_MASK) >> CHR_NVRAM_SHIFT;
             if shift > 0 {
                 nes.chr_nvram = 64 << shift;
             }
@@ -821,10 +892,11 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
                         data[MISC_ROMS_BYTE]
                     ));
                 }
-                let mut end =
-                    nes.chr.len() * CHR_BLOCK_SIZE + nes.prg.len() * PRG_BLOCK_SIZE + HEADER_SIZE;
+                let mut end = nes.chr.len() * CHR_BLOCK_SIZE_U
+                    + nes.prg.len() * PRG_BLOCK_SIZE_U
+                    + HEADER_SIZE_U;
                 if nes.trainer.is_some() {
-                    end += TRAINER_SIZE;
+                    end += TRAINER_SIZE_U;
                 }
                 if end > data.len() {
                     return Err(eyre!("Misc ROMs claims segments but no size remains?"));
