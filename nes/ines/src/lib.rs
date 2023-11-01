@@ -5,8 +5,13 @@
 //! <https://www.nesdev.org/wiki/INES>
 
 use color_eyre::eyre::{eyre, Result};
-use std::fmt::{Debug, Display};
-use strum_macros::Display;
+use std::{
+    collections::HashMap,
+    fmt::{Debug, Display},
+    sync::OnceLock,
+};
+use strum::IntoEnumIterator;
+use strum_macros::{Display, EnumIter};
 
 #[cfg(test)]
 mod tests;
@@ -181,7 +186,7 @@ pub enum NametableMirroring {
 }
 
 /// Console type
-#[derive(Default, Debug, Display, PartialEq)]
+#[derive(Copy, Clone, Default, Debug, Display, EnumIter, PartialEq)]
 pub enum ConsoleType {
     /// NES
     #[default]
@@ -224,8 +229,22 @@ pub enum ConsoleType {
     FamicomNetworkSystem,
 }
 
+// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
+//                once LazyLock stablizes.
+fn console_type() -> &'static HashMap<u8, ConsoleType> {
+    static CONSOLE_TYPE: OnceLock<HashMap<u8, ConsoleType>> = OnceLock::new();
+    CONSOLE_TYPE.get_or_init(|| {
+        let mut m = HashMap::new();
+        for (idx, e) in ConsoleType::iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            m.insert(idx as u8, e);
+        }
+        m
+    })
+}
+
 /// CPU Timing for cart
-#[derive(Default, Debug, Display, PartialEq)]
+#[derive(Copy, Clone, Default, Debug, Display, EnumIter, PartialEq)]
 pub enum CPUTiming {
     /// NTSC
     #[default]
@@ -241,8 +260,22 @@ pub enum CPUTiming {
     Dendy,
 }
 
+// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
+//                once LazyLock stablizes.
+fn cpu_timing() -> &'static HashMap<u8, CPUTiming> {
+    static CONSOLE_TYPE: OnceLock<HashMap<u8, CPUTiming>> = OnceLock::new();
+    CONSOLE_TYPE.get_or_init(|| {
+        let mut m = HashMap::new();
+        for (idx, e) in CPUTiming::iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            m.insert(idx as u8, e);
+        }
+        m
+    })
+}
+
 /// Vs system PPU
-#[derive(Debug, Display, PartialEq)]
+#[derive(Copy, Clone, Debug, Display, EnumIter, PartialEq)]
 pub enum VsPPU {
     /// RP2C03B
     RP2C03B,
@@ -284,8 +317,22 @@ pub enum VsPPU {
     RC2C05_05,
 }
 
+// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
+//                once LazyLock stablizes.
+fn vs_ppu() -> &'static HashMap<u8, VsPPU> {
+    static CONSOLE_TYPE: OnceLock<HashMap<u8, VsPPU>> = OnceLock::new();
+    CONSOLE_TYPE.get_or_init(|| {
+        let mut m = HashMap::new();
+        for (idx, e) in VsPPU::iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            m.insert(idx as u8, e);
+        }
+        m
+    })
+}
+
 /// Vs Hardware
-#[derive(Debug, Display, PartialEq)]
+#[derive(Copy, Clone, Debug, Display, EnumIter, PartialEq)]
 pub enum VsHardware {
     /// Unisystem
     Unisystem,
@@ -309,8 +356,22 @@ pub enum VsHardware {
     DualSystemRaidOnBungelingBay,
 }
 
+// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
+//                once LazyLock stablizes.
+fn vs_hw() -> &'static HashMap<u8, VsHardware> {
+    static CONSOLE_TYPE: OnceLock<HashMap<u8, VsHardware>> = OnceLock::new();
+    CONSOLE_TYPE.get_or_init(|| {
+        let mut m = HashMap::new();
+        for (idx, e) in VsHardware::iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            m.insert(idx as u8, e);
+        }
+        m
+    })
+}
+
 /// Game expected devices for cart
-#[derive(Debug, Display, PartialEq)]
+#[derive(Copy, Clone, Debug, Display, EnumIter, PartialEq)]
 pub enum ExpansionDevice {
     /// Standard NES controller
     StandardNES,
@@ -326,6 +387,9 @@ pub enum ExpansionDevice {
 
     /// Vs System (1P at $4017)
     VsSystem4017,
+
+    /// Reserved entry (invalid)
+    Reserved,
 
     /// Vs System Zapper
     VsZapper,
@@ -482,6 +546,20 @@ pub enum ExpansionDevice {
 
     /// LG TV Remote Control
     LGTVRemoteControl,
+}
+
+// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
+//                once LazyLock stablizes.
+fn expansion_device() -> &'static HashMap<u8, ExpansionDevice> {
+    static CONSOLE_TYPE: OnceLock<HashMap<u8, ExpansionDevice>> = OnceLock::new();
+    CONSOLE_TYPE.get_or_init(|| {
+        let mut m = HashMap::new();
+        for (idx, e) in ExpansionDevice::iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            m.insert(idx as u8, e);
+        }
+        m
+    })
 }
 
 /// The NES file format used for this cart
@@ -779,12 +857,15 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
         CartStyle::INES1 => {
             // Very little otherwise to set. Could have a Vs system
             // and may specify PRG RAM and TV type but unlikely to be set/used.
-            nes.console_type = match data[FLAGS_7_BYTE] & CONSOLE_TYPE_MASK {
-                0x00 => ConsoleType::NintendoEntertainmentSystem,
-                0x01 => ConsoleType::NintendoVsSystem,
-                0x02 => ConsoleType::NintendoPlaychoice10,
-                _ => return Err(eyre!("Invalid console type 0x03 for INES1 format")),
-            };
+
+            // We can lookup by index and INES1 carts only have 3 possible types.
+            let lookup = data[FLAGS_7_BYTE] & CONSOLE_TYPE_MASK;
+            if lookup < 0x03 {
+                // This is fine to direct map since we know the map has this many entries.
+                nes.console_type = *console_type().get(&lookup).ok_or(eyre!("impossible"))?;
+            } else {
+                return Err(eyre!("Invalid console type 0x03 for INES1 format"));
+            }
 
             let blocks = u64::from(data[MAPPER_BYTE]);
             nes.prg_ram = if blocks == 0 {
@@ -797,63 +878,35 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             }
         }
         CartStyle::NES20 => {
-            nes.console_type = match data[FLAGS_7_BYTE] & CONSOLE_TYPE_MASK {
-                0x00 => ConsoleType::NintendoEntertainmentSystem,
-                0x01 => {
-                    nes.vs_ppu = Some(match data[SYSTEMS_BYTE] & VS_PPU_TYPE_MASK {
-                        0x00 => VsPPU::RP2C03B,
-                        0x01 => VsPPU::RP2C03G,
-                        0x02 => VsPPU::RP2C04_0001,
-                        0x03 => VsPPU::RP2C04_0002,
-                        0x04 => VsPPU::RP2C04_0003,
-                        0x05 => VsPPU::RP2C04_0004,
-                        0x06 => VsPPU::RC2C03B,
-                        0x07 => VsPPU::RC2C03C,
-                        0x08 => VsPPU::RC2C05_01,
-                        0x09 => VsPPU::RC2C05_02,
-                        0x0A => VsPPU::RC2C05_03,
-                        0x0B => VsPPU::RC2C05_04,
-                        0x0C => VsPPU::RC2C05_05,
-                        _ => return Err(eyre!("Invalid Vs PPU type: {}", data[SYSTEMS_BYTE])),
-                    });
-                    nes.vs_hw = Some(
-                        match data[SYSTEMS_BYTE] & VS_HARDWARE_TYPE_MASK >> VS_HARDWARE_TYPE_SHIFT {
-                            0x00 => VsHardware::Unisystem,
-                            0x01 => VsHardware::UnisystemRBIBaseball,
-                            0x02 => VsHardware::UnisystemTKOBoxing,
-                            0x03 => VsHardware::UnisystemSuperXevious,
-                            0x04 => VsHardware::UnisystemIceClimberJapan,
-                            0x05 => VsHardware::DualSystem,
-                            0x06 => VsHardware::DualSystemRaidOnBungelingBay,
-                            _ => {
-                                return Err(eyre!(
-                                    "Invalid Vs Hardware type: {}",
-                                    data[SYSTEMS_BYTE]
-                                ))
-                            }
-                        },
-                    );
-                    ConsoleType::NintendoVsSystem
-                }
-                0x02 => ConsoleType::NintendoPlaychoice10,
-                0x03 => match data[SYSTEMS_BYTE] & SYSTEMS_MASK {
-                    0x00 => ConsoleType::NintendoEntertainmentSystem,
-                    0x01 => ConsoleType::NintendoVsSystem,
-                    0x02 => ConsoleType::NintendoPlaychoice10,
-                    0x03 => ConsoleType::FamicomWithBCD,
-                    0x04 => ConsoleType::FamicomNESWithEPSM,
-                    0x05 => ConsoleType::VRTechnologyVT01,
-                    0x06 => ConsoleType::VRTechnologyVT02,
-                    0x07 => ConsoleType::VRTechnologyVT03,
-                    0x08 => ConsoleType::VRTechnologyVT09,
-                    0x09 => ConsoleType::VRTechnologyVT32,
-                    0x0A => ConsoleType::VRTechnologyVT369,
-                    0x0B => ConsoleType::UMCUM6578,
-                    0x0C => ConsoleType::FamicomNetworkSystem,
-                    _ => return Err(eyre!("Illegal console system type: {}", data[SYSTEMS_BYTE])),
-                },
-                _ => todo!("Impossible due to mask)"),
-            };
+            let lookup = data[FLAGS_7_BYTE] & CONSOLE_TYPE_MASK;
+            // Under 3 are the same base consoles
+            if lookup < 0x03 {
+                // This is fine to direct map since we know the map has this many entries.
+                nes.console_type = *console_type().get(&lookup).ok_or(eyre!("impossible"))?;
+            } else {
+                let lookup = data[SYSTEMS_BYTE] & SYSTEMS_MASK;
+                nes.console_type = if let Some(v) = console_type().get(&lookup) {
+                    *v
+                } else {
+                    return Err(eyre!("Illegal console system type: {}", data[SYSTEMS_BYTE]));
+                };
+            }
+            // Now if this is a Vs one we need to fill that in.
+            if nes.console_type == ConsoleType::NintendoVsSystem {
+                let lookup = data[SYSTEMS_BYTE] & VS_PPU_TYPE_MASK;
+                nes.vs_ppu = if let Some(v) = vs_ppu().get(&lookup) {
+                    Some(*v)
+                } else {
+                    return Err(eyre!("Invalid Vs PPU type: {}", data[SYSTEMS_BYTE]));
+                };
+                let lookup = data[SYSTEMS_BYTE] & VS_HARDWARE_TYPE_MASK >> VS_HARDWARE_TYPE_SHIFT;
+                nes.vs_hw = if let Some(v) = vs_hw().get(&lookup) {
+                    Some(*v)
+                } else {
+                    return Err(eyre!("Invalid Vs Hardware type: {}", data[SYSTEMS_BYTE]));
+                };
+            }
+
             nes.mapper |= u16::from(data[MAPPER_BYTE] & MAPPER_D8_D11_MASK) << MAPPER_D8_D11_SHIFT;
             nes.sub_mapper =
                 Some((data[MAPPER_BYTE] & MAPPER_SUBMAPPER_MASK) >> MAPPER_SUBMAPPER_SHIFT);
@@ -876,12 +929,11 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
                 nes.chr_nvram = 64 << shift;
             }
 
-            nes.cpu_timing = match data[TIMING_BYTE] {
-                0x00 => CPUTiming::NTSC,
-                0x01 => CPUTiming::PAL,
-                0x02 => CPUTiming::MultiRegion,
-                0x03 => CPUTiming::Dendy,
-                _ => return Err(eyre!("Invalid CPU timing byte: {}", data[TIMING_BYTE])),
+            let lookup = data[TIMING_BYTE];
+            nes.cpu_timing = if let Some(v) = cpu_timing().get(&lookup) {
+                *v
+            } else {
+                return Err(eyre!("Invalid CPU timing byte: {}", data[TIMING_BYTE]));
             };
 
             if data[MISC_ROMS_BYTE] != 0x00 {
@@ -911,71 +963,23 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
                 nes.misc_rom = Some(rom);
             }
             if data[EXPANSION_DEVICE_BYTE] != 0x00 {
-                nes.expansion_device = Some(match data[EXPANSION_DEVICE_BYTE] {
-                    0x01 => ExpansionDevice::StandardNES,
-                    0x02 => ExpansionDevice::NESFourScore,
-                    0x03 => ExpansionDevice::FamicomFourPlayersAdapter,
-                    0x04 => ExpansionDevice::VsSystem4016,
-                    0x05 => ExpansionDevice::VsSystem4017,
-                    0x07 => ExpansionDevice::VsZapper,
-                    0x08 => ExpansionDevice::Zapper,
-                    0x09 => ExpansionDevice::TwoZappers,
-                    0x0A => ExpansionDevice::BandaiHyperShotLightgun,
-                    0x0B => ExpansionDevice::PowerPadSideA,
-                    0x0C => ExpansionDevice::PowerPadSideB,
-                    0x0D => ExpansionDevice::FamilyTrainerSideA,
-                    0x0E => ExpansionDevice::FamilyTrainerSideB,
-                    0x0F => ExpansionDevice::ArkanoidVausControllerNES,
-                    0x10 => ExpansionDevice::ArkanoidVausControllerFamicom,
-                    0x11 => ExpansionDevice::TwoVausControllersFamicomDataRecorder,
-                    0x12 => ExpansionDevice::KonamiHyperShotController,
-                    0x13 => ExpansionDevice::CoconutsPachinkoController,
-                    0x14 => ExpansionDevice::ExcitingBoxingPunchingBag,
-                    0x15 => ExpansionDevice::JissenMahjongController,
-                    0x16 => ExpansionDevice::PartyTap,
-                    0x17 => ExpansionDevice::OekaKidsTablet,
-                    0x18 => ExpansionDevice::SunsoftBarcodeBattler,
-                    0x19 => ExpansionDevice::MiraclePianoKeyboard,
-                    0x1A => ExpansionDevice::PokkunMoguraa,
-                    0x1B => ExpansionDevice::TopRider,
-                    0x1C => ExpansionDevice::DoubleFisted,
-                    0x1D => ExpansionDevice::Famicom3DSystem,
-                    0x1E => ExpansionDevice::DoremikkoKeyboard,
-                    0x1F => ExpansionDevice::ROBGyroSet,
-                    0x20 => ExpansionDevice::FamicomDataRecorder,
-                    0x21 => ExpansionDevice::ASCIITurboFile,
-                    0x22 => ExpansionDevice::IGSStorageBattleBox,
-                    0x23 => ExpansionDevice::FamilyBASICKeyboard,
-                    0x24 => ExpansionDevice::DongdaPEC586Keyboard,
-                    0x25 => ExpansionDevice::BitCorpBit79Keyboard,
-                    0x26 => ExpansionDevice::SuborKeyboard,
-                    0x27 => ExpansionDevice::SuborKeyboardPlusMouse,
-                    0x28 => ExpansionDevice::SuborKeyboardPlusMouse24bit4016,
-                    0x29 => ExpansionDevice::SNESMouse,
-                    0x2A => ExpansionDevice::Multicart,
-                    0x2B => ExpansionDevice::TwoSNESControllers,
-                    0x2C => ExpansionDevice::RacerMateBicycle,
-                    0x2D => ExpansionDevice::UForce,
-                    0x2E => ExpansionDevice::ROBStackUp,
-                    0x2F => ExpansionDevice::CityPatrolmanLightgun,
-                    0x30 => ExpansionDevice::SharpC1CassetteInterface,
-                    0x31 => ExpansionDevice::StandardControllersSwapped,
-                    0x32 => ExpansionDevice::ExcaliborSudokuPad,
-                    0x33 => ExpansionDevice::ABLPinball,
-                    0x34 => ExpansionDevice::GoldenNuggetCasino,
-                    0x35 => ExpansionDevice::GoldenKeyKeyboard,
-                    0x36 => ExpansionDevice::SuborKeyboardPlusMouse24bit4017,
-                    0x37 => ExpansionDevice::PortTestController,
-                    0x38 => ExpansionDevice::BandaiMultiGamePlayerGamepad,
-                    0x39 => ExpansionDevice::VenomTVDanceMat,
-                    0x3A => ExpansionDevice::LGTVRemoteControl,
-                    _ => {
-                        return Err(eyre!(
-                            "Invalid expansion device value {}",
-                            data[EXPANSION_DEVICE_BYTE]
-                        ))
-                    }
-                });
+                let lookup = data[EXPANSION_DEVICE_BYTE];
+                let Some(v) = expansion_device().get(&lookup) else {
+                    return Err(eyre!(
+                        "Invalid expansion device value {}",
+                        data[EXPANSION_DEVICE_BYTE]
+                    ));
+                };
+                // There's one entry that's defined (so the iterator maps correctly) but
+                // isn't used. If that's there the same error as above happens.
+                nes.expansion_device = if *v == ExpansionDevice::Reserved {
+                    return Err(eyre!(
+                        "Invalid expansion device value {}",
+                        data[EXPANSION_DEVICE_BYTE]
+                    ));
+                } else {
+                    Some(*v)
+                };
             }
         }
         CartStyle::ArchaicNES => {}
