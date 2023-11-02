@@ -11,7 +11,7 @@ use std::{
     sync::OnceLock,
 };
 use strum::IntoEnumIterator;
-use strum_macros::{Display, EnumIter};
+use strum_macros::{Display, EnumCount, EnumIter};
 
 #[cfg(test)]
 mod tests;
@@ -131,8 +131,8 @@ impl Debug for NES {
             .field("vs_ppu", &self.vs_ppu)
             .field("vs_hw", &self.vs_hw)
             .field(
-                "misc_rom",
-                &self.misc_rom.as_ref().is_some_and(|x| !x.is_empty()),
+                "misc_rom size",
+                &self.misc_rom.as_ref().map_or(0, std::vec::Vec::len),
             )
             .field("num_misc_rom", &self.num_misc_rom)
             .field("expansion_device", &self.expansion_device)
@@ -166,8 +166,8 @@ impl Display for NES {
         writeln!(f, "vs_hw: {:?}", self.vs_hw)?;
         writeln!(
             f,
-            "misc_rom: {}",
-            self.misc_rom.as_ref().is_some_and(|x| !x.is_empty())
+            "misc_rom len: {}",
+            self.misc_rom.as_ref().map_or(0, std::vec::Vec::len)
         )?;
         writeln!(f, "num_misc_rom: {}", self.num_misc_rom)?;
         writeln!(f, "expansion_device: {:?}", self.expansion_device)
@@ -186,7 +186,7 @@ pub enum NametableMirroring {
 }
 
 /// Console type
-#[derive(Copy, Clone, Default, Debug, Display, EnumIter, PartialEq)]
+#[derive(Copy, Clone, Default, Debug, Display, EnumCount, EnumIter, PartialEq)]
 pub enum ConsoleType {
     /// NES
     #[default]
@@ -244,7 +244,7 @@ fn console_type() -> &'static HashMap<u8, ConsoleType> {
 }
 
 /// CPU Timing for cart
-#[derive(Copy, Clone, Default, Debug, Display, EnumIter, PartialEq)]
+#[derive(Copy, Clone, Default, Debug, Display, EnumCount, EnumIter, PartialEq)]
 pub enum CPUTiming {
     /// NTSC
     #[default]
@@ -275,7 +275,7 @@ fn cpu_timing() -> &'static HashMap<u8, CPUTiming> {
 }
 
 /// Vs system PPU
-#[derive(Copy, Clone, Debug, Display, EnumIter, PartialEq)]
+#[derive(Copy, Clone, Debug, Display, EnumCount, EnumIter, PartialEq)]
 pub enum VsPPU {
     /// RP2C03B
     RP2C03B,
@@ -332,7 +332,7 @@ fn vs_ppu() -> &'static HashMap<u8, VsPPU> {
 }
 
 /// Vs Hardware
-#[derive(Copy, Clone, Debug, Display, EnumIter, PartialEq)]
+#[derive(Copy, Clone, Debug, Display, EnumCount, EnumIter, PartialEq)]
 pub enum VsHardware {
     /// Unisystem
     Unisystem,
@@ -371,8 +371,11 @@ fn vs_hw() -> &'static HashMap<u8, VsHardware> {
 }
 
 /// Game expected devices for cart
-#[derive(Copy, Clone, Debug, Display, EnumIter, PartialEq)]
+#[derive(Copy, Clone, Debug, Display, EnumCount, EnumIter, PartialEq)]
 pub enum ExpansionDevice {
+    /// Technically not valid - but don't error if 0
+    Unspecified,
+
     /// Standard NES controller
     StandardNES,
 
@@ -637,6 +640,8 @@ const SYSTEMS_BYTE: usize = 13;
 const MISC_ROMS_BYTE: usize = 14;
 const EXPANSION_DEVICE_BYTE: usize = 15;
 
+const EXTENDED_CONSOLE: u8 = 0x03;
+
 const SYSTEMS_MASK: u8 = 0x0F;
 const VS_PPU_TYPE_MASK: u8 = 0x0F;
 const VS_HARDWARE_TYPE_MASK: u8 = 0xF0;
@@ -879,18 +884,21 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
         }
         CartStyle::NES20 => {
             let lookup = data[FLAGS_7_BYTE] & CONSOLE_TYPE_MASK;
-            // Under 3 are the same base consoles
-            if lookup < 0x03 {
-                // This is fine to direct map since we know the map has this many entries.
-                nes.console_type = *console_type().get(&lookup).ok_or(eyre!("impossible"))?;
-            } else {
+            if lookup == EXTENDED_CONSOLE {
+                // Entry 0x03 means used the extended list.
                 let lookup = data[SYSTEMS_BYTE] & SYSTEMS_MASK;
                 nes.console_type = if let Some(v) = console_type().get(&lookup) {
                     *v
                 } else {
                     return Err(eyre!("Illegal console system type: {}", data[SYSTEMS_BYTE]));
                 };
+            } else {
+                // Under 3 are the same base consoles
+
+                // This is fine to direct map since we know the map has this many entries.
+                nes.console_type = *console_type().get(&lookup).ok_or(eyre!("impossible"))?;
             }
+
             // Now if this is a Vs one we need to fill that in.
             if nes.console_type == ConsoleType::NintendoVsSystem {
                 let lookup = data[SYSTEMS_BYTE] & VS_PPU_TYPE_MASK;
@@ -899,7 +907,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
                 } else {
                     return Err(eyre!("Invalid Vs PPU type: {}", data[SYSTEMS_BYTE]));
                 };
-                let lookup = data[SYSTEMS_BYTE] & VS_HARDWARE_TYPE_MASK >> VS_HARDWARE_TYPE_SHIFT;
+                let lookup = (data[SYSTEMS_BYTE] & VS_HARDWARE_TYPE_MASK) >> VS_HARDWARE_TYPE_SHIFT;
                 nes.vs_hw = if let Some(v) = vs_hw().get(&lookup) {
                     Some(*v)
                 } else {
@@ -937,24 +945,25 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             };
 
             if data[MISC_ROMS_BYTE] != 0x00 {
-                nes.num_misc_rom = data[MISC_ROMS_BYTE];
-                if nes.num_misc_rom > 3 {
+                if data[MISC_ROMS_BYTE] > 3 {
                     return Err(eyre!(
                         "Invalid number of trailing ROM segments: {}",
                         data[MISC_ROMS_BYTE]
                     ));
                 }
+                nes.num_misc_rom = data[MISC_ROMS_BYTE];
+
                 let mut end = nes.chr.len() * CHR_BLOCK_SIZE_U
                     + nes.prg.len() * PRG_BLOCK_SIZE_U
                     + HEADER_SIZE_U;
                 if nes.trainer.is_some() {
                     end += TRAINER_SIZE_U;
                 }
-                if end > data.len() {
+                if end >= data.len() {
                     return Err(eyre!("Misc ROMs claims segments but no size remains?"));
                 }
                 let size = data.len() - end;
-                let mut rom = Vec::with_capacity(size);
+                let mut rom = vec![0; size];
                 // SAFETY: We know this fits from the size checks above.
                 // Copy the ROM data over.
                 unsafe {
@@ -962,25 +971,26 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
                 }
                 nes.misc_rom = Some(rom);
             }
-            if data[EXPANSION_DEVICE_BYTE] != 0x00 {
-                let lookup = data[EXPANSION_DEVICE_BYTE];
-                let Some(v) = expansion_device().get(&lookup) else {
-                    return Err(eyre!(
-                        "Invalid expansion device value {}",
-                        data[EXPANSION_DEVICE_BYTE]
-                    ));
-                };
-                // There's one entry that's defined (so the iterator maps correctly) but
-                // isn't used. If that's there the same error as above happens.
-                nes.expansion_device = if *v == ExpansionDevice::Reserved {
-                    return Err(eyre!(
-                        "Invalid expansion device value {}",
-                        data[EXPANSION_DEVICE_BYTE]
-                    ));
-                } else {
-                    Some(*v)
-                };
-            }
+
+            let lookup = data[EXPANSION_DEVICE_BYTE];
+            let Some(v) = expansion_device().get(&lookup) else {
+                return Err(eyre!(
+                    "Invalid expansion device value {}",
+                    data[EXPANSION_DEVICE_BYTE]
+                ));
+            };
+            // There's one entry that's defined (so the iterator maps correctly) but
+            // isn't used. If that's there the same error as above happens.
+            nes.expansion_device = if *v == ExpansionDevice::Reserved {
+                return Err(eyre!(
+                    "Invalid expansion device value {}",
+                    data[EXPANSION_DEVICE_BYTE]
+                ));
+            } else if *v != ExpansionDevice::Unspecified {
+                Some(*v)
+            } else {
+                None
+            };
         }
         CartStyle::ArchaicNES => {}
     };

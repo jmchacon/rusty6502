@@ -1,14 +1,15 @@
 use crate::{
-    CPUTiming, CartStyle, ConsoleType, NametableMirroring, CHR_BLOCK_SIZE_U, CHR_BYTE,
-    CHR_RAM_BYTE, EXPANSION_DEVICE_BYTE, FLAGS_6_BYTE, FLAGS_7_BYTE, HEADER_SIZE_U, INES1_TV_MASK,
-    INES_CART_SIG, MAPPER_BYTE, MIN_SIZE_U, MIRROR_MASK, MISC_ROMS_BYTE, NES, NES20_CART_SIG,
-    PRG_BLOCK_SIZE_U, PRG_BYTE, PRG_CHR_MSB_BYTE, PRG_RAM_BLOCK_SIZE, PRG_RAM_BYTE,
-    ROM_EXPONENT_MODE, SIG_BYTE_0, SIG_BYTE_1, SIG_BYTE_2, SIG_BYTE_3, SYSTEMS_BYTE, TIMING_BYTE,
-    TRAINER_MASK, TRAINER_SIZE_U,
+    CPUTiming, CartStyle, ConsoleType, ExpansionDevice, NametableMirroring, VsHardware, VsPPU,
+    CHR_BLOCK_SIZE_U, CHR_BYTE, CHR_RAM_BYTE, EXPANSION_DEVICE_BYTE, EXTENDED_CONSOLE,
+    FLAGS_6_BYTE, FLAGS_7_BYTE, HEADER_SIZE_U, INES1_TV_MASK, INES_CART_SIG, MAPPER_BYTE,
+    MIN_SIZE_U, MIRROR_MASK, MISC_ROMS_BYTE, NES, NES20_CART_SIG, PRG_BLOCK_SIZE_U, PRG_BYTE,
+    PRG_CHR_MSB_BYTE, PRG_RAM_BLOCK_SIZE, PRG_RAM_BYTE, ROM_EXPONENT_MODE, SIG_BYTE_0, SIG_BYTE_1,
+    SIG_BYTE_2, SIG_BYTE_3, SYSTEMS_BYTE, TIMING_BYTE, TRAINER_MASK, TRAINER_SIZE_U,
 };
 use std::{fs::read, path::Path};
 
 use color_eyre::eyre::Result;
+use strum::{EnumCount, IntoEnumIterator};
 
 #[test]
 fn nestest_rom() -> Result<()> {
@@ -39,31 +40,40 @@ fn nestest_rom() -> Result<()> {
         );
     }
 
-    validate_nes(&ines, &want);
+    validate_nes("nestest_rom", &ines, &want);
 
     Ok(())
 }
 
-fn validate_nes(ines: &NES, want: &NES) {
+fn validate_nes(test: &str, ines: &NES, want: &NES) {
     assert!(
         ines.prg == want.prg,
-        "PRG sections different\nGot:\n{:?}\nWant:\n{:?}",
+        "{test}: PRG sections different\nGot:\n{:?}\nWant:\n{:?}",
         ines.prg,
         want.prg
     );
     assert!(
         ines.chr == want.chr,
-        "CHR sections different\nGot:\n{:?}\nWant:\n{:?}",
+        "{test}: CHR sections different\nGot:\n{:?}\nWant:\n{:?}",
         ines.chr,
         want.chr
     );
     assert!(
         ines.trainer == want.trainer,
-        "Trainer sections different:\nGot:\n{:?}\nWant:\n{:?}",
+        "{test}: Trainer sections different:\nGot:\n{:?}\nWant:\n{:?}",
         ines.trainer,
         want.trainer
     );
-    assert!(ines == want, "NES differs\nGot:\n{ines}\nWant:\n{want}");
+    assert!(
+        ines.misc_rom == want.misc_rom,
+        "{test}: Misc ROM sections different:\nGot:\n{:?}\nWant:\n{:?}",
+        ines.misc_rom,
+        want.misc_rom
+    );
+    assert!(
+        ines == want,
+        "{test}: NES differs\nGot:\n{ines}\nWant:\n{want}"
+    );
 }
 
 #[test]
@@ -103,7 +113,7 @@ fn bad_roms() -> Result<()> {
         ..Default::default()
     });
 
-    validate_nes(&ines, &want);
+    validate_nes("bad roms - valid rom", &ines, &want);
 
     // Now mess up the header
     data[0] = b'M';
@@ -119,7 +129,7 @@ fn bad_roms() -> Result<()> {
     let ines = crate::parse(&data)?;
     want.nametable_mirror = NametableMirroring::Vertical;
 
-    validate_nes(&ines, &want);
+    validate_nes("bad roms - vertical", &ines, &want);
 
     // Add trainer data which should fail due to lack of space.
     data[FLAGS_6_BYTE] = MIRROR_MASK | TRAINER_MASK;
@@ -134,7 +144,7 @@ fn bad_roms() -> Result<()> {
 
     let ines = crate::parse(&data)?;
     want.trainer = Some([0; TRAINER_SIZE_U]);
-    validate_nes(&ines, &want);
+    validate_nes("bad roms - trainer data", &ines, &want);
 
     println!("NES: {ines}");
     println!("NES debug: {ines:?}");
@@ -151,6 +161,7 @@ fn bad_roms() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn nes20_parse() -> Result<()> {
     let mut data = vec![0; MIN_SIZE_U];
     data[SIG_BYTE_0] = b'N';
@@ -181,7 +192,7 @@ fn nes20_parse() -> Result<()> {
         ..Default::default()
     });
 
-    validate_nes(&ines, &want);
+    validate_nes("nes 2.0 - basic", &ines, &want);
 
     // Reset PRG to 1 block classic style and validate it matches cart wise for archaic
     data[PRG_BYTE] = 0x01;
@@ -201,12 +212,12 @@ fn nes20_parse() -> Result<()> {
     want.sub_mapper = None;
 
     let ines = crate::parse(&data)?;
-    validate_nes(&ines, &want);
+    validate_nes("nes 2.0 - archaic", &ines, &want);
 
     // Now do the same thing but with an INES_CART_SIG instead of data.
     data[FLAGS_7_BYTE] = INES_CART_SIG;
     let ines = crate::parse(&data)?;
-    validate_nes(&ines, &want);
+    validate_nes("nes 2.0 - ines1", &ines, &want);
 
     // Now add some CHR ROM in 2.0 exp format. 1 block is enough.
     // Reset everything else back to PRG exp mode and 2.0.
@@ -231,16 +242,18 @@ fn nes20_parse() -> Result<()> {
     // This should parse.
     let ines = crate::parse(&data)?;
     want.chr = vec![[0; CHR_BLOCK_SIZE_U]];
-    validate_nes(&ines, &want);
+    validate_nes("nes 2.0 - chr exp mode", &ines, &want);
 
     // Make the PRG ROM in exp format too large (in regular format that's not possible)
     data[PRG_BYTE] = 0x1F << 2; // EXP = 2 ^ 31 == 2G (so too large)
+
     let res = crate::parse(&data);
     assert!(res.is_err(), "Parsed nes 2.0 with too large PRG? - {res:?}");
 
     // Reset PRG and try too large CHR
     data[PRG_BYTE] = 0x0E << 2; // EXP = 2^14 == 16384
     data[CHR_BYTE] = 0x1E << 2; // EXP = 2^30 == 1G (so too large)
+
     let res = crate::parse(&data);
     assert!(res.is_err(), "Parsed nes 2.0 with too large CHR? - {res:?}");
 
@@ -255,7 +268,7 @@ fn nes20_parse() -> Result<()> {
     want.chr = vec![[0; CHR_BLOCK_SIZE_U], [0; CHR_BLOCK_SIZE_U]];
 
     let ines = crate::parse(&data)?;
-    validate_nes(&ines, &want);
+    validate_nes("nes 2.0 - N blocks", &ines, &want);
 
     // Now add some trainer data.
     data.resize(
@@ -266,13 +279,171 @@ fn nes20_parse() -> Result<()> {
     want.trainer = Some([0; TRAINER_SIZE_U]);
 
     let ines = crate::parse(&data)?;
-    validate_nes(&ines, &want);
+    validate_nes("nes 2.0 - trainer", &ines, &want);
+
+    // Move to an extended console type
+    data[FLAGS_7_BYTE] |= EXTENDED_CONSOLE;
+    data[SYSTEMS_BYTE] = 0x08; // VR Technology VT09
+
+    want.console_type = ConsoleType::VRTechnologyVT09;
+
+    let ines = crate::parse(&data)?;
+    validate_nes("nes 2.0 - extended console", &ines, &want);
+
+    // Set an illegal one
+    #[allow(clippy::cast_possible_truncation)]
+    let bad = (ConsoleType::COUNT + 1) as u8;
+    data[SYSTEMS_BYTE] = bad;
+
+    let res = crate::parse(&data);
+    assert!(
+        res.is_err(),
+        "Parsed nes 2.0 with bad console type? - {res:?}"
+    );
+
+    // Now make it a Vs type and fill that in
+    #[allow(clippy::unwrap_used)]
+    let (val, _) = ConsoleType::iter()
+        .enumerate()
+        .find(|(_, c)| *c == ConsoleType::NintendoVsSystem)
+        .unwrap();
+    #[allow(clippy::cast_possible_truncation)]
+    let vs = val as u8;
+    data[FLAGS_7_BYTE] = NES20_CART_SIG | vs;
+    data[SYSTEMS_BYTE] = (0x05 << 4) | 0x06; // Vs. Dual System (normal) and RC2C03B PPU
+
+    want.console_type = ConsoleType::NintendoVsSystem;
+    want.vs_ppu = Some(VsPPU::RC2C03B);
+    want.vs_hw = Some(VsHardware::DualSystem);
+
+    let ines = crate::parse(&data)?;
+    validate_nes("nes 2.0 - vs console", &ines, &want);
+
+    // Invalid VsPPU
+    #[allow(clippy::cast_possible_truncation)]
+    let bad = (VsPPU::COUNT + 1) as u8;
+    data[SYSTEMS_BYTE] = (0x05 << 4) | bad; // Vs. Dual System (normal) and bad
+
+    let res = crate::parse(&data);
+    assert!(
+        res.is_err(),
+        "Parsed nes 2.0 with bad VsPPU console type? - {res:?}"
+    );
+
+    // Good VsPPU but bad VsHardware
+    #[allow(clippy::cast_possible_truncation)]
+    let bad = (VsHardware::COUNT + 1) as u8;
+    data[SYSTEMS_BYTE] = (bad << 4) | 0x06; // bad and RC2C03B PPU
+
+    let res = crate::parse(&data);
+    assert!(
+        res.is_err(),
+        "Parsed nes 2.0 with bad VsHardware console type? - {res:?}"
+    );
+
+    // Back to a good setup and add PRG/CHR RAM and NVRAM
+    data[SYSTEMS_BYTE] = (0x05 << 4) | 0x06; // Vs. Dual System (normal) and RC2C03B PPU
+
+    data[PRG_RAM_BYTE] = (0xB << 4) | 0xC; // 64 << 11 nvram and 64 << 12 RAM
+    data[CHR_RAM_BYTE] = (0xC << 4) | 0xB; // 64 << 12 nvram and 64 << 11 RAM
+
+    want.prg_ram = 64 << 0x0C;
+    want.prg_nvram = 64 << 0x0B;
+    want.chr_ram = 64 << 0x0B;
+    want.chr_nvram = 64 << 0x0C;
+
+    let ines = crate::parse(&data)?;
+    validate_nes("nes 2.0 - vs console", &ines, &want);
+
+    // Bad CPU Timing
+    #[allow(clippy::cast_possible_truncation)]
+    let bad = (CPUTiming::COUNT + 1) as u8;
+    data[TIMING_BYTE] = bad;
+
+    let res = crate::parse(&data);
+    assert!(
+        res.is_err(),
+        "Parsed nes 2.0 with bad cpu timing? - {res:?}"
+    );
+
+    // Set a valid CPU timing
+    data[TIMING_BYTE] = 0x02;
+    want.cpu_timing = CPUTiming::MultiRegion;
+
+    let ines = crate::parse(&data)?;
+    validate_nes("nes 2.0 - cpu timing", &ines, &want);
+
+    // Misc ROMs
+
+    // Add a misc rom but don't give it any space.
+    data[MISC_ROMS_BYTE] = 0x01;
+
+    let res = crate::parse(&data);
+    assert!(
+        res.is_err(),
+        "Parsed nes 2.0 with misc ROM but no space? - {res:?}"
+    );
+
+    // Invalid number of roms
+    data[MISC_ROMS_BYTE] = 0x04;
+
+    let res = crate::parse(&data);
+    assert!(
+        res.is_err(),
+        "Parsed nes 2.0 with misc ROM but no space? - {res:?}"
+    );
+
+    // Add a ROM of 128 bytes
+    data.resize(data.len() + 128, 0x00);
+    data[MISC_ROMS_BYTE] = 3;
+    want.misc_rom = Some(vec![0; 128]);
+    want.num_misc_rom = 3;
+
+    let ines = crate::parse(&data)?;
+    validate_nes("nes 2.0 - misc roms", &ines, &want);
+
+    // Expansion device.
+
+    // Bad one
+    #[allow(clippy::cast_possible_truncation)]
+    let bad = (ExpansionDevice::COUNT + 1) as u8;
+    data[EXPANSION_DEVICE_BYTE] = bad;
+
+    let res = crate::parse(&data);
+    assert!(
+        res.is_err(),
+        "Parsed nes 2.0 with bad expansion device? - {res:?}"
+    );
+
+    // The reserved one is also bad.
+    #[allow(clippy::unwrap_used)]
+    let (val, _) = ExpansionDevice::iter()
+        .enumerate()
+        .find(|(_, e)| *e == ExpansionDevice::Reserved)
+        .unwrap();
+    #[allow(clippy::cast_possible_truncation)]
+    let res = val as u8;
+
+    data[EXPANSION_DEVICE_BYTE] = res;
+
+    let res = crate::parse(&data);
+    assert!(
+        res.is_err(),
+        "Parsed nes 2.0 with reserved expansion device? - {res:?}"
+    );
+
+    // A valid one
+    data[EXPANSION_DEVICE_BYTE] = 0x25; // Bit Corp. Bit-79 Keyboard
+    want.expansion_device = Some(ExpansionDevice::BitCorpBit79Keyboard);
+
+    let ines = crate::parse(&data)?;
+    validate_nes("nes 2.0 - expansion device", &ines, &want);
 
     Ok(())
 }
 
 #[test]
-fn nes_11_test() -> Result<()> {
+fn nes_11_parse() -> Result<()> {
     let mut data = vec![0; MIN_SIZE_U];
     data[SIG_BYTE_0] = b'N';
     data[SIG_BYTE_1] = b'E';
@@ -298,14 +469,14 @@ fn nes_11_test() -> Result<()> {
     });
 
     let ines = crate::parse(&data)?;
-    validate_nes(&ines, &want);
+    validate_nes("nes11 - vs", &ines, &want);
 
     // Now move to playchoice
     data[FLAGS_7_BYTE] = 0x02; // Playchoice;
     want.console_type = ConsoleType::NintendoPlaychoice10;
 
     let ines = crate::parse(&data)?;
-    validate_nes(&ines, &want);
+    validate_nes("nes11 - playchoice", &ines, &want);
 
     // Finally an invalid one
     data[FLAGS_7_BYTE] = 0x03;
