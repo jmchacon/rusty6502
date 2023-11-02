@@ -15,8 +15,11 @@ members = [
     "./monitor",
     "./monitor_gui",
     "./monitor_tui",
-    "./nes_pal",
-    "./nes_pal_render",
+    "./nes/ines",
+    "./nes/ines_debug",
+    "./nes/nes_chr",
+    "./nes/nes_pal",
+    "./nes/nes_pal_render",
 ]
 default-members = [
     "./assemble",
@@ -34,9 +37,13 @@ default-members = [
     "./monitor",
     "./monitor_gui",
     "./monitor_tui",
-    "./nes_pal",
-    "./nes_pal_render",
+    "./nes/ines",
+    "./nes/ines_debug",
+    "./nes/nes_chr",
+    "./nes/nes_pal",
+    "./nes/nes_pal_render",
 ]
+resolver = "2"
 
 [profile.test]
 opt-level = 3
@@ -58,11 +65,12 @@ color-eyre = { version = "0.6.2", default-features = false }
 cpu_proc_macros = { path = "./cpu_proc_macros", version = "~0.1" }
 eframe = "0.23.0"
 egui = "0.23.0"
+ines = { path = "./nes/ines", version = "~0.1" }
 io = { path = "./io", version = "~0.1" }
 irq = { path = "./irq", version = "~0.1" }
 memory = { path = "./memory", version = "~0.1" }
 monitor = { path="./monitor", version = "~0.1" }
-nes_pal = { path="./nes_pal", version = "~0.1" }
+nes_pal = { path="./nes/nes_pal", version = "~0.1" }
 ntest = "0.9.0"
 rand = "0.8.5"
 regex = "1.10.2"
