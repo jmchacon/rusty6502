@@ -15,6 +15,7 @@ use strum_macros::{Display, EnumCount, EnumIter};
 
 #[cfg(test)]
 mod tests;
+
 /// The full description and data from a .ines file
 #[derive(PartialEq)]
 pub struct NES {
@@ -608,11 +609,22 @@ const TRAINER_SIZE: u64 = 512;
 const TRAINER_SIZE_U: usize = 512;
 const HEADER_SIZE: u64 = 16;
 const HEADER_SIZE_U: usize = 16;
-const PRG_BLOCK_SIZE: u64 = 16_384;
-const PRG_BLOCK_SIZE_U: usize = 16_384;
-const CHR_BLOCK_SIZE: u64 = 8_192;
-const CHR_BLOCK_SIZE_U: usize = 8_192;
-const PRG_RAM_BLOCK_SIZE: u64 = 8_192;
+
+/// The size of a PRG block in u64 format.
+pub const PRG_BLOCK_SIZE: u64 = 16_384;
+
+/// The size of a PRG block in usize format.
+pub const PRG_BLOCK_SIZE_U: usize = 16_384;
+
+/// The size of a CHR block in u64 format.
+pub const CHR_BLOCK_SIZE: u64 = 8_192;
+
+/// The size of a CHR block in usize format.
+pub const CHR_BLOCK_SIZE_U: usize = 8_192;
+
+/// The size of a PRG RAM block in u64 format.
+pub const PRG_RAM_BLOCK_SIZE: u64 = 8_192;
+
 const MIN_SIZE: u64 = HEADER_SIZE + PRG_BLOCK_SIZE;
 const MIN_SIZE_U: usize = HEADER_SIZE_U + PRG_BLOCK_SIZE_U;
 

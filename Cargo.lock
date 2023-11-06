@@ -496,6 +496,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cart_renderer"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "color-eyre",
+ "eframe",
+ "egui",
+ "env_logger",
+ "ines",
+ "nes_chr",
+ "nes_pal",
+]
+
+[[package]]
 name = "cc"
 version = "1.0.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1678,6 +1692,8 @@ name = "nes_pal"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+ "eframe",
+ "egui",
 ]
 
 [[package]]

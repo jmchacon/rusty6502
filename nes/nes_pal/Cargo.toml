@@ -7,4 +7,6 @@ authors.workspace = true
 
 [dependencies]
 color-eyre = { workspace = true }
+eframe = { workspace = true }
+egui = { workspace = true }
 
