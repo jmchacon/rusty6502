@@ -70,13 +70,12 @@ jobs:
         run: cargo test --locked --all-features --all-targets
   coverage:
     runs-on: ubuntu-latest
-    # TODO(jchacon): Calloop needs nightly but isn't up to date so doesn't work on it.
-    name: ubuntu / nightly / coverage
+    name: ubuntu / beta / coverage
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
-      - name: Install nightly
+      - name: Install beta
         uses: dtolnay/rust-toolchain@beta
         with:
           components: llvm-tools-preview
@@ -86,7 +85,8 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo llvm-cov
-        run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info --lib --workspace
+        # Exclude nes_pal_gui package as calloop (*nix requirement) can't handle coverage on the version we inherit.
+        run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info --lib --workspace --exclude nes_pal_gui
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v3
         with:

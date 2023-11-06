@@ -7,7 +7,8 @@ use ::egui::{FontFamily, FontId, TextStyle};
 use clap::Parser;
 use eframe::egui;
 use egui::TextureHandle;
-use nes_pal::{parse_pal, texture_from_palette, Color};
+use nes_pal::{parse_pal, Color};
+use nes_pal_gui::texture_from_palette;
 
 use color_eyre::eyre::{eyre, Result};
 

@@ -12,7 +12,8 @@ use egui::{
     FontFamily, FontId, TextStyle, TextureHandle, TextureOptions,
 };
 use nes_chr::Tile;
-use nes_pal::{parse_pal, texture_from_palette, Color};
+use nes_pal::{parse_pal, Color};
+use nes_pal_gui::texture_from_palette;
 use std::path::Path;
 
 /// `cart_renderer` will load the given PAL files and the NES and render the CHR sections

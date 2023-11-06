@@ -13,6 +13,7 @@ egui = { workspace = true }
 ines = { workspace = true }
 nes_chr = { workspace = true }
 nes_pal = { workspace = true }
+nes_pal_gui = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.10"

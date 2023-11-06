@@ -507,6 +507,7 @@ dependencies = [
  "ines",
  "nes_chr",
  "nes_pal",
+ "nes_pal_gui",
 ]
 
 [[package]]
@@ -1692,8 +1693,15 @@ name = "nes_pal"
 version = "0.1.0"
 dependencies = [
  "color-eyre",
+]
+
+[[package]]
+name = "nes_pal_gui"
+version = "0.1.0"
+dependencies = [
  "eframe",
  "egui",
+ "nes_pal",
 ]
 
 [[package]]
@@ -1706,6 +1714,7 @@ dependencies = [
  "egui",
  "env_logger",
  "nes_pal",
+ "nes_pal_gui",
 ]
 
 [[package]]
