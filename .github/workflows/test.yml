@@ -77,7 +77,7 @@ jobs:
         with:
           submodules: true
       - name: Install nightly
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@beta
         with:
           components: llvm-tools-preview
       - name: cargo install cargo-llvm-cov
