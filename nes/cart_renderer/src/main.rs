@@ -266,7 +266,7 @@ const BUTTONS: [&str; NUM_COLORS] = ["Background", "Color 1", "Color 2", "Color 
 
 impl eframe::App for MyApp {
     #[allow(clippy::too_many_lines)]
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Some(bidx) = self.button {
             egui::Window::new("Color picker").show(ctx, |ui| {
                 const NUM_PER_ROW: usize = 16;
@@ -343,7 +343,6 @@ impl eframe::App for MyApp {
                 } = self;
                 *frame_count += 1;
 
-                ui.set_width(1200.0);
                 ui.set_enabled(button.is_none());
                 egui::ComboBox::from_label(String::from("Palette"))
                     .selected_text(self.pals[*selected_pal].name())
@@ -471,5 +470,6 @@ impl eframe::App for MyApp {
                     ui.image(&*right);
                 });
             });
+        frame.set_window_size(ctx.used_size());
     }
 }
