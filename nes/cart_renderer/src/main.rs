@@ -9,7 +9,7 @@ use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
 use egui::{
     ahash::{HashMap, HashMapExt},
-    FontFamily, FontId, TextStyle, TextureHandle, TextureOptions,
+    FontFamily, FontId, TextStyle, TextureHandle, TextureOptions, Ui,
 };
 use nes_chr::Tile;
 use nes_pal::{parse_pal, Color};
@@ -164,6 +164,17 @@ const TILE_LAYOUT_SIZE: usize = TILE_X
     * ROWS_OF_TILES
     * BYTES_PER_PIXEL;
 
+struct ChrTiles<'a> {
+    tiles: &'a [Vec<Tile>],
+    left: &'a mut TextureHandle,
+    right: &'a mut TextureHandle,
+    selected_pal: &'a usize,
+    selected_chr: &'a usize,
+    colors: &'a [usize; NUM_COLORS],
+    data: &'a mut Box<[u8]>,
+    color_source: &'a Vec<Data>,
+}
+
 impl MyApp {
     #[allow(clippy::needless_pass_by_value)]
     fn new(cc: &eframe::CreationContext<'_>, datas: Vec<Data>, tiles: Vec<Vec<Tile>>) -> Self {
@@ -180,6 +191,10 @@ impl MyApp {
         .into();
         cc.egui_ctx.set_style(style);
 
+        // Create the various textures we need later on.
+        //
+        // pals: For each PAL file a 16x4 texture with a block for each color
+        // colors_per_pal: For each index of pals a texture with that color block.
         let mut pals = Vec::new();
         let mut colors_per_pal = HashMap::new();
 
@@ -260,216 +275,282 @@ impl MyApp {
             frame_count: 0,
         }
     }
+
+    // `color_picker` is the modal dialog for chosing a new color when one of
+    // the color buttons is selected.
+    fn color_picker(&mut self, bidx: usize, ui: &mut Ui) {
+        const NUM_PER_ROW: usize = 16;
+
+        let Self {
+            tiles: _,
+            left: _,
+            right: _,
+            pals: _,
+            colors_per_pal,
+            selected_pal,
+            selected_chr: _,
+            button,
+            colors,
+            dialog_selected,
+            data: _,
+            color_source: _,
+            last_selected_pal: _,
+            last_selected_chr: _,
+            last_colors: _,
+            frame_count: _,
+        } = self;
+
+        let clrs: &Vec<TextureHandle>;
+        unsafe {
+            // SAFETY: Unwrap is fine since it's based on selected_pal which
+            //         is constrained via the combo box in the main UI.
+            clrs = colors_per_pal.get(selected_pal).unwrap_unchecked();
+        }
+
+        // Create a 16 x 4 set of colors where each entry is a distinct button
+        // rather than just a pallete displayed in the main UI. This way any
+        // selection is each to use to show newly selected.
+        for row in 0..clrs.len() / NUM_PER_ROW {
+            ui.horizontal(|ui| {
+                for i in 0..NUM_PER_ROW {
+                    let color = row * NUM_PER_ROW + i;
+                    if ui.add(egui::Button::image(&clrs[color])).clicked() {
+                        // Just record so we can track this on every redraw. It's not
+                        // used until Select is pressed later on.
+                        *dialog_selected = color;
+                    }
+                }
+            });
+            ui.end_row();
+        }
+        ui.separator();
+
+        // The color selected along with 2 buttons (all spaced out) to select
+        // that color or cancel the dialog.
+        ui.horizontal(|ui| {
+            ui.image(&clrs[*dialog_selected]);
+            ui.add_space(100.0);
+            if ui.button("Select").clicked() {
+                colors[bidx] = *dialog_selected;
+                *button = None;
+            }
+            if ui.button("Cancel").clicked() {
+                *button = None;
+            }
+        });
+    }
+
+    // `main_ui` displays the main UI
+    //
+    // _________________________
+    // | palette selector      |
+    // _________________________
+    // | PALETTE               |
+    // _________________________
+    // | BG  C1  C2  C3        |
+    // _________________________
+    // |chr selector           |
+    // _________________________
+    // |         |     |       |
+    // |   first |     | 2nd   |
+    // |    128  |     |  128  |
+    // _________________________
+    fn main_ui(&mut self, ui: &mut Ui) {
+        let Self {
+            tiles: _,
+            left,
+            right,
+            pals: _,
+            colors_per_pal: _,
+            selected_pal,
+            selected_chr,
+            button,
+            colors,
+            dialog_selected,
+            data,
+            color_source,
+            last_selected_pal,
+            last_selected_chr,
+            last_colors,
+            frame_count,
+        } = self;
+        *frame_count += 1;
+
+        // If a color picker button has been pressed the modal dialog is up
+        // so this window is inactive.
+        ui.set_enabled(button.is_none());
+
+        // The combo box for determining which palette to display.
+        egui::ComboBox::from_label(String::from("Palette"))
+            .selected_text(self.pals[*selected_pal].name())
+            .show_ui(ui, |ui| {
+                ui.style_mut().wrap = Some(false);
+                for i in 0..self.pals.len() {
+                    ui.selectable_value(selected_pal, i, self.pals[i].name());
+                }
+            });
+        ui.end_row();
+
+        // We already created textures for each PAL so just index and display it.
+        ui.image(&self.pals[*selected_pal]);
+        ui.separator();
+
+        // Create a new box with 4 buttons for each of the colors.
+        ui.horizontal(|ui| {
+            for i in 0..NUM_COLORS {
+                // 4 buttons spaced across the bottom of the palette showing each color
+                // they're selected.
+
+                let text: &TextureHandle;
+                // SAFETY: All of these below are restricted to selected_pal range
+                //         which is handled in the combo box above so we can just unwrap.
+                unsafe {
+                    text = &self.colors_per_pal.get(selected_pal).unwrap_unchecked()[colors[i]];
+                }
+
+                if ui
+                    .add(egui::Button::image_and_text(text, BUTTONS[i]))
+                    .clicked()
+                {
+                    *button = Some(i);
+                    *dialog_selected = colors[i];
+                }
+                // Space them out a bit so they stretch across the palette.
+                // Determined emperically by adjusting until it lines up visually.
+                // TODO(jchacon): Should be a way to auto lay this out?
+                ui.add_space(78.0);
+            }
+        });
+        ui.end_row();
+        ui.separator();
+
+        // A combo box to select which CHR page to display.
+        // Also indicate how much we've magnified (not currently changeable except by compilation)
+        egui::ComboBox::from_label(format!("CHR set ({TILE_MULTIPLIER_X}x magnified)",))
+            .selected_text(format!("{selected_chr}"))
+            .show_ui(ui, |ui| {
+                ui.style_mut().wrap = Some(false);
+                for i in 0..self.tiles.len() {
+                    ui.selectable_value(selected_chr, i, format!("{i}"));
+                }
+            });
+        ui.end_row();
+
+        // Fill in the selected tile data based on the selected color data
+        // from the selected PAL palette data. Only do this when we change
+        // relevant data (or this is the first frame).
+        if *frame_count == 1
+            || *last_selected_pal != *selected_pal
+            || *last_selected_chr != *selected_chr
+            || *last_colors != *colors
+        {
+            *last_selected_pal = *selected_pal;
+            *last_selected_chr = *selected_chr;
+            *last_colors = *colors;
+            Self::create_chr_tiles(&mut ChrTiles {
+                tiles: &self.tiles,
+                left,
+                right,
+                selected_pal,
+                selected_chr,
+                colors,
+                data,
+                color_source,
+            });
+        }
+
+        // Every frame show the current tilesets with some separation.
+        // The above only redraws the textures on actual changes so this is
+        // fast since the GPU already has the images generally.
+        ui.horizontal(|ui| {
+            ui.image(&*left);
+            // Space so they fill the space equally. Determined emperically.
+            // TODO(jchacon): Should be a way to auto lay this out?
+            ui.add_space(123.0);
+            ui.image(&*right);
+        });
+    }
+
+    // `create_chr_tiles` does all of the heavy lifting to take the 256 tiles
+    // in the CHR page referenced and render them via the current color sections.
+    // This then resets the given left and right textures with the new images.
+    fn create_chr_tiles(chrtiles: &mut ChrTiles) {
+        let tiles = chrtiles.tiles;
+        let selected_chr = chrtiles.selected_chr;
+        let selected_pal = chrtiles.selected_pal;
+        let colors = chrtiles.colors;
+        let color_source = chrtiles.color_source;
+
+        for (mut loc, t) in tiles[*selected_chr].iter().enumerate() {
+            // Once we get over 256 tiles we move to the other image.
+            let mut do_left = true;
+            if loc >= tiles[*selected_chr].len() / 2 {
+                do_left = false;
+                loc /= 2;
+            }
+            // First figure out the row we're on and the first entry for it's
+            // first pixel.
+            let row_start =
+                loc / TILES_PER_ROW * TILE_Y * TILE_MULTIPLIER_Y * TILE_LINE_SIZE * BYTES_PER_PIXEL;
+
+            // Now move N boxes over to find the box start pixel.
+            let box_start =
+                row_start + TILE_X * TILE_MULTIPLIER_X * (loc % TILES_PER_ROW) * BYTES_PER_PIXEL;
+            for y in 0..TILE_Y {
+                for yi in 0..TILE_MULTIPLIER_Y {
+                    // Finally for each line adjust by the row we're on for each line.
+                    let y_off =
+                        box_start + (y * TILE_MULTIPLIER_Y + yi) * TILE_LINE_SIZE * BYTES_PER_PIXEL;
+                    for x in 0..TILE_X {
+                        // Each x start has to be adjusted by RGB to get the final entry.
+                        let start = x * TILE_MULTIPLIER_X * BYTES_PER_PIXEL;
+
+                        // Now lookup the tile data which is in range 0..NUM_COLORS
+                        // Index that into colors to get the PAL entry.
+                        // Now find that in the selected PAL to get the final RGB values.
+                        let td = t.data[y * TILE_Y + x];
+                        let col = colors[usize::from(td)];
+                        let color = &color_source[*selected_pal].colors[col];
+
+                        for i in 0..TILE_MULTIPLIER_X {
+                            let off = i * BYTES_PER_PIXEL;
+                            chrtiles.data[y_off + off + start] = color.r;
+                            chrtiles.data[y_off + off + start + 1] = color.g;
+                            chrtiles.data[y_off + off + start + 2] = color.b;
+                        }
+                    }
+                }
+            }
+            let im = egui::ColorImage::from_rgb(
+                [
+                    TILE_X * TILE_MULTIPLIER_X * TILES_PER_ROW,
+                    TILE_Y * TILE_MULTIPLIER_Y * ROWS_OF_TILES,
+                ],
+                chrtiles.data,
+            );
+
+            if do_left {
+                chrtiles.left.set(im, TextureOptions::default());
+            } else {
+                chrtiles.right.set(im, TextureOptions::default());
+            }
+        }
+    }
 }
 
 const BUTTONS: [&str; NUM_COLORS] = ["Background", "Color 1", "Color 2", "Color 3"];
 
 impl eframe::App for MyApp {
-    #[allow(clippy::too_many_lines)]
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // If a color picker button has been selected display the dialog.
         if let Some(bidx) = self.button {
-            egui::Window::new("Color picker").show(ctx, |ui| {
-                const NUM_PER_ROW: usize = 16;
-
-                let Self {
-                    tiles: _,
-                    left: _,
-                    right: _,
-                    pals: _,
-                    colors_per_pal: _,
-                    selected_pal,
-                    selected_chr: _,
-                    button,
-                    colors,
-                    dialog_selected,
-                    data: _,
-                    color_source: _,
-                    last_selected_pal: _,
-                    last_selected_chr: _,
-                    last_colors: _,
-                    frame_count: _,
-                } = self;
-
-                // SAFETY: Unwrap is fine since it's based on selected_pal which
-                //         is constrained via the combo box in the main UI.
-                #[allow(clippy::unwrap_used)]
-                let clrs = self.colors_per_pal.get(selected_pal).unwrap();
-
-                for row in 0..clrs.len() / NUM_PER_ROW {
-                    ui.horizontal(|ui| {
-                        for i in 0..NUM_PER_ROW {
-                            let idx = row * NUM_PER_ROW + i;
-                            if ui.add(egui::Button::image(&clrs[idx])).clicked() {
-                                *dialog_selected = idx;
-                            }
-                        }
-                    });
-                    ui.end_row();
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.image(&clrs[*dialog_selected]);
-                    ui.add_space(100.0);
-                    if ui.button("Select").clicked() {
-                        colors[bidx] = *dialog_selected;
-                        *button = None;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        *button = None;
-                    }
-                });
-            });
+            egui::Window::new("Color picker").show(ctx, |ui| self.color_picker(bidx, ui));
         }
+
+        // Always show the main window.
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::GRAY))
-            .show(ctx, |ui| {
-                let Self {
-                    tiles: _,
-                    left,
-                    right,
-                    pals: _,
-                    colors_per_pal: _,
-                    selected_pal,
-                    selected_chr,
-                    button,
-                    colors,
-                    dialog_selected,
-                    data,
-                    color_source,
-                    last_selected_pal,
-                    last_selected_chr,
-                    last_colors,
-                    frame_count,
-                } = self;
-                *frame_count += 1;
-
-                ui.set_enabled(button.is_none());
-                egui::ComboBox::from_label(String::from("Palette"))
-                    .selected_text(self.pals[*selected_pal].name())
-                    .show_ui(ui, |ui| {
-                        ui.style_mut().wrap = Some(false);
-                        for i in 0..self.pals.len() {
-                            ui.selectable_value(selected_pal, i, self.pals[i].name());
-                        }
-                    });
-                ui.end_row();
-                ui.image(&self.pals[*selected_pal]);
-                ui.separator();
-
-                ui.horizontal(|ui| {
-                    // SAFETY: All of these below are restricted to selected_pal range
-                    //         which is handled in the combo box above so we can just unwrap.
-                    for i in 0..NUM_COLORS {
-                        // 4 buttons spaced across the bottom of the palette showing each color
-                        // they're selected.
-                        #[allow(clippy::unwrap_used)]
-                        let text = &self.colors_per_pal.get(selected_pal).unwrap()[colors[i]];
-
-                        if ui
-                            .add(egui::Button::image_and_text(text, BUTTONS[i]))
-                            .clicked()
-                        {
-                            *button = Some(i);
-                            *dialog_selected = colors[i];
-                        }
-                        // Space them out a bit so they stretch across the palette.
-                        // Determined emperically by adjusting until it lines up visually.
-                        // TODO(jchacon): Should be a way to auto lay this out?
-                        ui.add_space(78.0);
-                    }
-                });
-                ui.end_row();
-                ui.separator();
-                egui::ComboBox::from_label(format!("CHR set ({TILE_MULTIPLIER_X}x magnified)",))
-                    .selected_text(format!("{selected_chr}"))
-                    .show_ui(ui, |ui| {
-                        ui.style_mut().wrap = Some(false);
-                        for i in 0..self.tiles.len() {
-                            ui.selectable_value(selected_chr, i, format!("{i}"));
-                        }
-                    });
-                ui.end_row();
-
-                // File in the selected tile data based on the selected color data
-                // from the selected PAL palette data.
-                // TODO(jchacon): Track only if selected_chr/selected_pal/colors changed to bother to do this.
-                //                Otherwise we're needly moving lots of memory around everytime.
-                if *frame_count == 1
-                    || *last_selected_pal != *selected_pal
-                    || *last_selected_chr != *selected_chr
-                    || *last_colors != *colors
-                {
-                    *last_selected_pal = *selected_pal;
-                    *last_selected_chr = *selected_chr;
-                    *last_colors = *colors;
-                    for (mut loc, t) in self.tiles[*selected_chr].iter().enumerate() {
-                        // Once we get over 256 tiles we move to the other image.
-                        let mut do_left = true;
-                        if loc >= self.tiles[*selected_chr].len() / 2 {
-                            do_left = false;
-                            loc /= 2;
-                        }
-                        // First figure out the row we're on and the first entry for it's
-                        // first pixel.
-                        let row_start = loc / TILES_PER_ROW
-                            * TILE_Y
-                            * TILE_MULTIPLIER_Y
-                            * TILE_LINE_SIZE
-                            * BYTES_PER_PIXEL;
-
-                        // Now move N boxes over to find the box start pixel.
-                        let box_start = row_start
-                            + TILE_X * TILE_MULTIPLIER_X * (loc % TILES_PER_ROW) * BYTES_PER_PIXEL;
-                        for y in 0..TILE_Y {
-                            for yi in 0..TILE_MULTIPLIER_Y {
-                                // Finally for each line adjust by the row we're on for each line.
-                                let y_off = box_start
-                                    + (y * TILE_MULTIPLIER_Y + yi)
-                                        * TILE_LINE_SIZE
-                                        * BYTES_PER_PIXEL;
-                                for x in 0..TILE_X {
-                                    // Each x start has to be adjusted by RGB to get the final entry.
-                                    let start = x * TILE_MULTIPLIER_X * BYTES_PER_PIXEL;
-
-                                    // Now lookup the tile data which is in range 0..NUM_COLORS
-                                    // Index that into colors to get the PAL entry.
-                                    // Now find that in the selected PAL to get the final RGB values.
-                                    let td = t.data[y * TILE_Y + x];
-                                    let col = colors[usize::from(td)];
-                                    let color = &color_source[*selected_pal].colors[col];
-
-                                    for i in 0..TILE_MULTIPLIER_X {
-                                        let off = i * BYTES_PER_PIXEL;
-                                        data[y_off + off + start] = color.r;
-                                        data[y_off + off + start + 1] = color.g;
-                                        data[y_off + off + start + 2] = color.b;
-                                    }
-                                }
-                            }
-                        }
-                        let im = egui::ColorImage::from_rgb(
-                            [
-                                TILE_X * TILE_MULTIPLIER_X * TILES_PER_ROW,
-                                TILE_Y * TILE_MULTIPLIER_Y * ROWS_OF_TILES,
-                            ],
-                            data,
-                        );
-
-                        if do_left {
-                            left.set(im, TextureOptions::default());
-                        } else {
-                            right.set(im, TextureOptions::default());
-                        }
-                    }
-                }
-                ui.horizontal(|ui| {
-                    ui.image(&*left);
-                    // Space so they fill the space equally. Determined emperically.
-                    // TODO(jchacon): Should be a way to auto lay this out?
-                    ui.add_space(123.0);
-                    ui.image(&*right);
-                });
-            });
+            .show(ctx, |ui| self.main_ui(ui));
         frame.set_window_size(ctx.used_size());
     }
 }
