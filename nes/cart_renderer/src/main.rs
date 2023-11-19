@@ -157,6 +157,12 @@ const NUM_COLORS: usize = 4;
 const DEFAULT_BACKGROUND: usize = 0x3F;
 const DEFAULT_FOREGROUND: usize = 0x30;
 
+// All the constants used to build up the math needed to operate with the tiles
+// we display. Each tile is 8x8 but we want a 1 pixel border around each one.
+// This is then 10x10 (which makes manual math simpler) and when multiplied out
+// is a 20x20 tile image. Various iterations later when creating the tile image
+// will need various combinations of these values and sometimes as floats
+// due to how egui works with pixels.
 const TILE_X: usize = 8;
 const TILE_X_F: f32 = 8.0;
 
@@ -185,13 +191,13 @@ const TILE_MULTIPLIER_X_F: f32 = 2.0;
 const TILE_MULTIPLIER_Y: usize = 2;
 const TILE_MULTIPLIER_Y_F: f32 = 2.0;
 
+const TILE_X_TOTAL: usize = (LEFT_BUFFER + TILE_X + RIGHT_BUFFER) * TILE_MULTIPLIER_X;
 const TILE_X_TOTAL_F: f32 = (LEFT_BUFFER_F + TILE_X_F + RIGHT_BUFFER_F) * TILE_MULTIPLIER_X_F;
+const TILE_Y_TOTAL: usize = (TOP_BUFFER + TILE_Y + BOTTOM_BUFFER) * TILE_MULTIPLIER_Y;
 const TILE_Y_TOTAL_F: f32 = (TOP_BUFFER_F + TILE_Y_F + BOTTOM_BUFFER_F) * TILE_MULTIPLIER_Y_F;
 
-const TILE_LINE_SIZE: usize =
-    (TILE_X + LEFT_BUFFER + RIGHT_BUFFER) * TILE_MULTIPLIER_X * TILES_PER_ROW;
-const TILE_HEIGHT_SIZE: usize =
-    (TILE_Y + TOP_BUFFER + BOTTOM_BUFFER) * TILE_MULTIPLIER_Y * ROWS_OF_TILES;
+const TILE_LINE_SIZE: usize = TILE_X_TOTAL * TILES_PER_ROW;
+const TILE_HEIGHT_SIZE: usize = TILE_Y_TOTAL * ROWS_OF_TILES;
 
 const TILE_LAYOUT_SIZE: usize = TILE_LINE_SIZE * TILE_HEIGHT_SIZE * BYTES_PER_PIXEL;
 
@@ -602,18 +608,12 @@ impl MyApp {
 
             // First figure out the row we're on and the first entry for it's
             // first pixel.
-            let row_start_base = loc / TILES_PER_ROW
-                * (TILE_Y + TOP_BUFFER + BOTTOM_BUFFER)
-                * TILE_MULTIPLIER_Y
-                * TILE_LINE_SIZE
-                * BYTES_PER_PIXEL;
+            let row_start_base =
+                loc / TILES_PER_ROW * TILE_Y_TOTAL * TILE_LINE_SIZE * BYTES_PER_PIXEL;
 
             // Now move N boxes over to find the box start pixel.
-            let box_start_base = row_start_base
-                + (TILE_X + LEFT_BUFFER + RIGHT_BUFFER)
-                    * TILE_MULTIPLIER_X
-                    * (loc % TILES_PER_ROW)
-                    * BYTES_PER_PIXEL;
+            let box_start_base =
+                row_start_base + TILE_X_TOTAL * (loc % TILES_PER_ROW) * BYTES_PER_PIXEL;
 
             // Now also adjust it N pixels down and over to account for buffers.
             // This way the painting below just deals with correct offsets into
@@ -626,9 +626,9 @@ impl MyApp {
             // be hovered over. The rest of the tile painting below will write over the
             // rest so this just becomes our outline.
             if chrtiles.hovered == Some(orig) {
-                for y in 0..(TILE_Y + TOP_BUFFER + BOTTOM_BUFFER) * TILE_MULTIPLIER_Y {
+                for y in 0..TILE_Y_TOTAL {
                     let row = box_start_base + y * TILE_LINE_SIZE * BYTES_PER_PIXEL;
-                    for x in 0..(TILE_X + LEFT_BUFFER + RIGHT_BUFFER) * TILE_MULTIPLIER_X {
+                    for x in 0..TILE_X_TOTAL {
                         chrtiles.data[row + x * BYTES_PER_PIXEL] = egui::Color32::GRAY.r();
                         chrtiles.data[row + x * BYTES_PER_PIXEL + 1] = egui::Color32::GRAY.g();
                         chrtiles.data[row + x * BYTES_PER_PIXEL + 2] = egui::Color32::GRAY.b();
