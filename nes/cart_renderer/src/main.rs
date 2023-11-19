@@ -90,8 +90,14 @@ struct MyApp {
     // The left side CHR tileset (first 256)
     left: TextureHandle,
 
+    // Details about the left tileset image.
+    left_image: Option<egui::Response>,
+
     // The right side CHR tileset (first 256)
     right: TextureHandle,
+
+    // Details about the right tileset image.
+    right_image: Option<egui::Response>,
 
     // The textures which show an entire PAL pallete at once.
     pals: Vec<TextureHandle>,
@@ -129,6 +135,12 @@ struct MyApp {
 
     // Number of frames we've done.
     frame_count: usize,
+
+    // The tile we most recently hovered over.
+    hovered: Option<usize>,
+
+    // The previous hovered tile.
+    last_hovered: Option<usize>,
 }
 
 const PALETTE_SQ_X: usize = 40;
@@ -146,23 +158,44 @@ const DEFAULT_BACKGROUND: usize = 0x3F;
 const DEFAULT_FOREGROUND: usize = 0x30;
 
 const TILE_X: usize = 8;
+const TILE_X_F: f32 = 8.0;
+
 const TILE_Y: usize = 8;
+const TILE_Y_F: f32 = 8.0;
 const TILES_PER_ROW: usize = 16;
+const TILES_PER_ROW_F: f32 = 16.0;
+
 const ROWS_OF_TILES: usize = 16;
+const TOP_BUFFER: usize = 1;
+const TOP_BUFFER_F: f32 = 1.0;
+
+const BOTTOM_BUFFER: usize = 1;
+const BOTTOM_BUFFER_F: f32 = 1.0;
+const LEFT_BUFFER: usize = 1;
+const LEFT_BUFFER_F: f32 = 1.0;
+const RIGHT_BUFFER: usize = 1;
+const RIGHT_BUFFER_F: f32 = 1.0;
 
 // By default this is only 128 pixels wide which is hard to see on any modern display
-// so we'll upsize by Xx in each direction.
+// so we'll upsize by 2x in each direction.
+// TODO(jchacon): Should this be configurable at runtime?
 const TILE_MULTIPLIER_X: usize = 2;
-const TILE_MULTIPLIER_Y: usize = 2;
-const TILE_LINE_SIZE: usize = TILE_X * TILE_MULTIPLIER_X * TILES_PER_ROW;
+const TILE_MULTIPLIER_X_F: f32 = 2.0;
 
-const TILE_LAYOUT_SIZE: usize = TILE_X
-    * TILE_MULTIPLIER_X
-    * TILE_Y
-    * TILE_MULTIPLIER_Y
-    * TILES_PER_ROW
-    * ROWS_OF_TILES
-    * BYTES_PER_PIXEL;
+const TILE_MULTIPLIER_Y: usize = 2;
+const TILE_MULTIPLIER_Y_F: f32 = 2.0;
+
+const TILE_X_TOTAL_F: f32 = (LEFT_BUFFER_F + TILE_X_F + RIGHT_BUFFER_F) * TILE_MULTIPLIER_X_F;
+const TILE_Y_TOTAL_F: f32 = (TOP_BUFFER_F + TILE_Y_F + BOTTOM_BUFFER_F) * TILE_MULTIPLIER_Y_F;
+
+const TILE_LINE_SIZE: usize =
+    (TILE_X + LEFT_BUFFER + RIGHT_BUFFER) * TILE_MULTIPLIER_X * TILES_PER_ROW;
+const TILE_HEIGHT_SIZE: usize =
+    (TILE_Y + TOP_BUFFER + BOTTOM_BUFFER) * TILE_MULTIPLIER_Y * ROWS_OF_TILES;
+
+const TILE_LAYOUT_SIZE: usize = TILE_LINE_SIZE * TILE_HEIGHT_SIZE * BYTES_PER_PIXEL;
+
+const TILES_PER_IMAGE: usize = 256;
 
 struct ChrTiles<'a> {
     tiles: &'a [Vec<Tile>],
@@ -173,6 +206,7 @@ struct ChrTiles<'a> {
     colors: &'a [usize; NUM_COLORS],
     data: &'a mut Box<[u8]>,
     color_source: &'a Vec<Data>,
+    hovered: Option<usize>,
 }
 
 impl MyApp {
@@ -227,25 +261,13 @@ impl MyApp {
         // base texture to update on every draw. i.e. the first update will select the actual
         // correct entries for this.
         let data = vec![0xFF; TILE_LAYOUT_SIZE].into_boxed_slice();
-        let im = egui::ColorImage::from_rgb(
-            [
-                TILE_X * TILE_MULTIPLIER_X * TILES_PER_ROW,
-                TILE_Y * TILE_MULTIPLIER_Y * ROWS_OF_TILES,
-            ],
-            &data,
-        );
+        let im = egui::ColorImage::from_rgb([TILE_LINE_SIZE, TILE_HEIGHT_SIZE], &data);
         let left = cc.egui_ctx.load_texture(
             "Left CHR Tiles",
             egui::ImageData::Color(im.into()),
             TextureOptions::default(),
         );
-        let im = egui::ColorImage::from_rgb(
-            [
-                TILE_X * TILE_MULTIPLIER_X * TILES_PER_ROW,
-                TILE_Y * TILE_MULTIPLIER_Y * ROWS_OF_TILES,
-            ],
-            &data,
-        );
+        let im = egui::ColorImage::from_rgb([TILE_LINE_SIZE, TILE_HEIGHT_SIZE], &data);
         let right = cc.egui_ctx.load_texture(
             "Right CHR Tiles",
             egui::ImageData::Color(im.into()),
@@ -254,7 +276,9 @@ impl MyApp {
         Self {
             tiles,
             left,
+            left_image: None,
             right,
+            right_image: None,
             pals,
             colors_per_pal,
             selected_pal: 0,
@@ -273,6 +297,8 @@ impl MyApp {
             last_selected_chr: 0,
             last_colors: [0; 4],
             frame_count: 0,
+            hovered: None,
+            last_hovered: None,
         }
     }
 
@@ -284,7 +310,9 @@ impl MyApp {
         let Self {
             tiles: _,
             left: _,
+            left_image: _,
             right: _,
+            right_image: _,
             pals: _,
             colors_per_pal,
             selected_pal,
@@ -298,6 +326,8 @@ impl MyApp {
             last_selected_chr: _,
             last_colors: _,
             frame_count: _,
+            hovered: _,
+            last_hovered: _,
         } = self;
 
         let clrs: &Vec<TextureHandle>;
@@ -355,11 +385,14 @@ impl MyApp {
     // |   first |     | 2nd   |
     // |    128  |     |  128  |
     // _________________________
+    #[allow(clippy::too_many_lines)]
     fn main_ui(&mut self, ui: &mut Ui) {
         let Self {
             tiles: _,
             left,
+            left_image,
             right,
+            right_image,
             pals: _,
             colors_per_pal: _,
             selected_pal,
@@ -373,6 +406,8 @@ impl MyApp {
             last_selected_chr,
             last_colors,
             frame_count,
+            hovered,
+            last_hovered,
         } = self;
         *frame_count += 1;
 
@@ -443,10 +478,12 @@ impl MyApp {
             || *last_selected_pal != *selected_pal
             || *last_selected_chr != *selected_chr
             || *last_colors != *colors
+            || *last_hovered != *hovered
         {
             *last_selected_pal = *selected_pal;
             *last_selected_chr = *selected_chr;
             *last_colors = *colors;
+            *last_hovered = *hovered;
             Self::create_chr_tiles(&mut ChrTiles {
                 tiles: &self.tiles,
                 left,
@@ -456,19 +493,82 @@ impl MyApp {
                 colors,
                 data,
                 color_source,
+                hovered: *hovered,
             });
         }
 
         // Every frame show the current tilesets with some separation.
         // The above only redraws the textures on actual changes so this is
         // fast since the GPU already has the images generally.
+
         ui.horizontal(|ui| {
-            ui.image(&*left);
+            ui.add_space(10.0);
+
+            *left_image = Some(ui.image(&*left));
             // Space so they fill the space equally. Determined emperically.
             // TODO(jchacon): Should be a way to auto lay this out?
-            ui.add_space(123.0);
-            ui.image(&*right);
+            ui.add_space(250.0);
+            *right_image = Some(ui.image(&*right));
+            ui.add_space(10.0);
         });
+
+        ui.input(|i| {
+            if let Some(hp) = i.pointer.hover_pos() {
+                #[allow(clippy::unwrap_used)]
+                let left_tile = Self::tile_num(
+                    left_image.as_ref().unwrap().rect,
+                    hp,
+                    TILE_X_TOTAL_F,
+                    TILE_Y_TOTAL_F,
+                    TILES_PER_ROW_F,
+                );
+                #[allow(clippy::unwrap_used)]
+                let right_tile = Self::tile_num(
+                    right_image.as_ref().unwrap().rect,
+                    hp,
+                    TILE_X_TOTAL_F,
+                    TILE_Y_TOTAL_F,
+                    TILES_PER_ROW_F,
+                );
+                match (left_tile, right_tile) {
+                    (None, None) => *hovered = None,
+                    (None, Some(mut t)) => {
+                        t += TILES_PER_IMAGE;
+                        *hovered = Some(t);
+                    }
+                    (Some(t), None) => {
+                        *hovered = Some(t);
+                    }
+                    (Some(_), Some(_)) => panic!("Hovering over both images at once?"),
+                }
+            }
+        });
+    }
+
+    fn tile_num(
+        window: egui::Rect,
+        hover: egui::Pos2,
+        tile_x: f32,
+        tile_y: f32,
+        num_per_row: f32,
+    ) -> Option<usize> {
+        let min = window.min;
+        let max = window.max;
+        // Make sure hover is actually inside the box. For a fast moving
+        // pointer it might register just outside.
+        if hover.x < min.x || hover.x >= max.x || hover.y < min.y || hover.y >= max.y {
+            return None;
+        }
+
+        // 10.0-330.0 , 269.3-589.3
+        // loc 242.7, 537.3
+        let x_tile = hover.x - min.x; // 242.7 - 10.0 == 232.7
+        let y_tile = hover.y - min.y; // 537.3 - 330.0 == 207.3
+        let tx = (x_tile / tile_x).floor(); // 12
+        let ty = (y_tile / tile_y).floor(); // 9
+
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        Some((tx + (ty * num_per_row)) as usize)
     }
 
     // `create_chr_tiles` does all of the heavy lifting to take the 256 tiles
@@ -481,21 +581,63 @@ impl MyApp {
         let colors = chrtiles.colors;
         let color_source = chrtiles.color_source;
 
+        // Mass fill the slice with white. We can just use one index here
+        // since white is the same value for all 3.
+        chrtiles.data.fill(egui::Color32::WHITE.r());
+
+        // Once we get over 256 tiles we move to the other image.
+        let mut do_left = true;
+
         for (mut loc, t) in tiles[*selected_chr].iter().enumerate() {
-            // Once we get over 256 tiles we move to the other image.
-            let mut do_left = true;
-            if loc >= tiles[*selected_chr].len() / 2 {
-                do_left = false;
-                loc /= 2;
+            let orig = loc;
+            if loc >= TILES_PER_IMAGE {
+                // Reset to all WHITE again so hover from left side doesn't
+                // carry over.
+                if do_left {
+                    chrtiles.data.fill(egui::Color32::WHITE.r());
+                    do_left = false;
+                }
+                loc -= TILES_PER_IMAGE;
             }
+
             // First figure out the row we're on and the first entry for it's
             // first pixel.
-            let row_start =
-                loc / TILES_PER_ROW * TILE_Y * TILE_MULTIPLIER_Y * TILE_LINE_SIZE * BYTES_PER_PIXEL;
+            let row_start_base = loc / TILES_PER_ROW
+                * (TILE_Y + TOP_BUFFER + BOTTOM_BUFFER)
+                * TILE_MULTIPLIER_Y
+                * TILE_LINE_SIZE
+                * BYTES_PER_PIXEL;
 
             // Now move N boxes over to find the box start pixel.
-            let box_start =
-                row_start + TILE_X * TILE_MULTIPLIER_X * (loc % TILES_PER_ROW) * BYTES_PER_PIXEL;
+            let box_start_base = row_start_base
+                + (TILE_X + LEFT_BUFFER + RIGHT_BUFFER)
+                    * TILE_MULTIPLIER_X
+                    * (loc % TILES_PER_ROW)
+                    * BYTES_PER_PIXEL;
+
+            // Now also adjust it N pixels down and over to account for buffers.
+            // This way the painting below just deals with correct offsets into
+            // the tile data.
+            let box_start = box_start_base
+                + (TOP_BUFFER * TILE_MULTIPLIER_Y * TILE_LINE_SIZE * BYTES_PER_PIXEL)
+                + (LEFT_BUFFER * TILE_MULTIPLIER_X * BYTES_PER_PIXEL);
+
+            // Using box_start_base fill in GREY on each row if this is the tile
+            // be hovered over. The rest of the tile painting below will write over the
+            // rest so this just becomes our outline.
+            if chrtiles.hovered == Some(orig) {
+                for y in 0..(TILE_Y + TOP_BUFFER + BOTTOM_BUFFER) * TILE_MULTIPLIER_Y {
+                    let row = box_start_base + y * TILE_LINE_SIZE * BYTES_PER_PIXEL;
+                    for x in 0..(TILE_X + LEFT_BUFFER + RIGHT_BUFFER) * TILE_MULTIPLIER_X {
+                        chrtiles.data[row + x * BYTES_PER_PIXEL] = egui::Color32::GRAY.r();
+                        chrtiles.data[row + x * BYTES_PER_PIXEL + 1] = egui::Color32::GRAY.g();
+                        chrtiles.data[row + x * BYTES_PER_PIXEL + 2] = egui::Color32::GRAY.b();
+                    }
+                }
+            }
+
+            // For each actual tile use the offsets computed above to just iterate
+            // through each 8x8 tiles (blown up as needed).
             for y in 0..TILE_Y {
                 for yi in 0..TILE_MULTIPLIER_Y {
                     // Finally for each line adjust by the row we're on for each line.
@@ -521,13 +663,8 @@ impl MyApp {
                     }
                 }
             }
-            let im = egui::ColorImage::from_rgb(
-                [
-                    TILE_X * TILE_MULTIPLIER_X * TILES_PER_ROW,
-                    TILE_Y * TILE_MULTIPLIER_Y * ROWS_OF_TILES,
-                ],
-                chrtiles.data,
-            );
+
+            let im = egui::ColorImage::from_rgb([TILE_LINE_SIZE, TILE_HEIGHT_SIZE], chrtiles.data);
 
             if do_left {
                 chrtiles.left.set(im, TextureOptions::default());
