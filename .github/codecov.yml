@@ -22,6 +22,7 @@ ignore:
   - "monitor_gui/src/*.rs"
   - "monitor_tui/src/*.rs"
   - "nes/nes_pal_render/src/*.rs"
+  - "nes/cart_renderer/src/*.rs"
 
 # Make comments less noisy
 comment:

@@ -1,6 +1,5 @@
 //! `nes_pal` implements a library for loading NES .pal palette files and
 //! returning their parsed structs.
-
 use color_eyre::eyre::{eyre, Result};
 
 #[cfg(test)]
