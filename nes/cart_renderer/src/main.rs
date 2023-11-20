@@ -175,6 +175,8 @@ const DEFAULT_FOREGROUND: usize = 0x30;
 // is a 20x20 tile image. Various iterations later when creating the tile image
 // will need various combinations of these values and sometimes as floats
 // due to how egui works with pixels.
+// The single tile varieties are there for displaying the 8x tile selected during
+// hover over.
 const TILE_X: usize = 8;
 const TILE_X_F: f32 = 8.0;
 
@@ -221,6 +223,10 @@ const TILE_LAYOUT_SIZE: usize = TILE_LINE_SIZE * TILE_HEIGHT_SIZE * BYTES_PER_PI
 const SINGLE_TILE_LAYOUT_SIZE: usize = SINGLE_TILE_X_TOTAL * SINGLE_TILE_Y_TOTAL * BYTES_PER_PIXEL;
 const TILES_PER_IMAGE: usize = 256;
 
+// The labels for the 4 buttons used to select colors.
+const BUTTONS: [&str; NUM_COLORS] = ["Background", "Color 1", "Color 2", "Color 3"];
+
+// All the data needed for building up the chr tile images and setting new textures.
 struct ChrTiles<'a> {
     tiles: &'a [Vec<Tile>],
     left: &'a mut TextureHandle,
@@ -235,6 +241,7 @@ struct ChrTiles<'a> {
     tile_data: &'a mut Box<[u8]>,
 }
 
+// When drawing a given tile all the data needed to make that happen.
 struct DrawData<'a> {
     box_start: usize,
     mult_x: usize,
@@ -247,7 +254,6 @@ struct DrawData<'a> {
 }
 
 impl MyApp {
-    #[allow(clippy::needless_pass_by_value)]
     fn new(cc: &eframe::CreationContext<'_>, datas: Vec<Data>, tiles: Vec<Vec<Tile>>) -> Self {
         use FontFamily::{Monospace, Proportional};
 
@@ -594,6 +600,8 @@ impl MyApp {
             }
             if !*hover_locked {
                 if let Some(hp) = i.pointer.hover_pos() {
+                    // SAFETY: The unwrap is fine since setup ensures left/right image
+                    //         always have a value.
                     #[allow(clippy::unwrap_used)]
                     let left_tile = Self::tile_num(
                         left_image.as_ref().unwrap().rect,
@@ -713,6 +721,8 @@ impl MyApp {
                         chrtiles.data[row + x * BYTES_PER_PIXEL + 2] = egui::Color32::GRAY.b();
                     }
                 }
+
+                // Draw in the 8x tile in between the 2 CHR images.
                 Self::draw_a_tile(
                     &DrawData {
                         box_start: 0,
@@ -787,8 +797,6 @@ impl MyApp {
         }
     }
 }
-
-const BUTTONS: [&str; NUM_COLORS] = ["Background", "Color 1", "Color 2", "Color 3"];
 
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
