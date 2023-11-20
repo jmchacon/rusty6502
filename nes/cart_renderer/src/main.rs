@@ -576,13 +576,20 @@ impl MyApp {
         });
 
         ui.input(|i| {
+            // If we're not enabled this means the modal is up so we don't want
+            // tile state changing because we overlap that portion.
+            if !ui.is_enabled() {
+                return;
+            }
             // If we were locked and hit the secondary button clear it.
-            if *hover_locked && i.pointer.secondary_clicked() {
+            if *hover_locked && i.pointer.secondary_pressed() {
                 *hover_locked = false;
                 return;
             }
 
-            if !*hover_locked && i.pointer.primary_clicked() && hovered.is_some() {
+            // If we're hovering over something and we pressed this frame lock
+            // it into place.
+            if !*hover_locked && i.pointer.primary_pressed() && hovered.is_some() {
                 *hover_locked = true;
             }
             if !*hover_locked {
