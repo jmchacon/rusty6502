@@ -5541,6 +5541,8 @@ macro_rules! cpu_new {
         /// operation. Anything else will return errors.
         #[must_use]
         pub fn new(def: ChipDef<'a>) -> Self {
+            let r = Rc::new(RefCell::new(RecordRAM::new(def.ram)));
+            r.borrow_mut().power_on();
             Self {
                 a: Wrapping(0x00),
                 x: Wrapping(0x00),
@@ -5557,7 +5559,7 @@ macro_rules! cpu_new {
                 interrupt_state: InterruptState::default(),
                 skip_interrupt: SkipInterrupt::default(),
                 clocks: 0,
-                ram: Rc::new(RefCell::new(RecordRAM::new(def.ram))),
+                ram: r,
                 op: Operation::default(),
                 op_raw: 0x00,
                 op_val: 0x00,
@@ -5598,6 +5600,7 @@ impl<'a> CPU6510<'a> {
         r.power_on();
         let io = r.io_state.clone();
         let ram = Rc::new(RefCell::new(RecordRAM::new(r)));
+        ram.borrow_mut().power_on();
         Self {
             a: Wrapping(0x00),
             x: Wrapping(0x00),
