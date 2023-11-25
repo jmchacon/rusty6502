@@ -21,6 +21,10 @@ pub trait Chip {
     /// clock cycle from possibly seeing differing views of data.
     /// i.e. the Atari 2600 is full of latches which this can come into play.
     ///
+    /// For instance if some write would trigger pulling RDY then it should be
+    /// noted in tick() but not actually set until `tick_done` is called. This
+    /// allows for accurate cycle emulation.
+    ///
     /// # Errors
     /// If calling results in a lockup/illegal condition an error
     /// will be returned.

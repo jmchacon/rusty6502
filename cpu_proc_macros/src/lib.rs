@@ -154,7 +154,7 @@ pub fn cpu_base_struct(args: TokenStream, input: TokenStream) -> TokenStream {
             syn::Field::parse_named
                 .parse2(quote! {
                   #[doc = " Memory implementation used for all RAM access."]
-                  ram: Rc<RefCell<Box<dyn Memory>>>
+                  ram: Rc<RefCell<RecordRAM>>
                 })
                 .unwrap(),
         );

@@ -477,6 +477,11 @@ pub enum State {
     /// WAI will cause this state where processing is paused
     /// until an interrupt happens.
     WaitingForInterrupt,
+
+    /// RDY is the state we remain in while RDY is asserted.
+    /// Clock will tick but the CPU just keeps reading the same
+    /// (last) addr over and over.
+    RDY,
 }
 
 #[derive(Copy, Clone, Default, Debug, Display, PartialEq)]
@@ -891,7 +896,9 @@ impl fmt::Display for CPUState {
     }
 }
 
-/// The interface any 6502 implementation must conform to.
+/// The interface any 6502 implementation must conform to. This provides
+/// opcode functions as well as enough internal state to implement debugging
+/// (i.e. get/setting the PC, getting RAM, disassemble, etc)
 pub trait CPU<'a>: Chip {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
@@ -900,6 +907,7 @@ pub trait CPU<'a>: Chip {
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
         // Default impl is NMOS
+
         let hm: &AHashMap<AddressMode, Vec<u8>>;
         // SAFETY: When we built NMOS_OPCODES we validated all Opcodes were present
         unsafe {
@@ -919,7 +927,8 @@ pub trait CPU<'a>: Chip {
 
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
-        //         an index lookup.
+        //         an index lookup. This is a 5-8% performance improvement
+        //         depending on code paths.
         unsafe { *nmos_opcodes_values().get_unchecked(usize::from(op)) }
     }
 
@@ -955,7 +964,7 @@ pub trait CPU<'a>: Chip {
     fn reset(&mut self) -> Result<OpState>;
 
     /// ram returns a reference to the Memory implementation.
-    fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>>;
+    fn ram(&self) -> Rc<RefCell<dyn Memory>>;
 
     /// pc returns the current PC value.
     fn pc(&self) -> u16;
@@ -1068,11 +1077,63 @@ pub trait CPU<'a>: Chip {
     }
 }
 
+#[derive(Debug, Display, PartialEq)]
+enum LastBusAction {
+    Read,
+    Write,
+}
+
+// Each 6502 implementation is built up from a few key items since 80% of the
+// basic implementation is the same (even for CMOS) and on NMOS sans BCD the
+// implementation is 100% the same. This leverages some internal traits with
+// default implementations in order to avoid excess macros which can be harder
+// to follow. Originally this was one set of code with an internal type enum
+// and checked in the locations that needed it. Splitting into 4 distinct impls
+// shaved 5-10% of runtime for heavy use of those functions (such as ADC/SBC).
+// This of course at the expense of a large number of traits/macros which are
+// explained below.
+//
+// NOTE: It is ok for a trait to reference a member function that isn't part
+//       of that trait so long as it exists once monomorphification happens.
+//       i.e. code in the Chip trait (tick) needs to call process_opcode which
+//       for NMOS is implemented in CPUNmosInternal but the CMOS chip just
+//       implements in it's direct impl block.
+//
+// A CPU6502 implements:
+//
+// CPU - The public API exposed for debugging/basic functions. As a lot of these
+//       functions are implemented similarly there are macros for those later on.
+//       These can't have default impls because that would require exposing all
+//       the get/set methods in CPUInternal (traits don't have member variables).
+//       This is most implemented then as macros (cpu_nmos_power_reset, cpu_impl)
+//       for most NMOS with specific implementations for Ricoh/CMOS power (cpu_cmos_ricoh_power_reset)
+//       and CMOS implementing other parts directly (non macro).
+// Chip - The public trait for all chips which implement tick and tick_done. This
+//        is implemented as a macro for NMOS (cpu_impl_nmos) and directly
+//        for CMOS.
+// CPUInternal - Private crate trait which implements all the common instructions/modes
+//               as default functions allowing easy reuse across impls. Then the
+//               areas which need changing (ADC/SBC for Ricoh for instance) can
+//               be overriden very compactly. This also implements a set of
+//               internal get/set methods for A/X/Y/PC/S/P, state, ram, etc
+//               since otherwise default impls would be trying to access self.X
+//               and that can't be done as traits don't have member vars.
+//               These accessors (pc() for instance) are generated via a macro (cpu_internal)
+//               while all the other implementation for this trait is done as default
+//               member functions.
+// CPUNmosInternal - Private trait for the undocumented NMOS opcodes. Again done
+//                   as default functions so all 3 NMOS chips can just use as-is.
+//
+// Finally its own impl block provides a new() function which is done as a macro
+// on all but the 6510 (cpu_new) since it needs to implement the I/O ports.
+// The CMOS version implements process_opcode here as well as any of the CMOS specific
+// implementations.
+
 // NOTE: All of the 65xx implementations below generate their base struct from
 // the attribute attached to them. Use cargo-expand or read the proc macro for
 // the description of all the members.
 
-/// The NMOS 6502 implementation for the 6502 architecture
+/// The NMOS 6502 implementation for the 6502 architecture.
 #[cpu_base_struct]
 pub struct CPU6502<'a> {}
 
@@ -1096,6 +1157,8 @@ pub struct CPURicoh<'a> {}
 #[cpu_base_struct]
 pub struct CPU65C02<'a> {}
 
+// Some common external trait impls for all the cpus which can be templated
+// out with macros.
 macro_rules! common_cpu_funcs {
   ($cpu:ident, $t:expr) => {
       impl fmt::Debug for $cpu<'_> {
@@ -1115,7 +1178,7 @@ macro_rules! common_cpu_funcs {
 
       impl fmt::Display for $cpu<'_> {
           fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-              let _ = self.disassemble(&mut self.disassemble.borrow_mut(), self.pc.0, self.ram.borrow().as_ref());
+              let _ = self.disassemble(&mut self.disassemble.borrow_mut(), self.pc.0, &*self.ram.borrow());
 
               write!(
                   f,
@@ -1143,1091 +1206,6 @@ common_cpu_funcs!(CPU6510, "6510");
 common_cpu_funcs!(CPURicoh, "Ricoh");
 common_cpu_funcs!(CPU65C02, "CMOS");
 
-// Common implementations which are NMOS only specific (undocumented opcodes
-// and opcode processing). CMOS can implement `process_opcode` directly and
-// doesn't need the rest.
-trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
-    #[allow(clippy::too_many_lines)]
-    fn process_opcode(&mut self) -> Result<OpState> {
-        match (self.op().op, self.op().mode) {
-            // 0x00 - BRK #i
-            (Opcode::BRK, AddressMode::Immediate) => self.brk(),
-            // 0x01 - ORA (d,x)
-            (Opcode::ORA, AddressMode::IndirectX) => {
-                self.load_instruction(Self::addr_indirect_x, Self::ora)
-            }
-            // 0x02 0x12 0x22 0x32 0x42 0x52 0x62 0x72 0x92 0xB2 0xD2 0xF2 - HLT
-            (Opcode::HLT, AddressMode::Implied) => {
-                self.state_mut(State::Halted);
-                Ok(OpState::Done)
-            }
-            // 0x03 - SLO (d,x)
-            (Opcode::SLO, AddressMode::IndirectX) => {
-                self.rmw_instruction(Self::addr_indirect_x, Self::slo)
-            }
-            // 0x04 0x44 0x64 - NOP d
-            (Opcode::NOP, AddressMode::ZeroPage) => self.addr_zp(&InstructionMode::Load),
-            // 0x05 - ORA d
-            (Opcode::ORA, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::ora),
-            // 0x06 - ASL d
-            (Opcode::ASL, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::asl),
-            // 0x07 - SLO d
-            (Opcode::SLO, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::slo),
-            // 0x08 - PHP
-            (Opcode::PHP, AddressMode::Implied) => self.php(),
-            // 0x09 - ORA #i
-            (Opcode::ORA, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::ora)
-            }
-            // 0x0A - ASL
-            (Opcode::ASL, AddressMode::Implied) => self.asl_acc(),
-            // 0x0B 0x2B - ANC #i
-            (Opcode::ANC, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::anc)
-            }
-            // 0x0C - NOP a
-            (Opcode::NOP, AddressMode::Absolute) => self.addr_absolute(&InstructionMode::Load),
-            // 0x0D - ORA a
-            (Opcode::ORA, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::ora)
-            }
-            // 0x0E - ASL a
-            (Opcode::ASL, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::asl)
-            }
-            // 0x0F - SLO a
-            (Opcode::SLO, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::slo)
-            }
-            // 0x10 - BPL *+r
-            (Opcode::BPL, AddressMode::Relative) => self.bpl(),
-            // 0x11 - ORA (d),y
-            (Opcode::ORA, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::ora)
-            }
-            // 0x12 - HLT see 0x02
-            // 0x13 - SLO (d),y
-            (Opcode::SLO, AddressMode::IndirectY) => {
-                self.rmw_instruction(Self::addr_indirect_y, Self::slo)
-            }
-            // 0x14 0x34 0x54 0x74 0xD4 0xF4 - NOP d,x
-            (Opcode::NOP, AddressMode::ZeroPageX) => self.addr_zp_x(&InstructionMode::Load),
-            // 0x15 - ORA d,x
-            (Opcode::ORA, AddressMode::ZeroPageX) => {
-                self.load_instruction(Self::addr_zp_x, Self::ora)
-            }
-            // 0x16 - ASL d,x
-            (Opcode::ASL, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::asl)
-            }
-            // 0x17 - SLO d,x
-            (Opcode::SLO, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::slo)
-            }
-            // 0x18 - CLC
-            (Opcode::CLC, AddressMode::Implied) => self.clc(),
-            // 0x19 - ORA a,y
-            (Opcode::ORA, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::ora)
-            }
-            // 0x1A 0x3A 0x5A 0x7A 0xDA 0xEA 0xFA - NOP
-            (Opcode::NOP, AddressMode::Implied) => Ok(OpState::Done),
-            // 0x1B - SLO a,y
-            (Opcode::SLO, AddressMode::AbsoluteY) => {
-                self.rmw_instruction(Self::addr_absolute_y, Self::slo)
-            }
-            // 0x1C 0x3C 0x5C 0x7C 0xDC 0xFC - NOP a,x
-            (Opcode::NOP, AddressMode::AbsoluteX) => self.addr_absolute_x(&InstructionMode::Load),
-            // 0x1D - ORA a,x
-            (Opcode::ORA, AddressMode::AbsoluteX) => {
-                self.load_instruction(Self::addr_absolute_x, Self::ora)
-            }
-            // 0x1E - ASL a,x
-            (Opcode::ASL, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::asl)
-            }
-            // 0x1F - SLO a,x
-            (Opcode::SLO, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::slo)
-            }
-            // 0x20 - JSR a
-            (Opcode::JSR, AddressMode::Absolute) => self.jsr(),
-            // 0x21 - AND (d,x)
-            (Opcode::AND, AddressMode::IndirectX) => {
-                self.load_instruction(Self::addr_indirect_x, Self::and)
-            }
-            // 0x22 - HLT see 0x02
-            // 0x23 - RLA (d,x)
-            (Opcode::RLA, AddressMode::IndirectX) => {
-                self.rmw_instruction(Self::addr_indirect_x, Self::rla)
-            }
-            // 0x24 - BIT d
-            (Opcode::BIT, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::bit),
-            // 0x25 - AND d
-            (Opcode::AND, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::and),
-            // 0x26 - ROL d
-            (Opcode::ROL, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rol),
-            // 0x27 - RLA d
-            (Opcode::RLA, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rla),
-            // 0x28 - PLP
-            (Opcode::PLP, AddressMode::Implied) => self.plp(),
-            // 0x29 - AND #i
-            (Opcode::AND, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::and)
-            }
-            // 0x2A - ROL
-            (Opcode::ROL, AddressMode::Implied) => self.rol_acc(),
-            // 0x2B - ANC #i see 0x0B
-            // 0x2C - BIT a
-            (Opcode::BIT, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::bit)
-            }
-            // 0x2D - AND a
-            (Opcode::AND, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::and)
-            }
-            // 0x2E - ROL a
-            (Opcode::ROL, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::rol)
-            }
-            // 0x2F - RLA a
-            (Opcode::RLA, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::rla)
-            }
-            // 0x30 - BMI *+r
-            (Opcode::BMI, AddressMode::Relative) => self.bmi(),
-            // 0x31 - AND (d),y
-            (Opcode::AND, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::and)
-            }
-            // 0x32 - HLT see 0x02
-            // 0x33 - RLA (d),y
-            (Opcode::RLA, AddressMode::IndirectY) => {
-                self.rmw_instruction(Self::addr_indirect_y, Self::rla)
-            }
-            // 0x34 - NOP d,x see 0x14
-            // 0x35 - AND d,x
-            (Opcode::AND, AddressMode::ZeroPageX) => {
-                self.load_instruction(Self::addr_zp_x, Self::and)
-            }
-            // 0x36 - ROL d,x
-            (Opcode::ROL, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::rol)
-            }
-            // 0x37 - RLA d,x
-            (Opcode::RLA, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::rla)
-            }
-            // 0x38 - SEC
-            (Opcode::SEC, AddressMode::Implied) => self.sec(),
-            // 0x39 - AND a,y
-            (Opcode::AND, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::and)
-            }
-            // 0x3A - NOP see 0x1A
-            // 0x3B - RLA a,y
-            (Opcode::RLA, AddressMode::AbsoluteY) => {
-                self.rmw_instruction(Self::addr_absolute_y, Self::rla)
-            }
-            // 0x3C - NOP see 0x1C
-            // 0x3D - AND a,x
-            (Opcode::AND, AddressMode::AbsoluteX) => {
-                self.load_instruction(Self::addr_absolute_x, Self::and)
-            }
-            // 0x3E - ROL a,x
-            (Opcode::ROL, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::rol)
-            }
-            // 0x3F - RLA a,x
-            (Opcode::RLA, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::rla)
-            }
-            // 0x40 - RTI
-            (Opcode::RTI, AddressMode::Implied) => self.rti(),
-            // 0x41 - EOR (d,x)
-            (Opcode::EOR, AddressMode::IndirectX) => {
-                self.load_instruction(Self::addr_indirect_x, Self::eor)
-            }
-            // 0x42 - HLT see 0x02
-            // 0x43 - SRE (d,x)
-            (Opcode::SRE, AddressMode::IndirectX) => {
-                self.rmw_instruction(Self::addr_indirect_x, Self::sre)
-            }
-            // 0x44 - NOP see 0x04
-            // 0x45 - EOR d
-            (Opcode::EOR, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::eor),
-            // 0x46 - LSR d
-            (Opcode::LSR, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::lsr),
-            // 0x47 - SRE d
-            (Opcode::SRE, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::sre),
-            // 0x48 - PHA
-            (Opcode::PHA, AddressMode::Implied) => self.pha(),
-            // 0x49 - EOR #i
-            (Opcode::EOR, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::eor)
-            }
-            // 0x4A - LSR
-            (Opcode::LSR, AddressMode::Implied) => self.lsr_acc(),
-            // 0x4B - ALR #i
-            (Opcode::ALR, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::alr)
-            }
-            // 0x4C - JMP a
-            (Opcode::JMP, AddressMode::Absolute) => self.jmp(),
-            // 0x4D - EOR a
-            (Opcode::EOR, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::eor)
-            }
-            // 0x4E - LSR a
-            (Opcode::LSR, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::lsr)
-            }
-            // 0x4F - SRE a
-            (Opcode::SRE, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::sre)
-            }
-            // 0x50 - BVC *+r
-            (Opcode::BVC, AddressMode::Relative) => self.bvc(),
-            // 0x51 - EOR (d),y
-            (Opcode::EOR, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::eor)
-            }
-            // 0x52 - HLT 0x02
-            // 0x53 - SRE (d),y
-            (Opcode::SRE, AddressMode::IndirectY) => {
-                self.rmw_instruction(Self::addr_indirect_y, Self::sre)
-            }
-            // 0x54 - NOP 0x14
-            // 0x55 - EOR d,x
-            (Opcode::EOR, AddressMode::ZeroPageX) => {
-                self.load_instruction(Self::addr_zp_x, Self::eor)
-            }
-            // 0x56 - LSR d,x
-            (Opcode::LSR, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::lsr)
-            }
-            // 0x57 - SRE d,x
-            (Opcode::SRE, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::sre)
-            }
-            // 0x58 - CLI
-            (Opcode::CLI, AddressMode::Implied) => self.cli(),
-            // 0x59 - EOR a,y
-            (Opcode::EOR, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::eor)
-            }
-            // 0x5A - NOP see 0x1A
-            // 0x5B - SRE a,y
-            (Opcode::SRE, AddressMode::AbsoluteY) => {
-                self.rmw_instruction(Self::addr_absolute_y, Self::sre)
-            }
-            // 0x5C - NOP see 0x1C
-            // 0x5D - EOR a,x
-            (Opcode::EOR, AddressMode::AbsoluteX) => {
-                self.load_instruction(Self::addr_absolute_x, Self::eor)
-            }
-            // 0x5E - LSR a,x
-            (Opcode::LSR, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::lsr)
-            }
-            // 0x5F - SRE a,x
-            (Opcode::SRE, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::sre)
-            }
-            // 0x60 - RTS
-            (Opcode::RTS, AddressMode::Implied) => self.rts(),
-            // 0x61 - ADC (d,x)
-            (Opcode::ADC, AddressMode::IndirectX) => {
-                self.load_instruction(Self::addr_indirect_x, Self::adc)
-            }
-            // 0x62 - HLT see 0x02
-            // 0x63 - RRA (d,x)
-            (Opcode::RRA, AddressMode::IndirectX) => {
-                self.rmw_instruction(Self::addr_indirect_x, Self::rra)
-            }
-            // 0x64 - NOP - see 0x04
-            // 0x65 - ADC d
-            (Opcode::ADC, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::adc),
-            // 0x66 - ROR d
-            (Opcode::ROR, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::ror),
-            // 0x67 - RRA d
-            (Opcode::RRA, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rra),
-            // 0x68 - PLA
-            (Opcode::PLA, AddressMode::Implied) => self.pla(),
-            // 0x69 - ADC #i
-            (Opcode::ADC, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::adc)
-            }
-            // 0x6A - ROR
-            (Opcode::ROR, AddressMode::Implied) => self.ror_acc(),
-            // 0x6B - ARR #i
-            (Opcode::ARR, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::arr)
-            }
-            // 0x6C - JMP (a)
-            (Opcode::JMP, AddressMode::AbsoluteIndirect) => self.jmp_indirect(),
-            // 0x6D - ADC a
-            (Opcode::ADC, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::adc)
-            }
-            // 0x6E - ROR a
-            (Opcode::ROR, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::ror)
-            }
-            // 0x6F - RRA a
-            (Opcode::RRA, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::rra)
-            }
-            // 0x70 - BVS *+r
-            (Opcode::BVS, AddressMode::Relative) => self.bvs(),
-            // 0x71 - ADC (d),y
-            (Opcode::ADC, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::adc)
-            }
-            // 0x72 - HLT - see 0x02
-            // 0x73 - RRA (d),y
-            (Opcode::RRA, AddressMode::IndirectY) => {
-                self.rmw_instruction(Self::addr_indirect_y, Self::rra)
-            }
-            // 0x74 - NOP - see 0x14
-            // 0x75 - ADC d,x
-            (Opcode::ADC, AddressMode::ZeroPageX) => {
-                self.load_instruction(Self::addr_zp_x, Self::adc)
-            }
-            // 0x76 - ROR d,x
-            (Opcode::ROR, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::ror)
-            }
-            // 0x77 - RRA d,x
-            (Opcode::RRA, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::rra)
-            }
-            // 0x78 - SEI
-            (Opcode::SEI, AddressMode::Implied) => self.sei(),
-            // 0x79 - ADC a,y
-            (Opcode::ADC, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::adc)
-            }
-            // 0x7A - NOP - see 0x1A
-            // 0x7B - RRA a,y
-            (Opcode::RRA, AddressMode::AbsoluteY) => {
-                self.rmw_instruction(Self::addr_absolute_y, Self::rra)
-            }
-            // 0x7C - NOP - see 0x1C
-            // 0x7D - ADC a,x
-            (Opcode::ADC, AddressMode::AbsoluteX) => {
-                self.load_instruction(Self::addr_absolute_x, Self::adc)
-            }
-            // 0x7E - ROR a,x
-            (Opcode::ROR, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::ror)
-            }
-            // 0x7F - RRA a,x
-            (Opcode::RRA, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::rra)
-            }
-            // 0x80 0x82 0x89 0xC2 0xE2 - NOP #i
-            (Opcode::NOP, AddressMode::Immediate) => self.addr_immediate(&InstructionMode::Load),
-            // 0x81 - STA (d,x)
-            (Opcode::STA, AddressMode::IndirectX) => {
-                self.store_instruction(Self::addr_indirect_x, self.a().0)
-            }
-            // 0x82 - NOP see 0x80
-            // 0x83 - SAX (d,x)
-            (Opcode::SAX, AddressMode::IndirectX) => {
-                self.store_instruction(Self::addr_indirect_x, self.a().0 & self.x().0)
-            }
-            // 0x84 - STY d
-            (Opcode::STY, AddressMode::ZeroPage) => {
-                self.store_instruction(Self::addr_zp, self.y().0)
-            }
-            // 0x85 - STA d
-            (Opcode::STA, AddressMode::ZeroPage) => {
-                self.store_instruction(Self::addr_zp, self.a().0)
-            }
-            // 0x86 - STX d
-            (Opcode::STX, AddressMode::ZeroPage) => {
-                self.store_instruction(Self::addr_zp, self.x().0)
-            }
-            // 0x87 - SAX d
-            (Opcode::SAX, AddressMode::ZeroPage) => {
-                self.store_instruction(Self::addr_zp, self.a().0 & self.x().0)
-            }
-            // 0x88 - DEY
-            (Opcode::DEY, AddressMode::Implied) => {
-                self.load_register(Register::Y, (self.y() - Wrapping(1)).0)
-            }
-            // 0x89 - NOP see 0x80
-            // 0x8A - TXA
-            (Opcode::TXA, AddressMode::Implied) => self.load_register(Register::A, self.x().0),
-            // 0x8B - XAA #i
-            (Opcode::XAA, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::xaa)
-            }
-            // 0x8C - STY a
-            (Opcode::STY, AddressMode::Absolute) => {
-                self.store_instruction(Self::addr_absolute, self.y().0)
-            }
-            // 0x8D - STA a
-            (Opcode::STA, AddressMode::Absolute) => {
-                self.store_instruction(Self::addr_absolute, self.a().0)
-            }
-            // 0x8E - STX a
-            (Opcode::STX, AddressMode::Absolute) => {
-                self.store_instruction(Self::addr_absolute, self.x().0)
-            }
-            // 0x8F - SAX a
-            (Opcode::SAX, AddressMode::Absolute) => {
-                self.store_instruction(Self::addr_absolute, self.a().0 & self.x().0)
-            }
-            // 0x90 - BCC *+r
-            (Opcode::BCC, AddressMode::Relative) => self.bcc(),
-            // 0x91 - STA (d),y
-            (Opcode::STA, AddressMode::IndirectY) => {
-                self.store_instruction(Self::addr_indirect_y, self.a().0)
-            }
-            // 0x92 - HLT see 0x02
-            // 0x93 - AHX (d),y
-            (Opcode::AHX, AddressMode::IndirectY) => self.ahx(Self::addr_indirect_y),
-            // 0x94 - STY d,x
-            (Opcode::STY, AddressMode::ZeroPageX) => {
-                self.store_instruction(Self::addr_zp_x, self.y().0)
-            }
-            // 0x95 - STA d,x
-            (Opcode::STA, AddressMode::ZeroPageX) => {
-                self.store_instruction(Self::addr_zp_x, self.a().0)
-            }
-            // 0x96 - STX d,y
-            (Opcode::STX, AddressMode::ZeroPageY) => {
-                self.store_instruction(Self::addr_zp_y, self.x().0)
-            }
-            // 0x97 - SAX d,y
-            (Opcode::SAX, AddressMode::ZeroPageY) => {
-                self.store_instruction(Self::addr_zp_y, self.a().0 & self.x().0)
-            }
-            // 0x98 - TYA
-            (Opcode::TYA, AddressMode::Implied) => self.load_register(Register::A, self.y().0),
-            // 0x99 - STA a,y
-            (Opcode::STA, AddressMode::AbsoluteY) => {
-                self.store_instruction(Self::addr_absolute_y, self.a().0)
-            }
-            // 0x9A - TXS
-            (Opcode::TXS, AddressMode::Implied) => {
-                self.s_mut(self.x());
-                Ok(OpState::Done)
-            }
-            // 0x9B - TAS a,y
-            (Opcode::TAS, AddressMode::AbsoluteY) => self.tas(),
-            // 0x9C - SHY a,x
-            (Opcode::SHY, AddressMode::AbsoluteX) => self.shy(Self::addr_absolute_x),
-            // 0x9D - STA a,x
-            (Opcode::STA, AddressMode::AbsoluteX) => {
-                self.store_instruction(Self::addr_absolute_x, self.a().0)
-            }
-            // 0x9E - SHX a,y
-            (Opcode::SHX, AddressMode::AbsoluteY) => self.shx(Self::addr_absolute_y),
-            // 0x9F - AHX a,y
-            (Opcode::AHX, AddressMode::AbsoluteY) => self.ahx(Self::addr_absolute_y),
-            // 0xA0 - LDY #i
-            (Opcode::LDY, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::load_register_y)
-            }
-            // 0xA1 - LDA (d,x)
-            (Opcode::LDA, AddressMode::IndirectX) => {
-                self.load_instruction(Self::addr_indirect_x, Self::load_register_a)
-            }
-            // 0xA2 - LDX #i
-            (Opcode::LDX, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::load_register_x)
-            }
-            // 0xA3 - LAX (d,x)
-            (Opcode::LAX, AddressMode::IndirectX) => {
-                self.load_instruction(Self::addr_indirect_x, Self::lax)
-            }
-            // 0xA4 - LDY d
-            (Opcode::LDY, AddressMode::ZeroPage) => {
-                self.load_instruction(Self::addr_zp, Self::load_register_y)
-            }
-            // 0xA5 - LDA d
-            (Opcode::LDA, AddressMode::ZeroPage) => {
-                self.load_instruction(Self::addr_zp, Self::load_register_a)
-            }
-            // 0xA6 - LDX d
-            (Opcode::LDX, AddressMode::ZeroPage) => {
-                self.load_instruction(Self::addr_zp, Self::load_register_x)
-            }
-            // 0xA7 - LAX d
-            (Opcode::LAX, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::lax),
-            // 0xA8 - TAY
-            (Opcode::TAY, AddressMode::Implied) => self.load_register(Register::Y, self.a().0),
-            // 0xA9 - LDA #i
-            (Opcode::LDA, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::load_register_a)
-            }
-            // 0xAA - TAX
-            (Opcode::TAX, AddressMode::Implied) => self.load_register(Register::X, self.a().0),
-            // 0xAB - OAL #i
-            (Opcode::OAL, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::oal)
-            }
-            // 0xAC - LDY a
-            (Opcode::LDY, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::load_register_y)
-            }
-            // 0xAD - LDA a
-            (Opcode::LDA, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::load_register_a)
-            }
-            // 0xAE - LDX a
-            (Opcode::LDX, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::load_register_x)
-            }
-            // 0xAF - LAX a
-            (Opcode::LAX, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::lax)
-            }
-            // 0xB0 - BCS *+r
-            (Opcode::BCS, AddressMode::Relative) => self.bcs(),
-            // 0xB1 - LDA (d),y
-            (Opcode::LDA, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::load_register_a)
-            }
-            // 0xB2 - HLT see 0x02
-            // 0xB3 - LAX (d),y
-            (Opcode::LAX, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::lax)
-            }
-            // 0xB4 - LDY d,x
-            (Opcode::LDY, AddressMode::ZeroPageX) => {
-                self.load_instruction(Self::addr_zp_x, Self::load_register_y)
-            }
-            // 0xB5 - LDA d,x
-            (Opcode::LDA, AddressMode::ZeroPageX) => {
-                self.load_instruction(Self::addr_zp_x, Self::load_register_a)
-            }
-            // 0xB6 - LDX d,y
-            (Opcode::LDX, AddressMode::ZeroPageY) => {
-                self.load_instruction(Self::addr_zp_y, Self::load_register_x)
-            }
-            // 0xB7 - LAX d,y
-            (Opcode::LAX, AddressMode::ZeroPageY) => {
-                self.load_instruction(Self::addr_zp_y, Self::lax)
-            }
-            // 0xB8 - CLV
-            (Opcode::CLV, AddressMode::Implied) => self.clv(),
-            // 0xB9 - LDA a,y
-            (Opcode::LDA, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::load_register_a)
-            }
-            // 0xBA - TSX
-            (Opcode::TSX, AddressMode::Implied) => self.load_register(Register::X, self.s().0),
-            // 0xBB - LAS a,y
-            (Opcode::LAS, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::las)
-            }
-            // 0xBC - LDY a,x
-            (Opcode::LDY, AddressMode::AbsoluteX) => {
-                self.load_instruction(Self::addr_absolute_x, Self::load_register_y)
-            }
-            // 0xBD - LDA a,x
-            (Opcode::LDA, AddressMode::AbsoluteX) => {
-                self.load_instruction(Self::addr_absolute_x, Self::load_register_a)
-            }
-            // 0xBE - LDX a,y
-            (Opcode::LDX, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::load_register_x)
-            }
-            // 0xBF - LAX a,y
-            (Opcode::LAX, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::lax)
-            }
-            // 0xC0 - CPY #i
-            (Opcode::CPY, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::compare_y)
-            }
-            // 0xC1 - CMP (d,x)
-            (Opcode::CMP, AddressMode::IndirectX) => {
-                self.load_instruction(Self::addr_indirect_x, Self::compare_a)
-            }
-            // 0xC2 - NOP see 0x80
-            // 0xC3 - DCP (d,X)
-            (Opcode::DCP, AddressMode::IndirectX) => {
-                self.rmw_instruction(Self::addr_indirect_x, Self::dcp)
-            }
-            // 0xC4 - CPY d
-            (Opcode::CPY, AddressMode::ZeroPage) => {
-                self.load_instruction(Self::addr_zp, Self::compare_y)
-            }
-            // 0xC5 - CMP d
-            (Opcode::CMP, AddressMode::ZeroPage) => {
-                self.load_instruction(Self::addr_zp, Self::compare_a)
-            }
-            // 0xC6 - DEC d
-            (Opcode::DEC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::dec),
-            // 0xC7 - DCP d
-            (Opcode::DCP, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::dcp),
-            // 0xC8 - INY
-            (Opcode::INY, AddressMode::Implied) => {
-                self.load_register(Register::Y, (self.y() + Wrapping(1)).0)
-            }
-            // 0xC9 - CMP #i
-            (Opcode::CMP, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::compare_a)
-            }
-            // 0xCA - DEX
-            (Opcode::DEX, AddressMode::Implied) => {
-                self.load_register(Register::X, (self.x() - Wrapping(1)).0)
-            }
-            // 0xCB - AXS #i
-            (Opcode::AXS, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::axs)
-            }
-            // 0xCC - CPY a
-            (Opcode::CPY, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::compare_y)
-            }
-            // 0xCD - CMP a
-            (Opcode::CMP, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::compare_a)
-            }
-            // 0xCE - DEC a
-            (Opcode::DEC, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::dec)
-            }
-            // 0xCF - DCP a
-            (Opcode::DCP, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::dcp)
-            }
-            // 0xD0 - BNE *+r
-            (Opcode::BNE, AddressMode::Relative) => self.bne(),
-            // 0xD1 - CMP (d),y
-            (Opcode::CMP, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::compare_a)
-            }
-            // 0xD2 - HLT see 0x02
-            // 0xD3 - DCP (d),y
-            (Opcode::DCP, AddressMode::IndirectY) => {
-                self.rmw_instruction(Self::addr_indirect_y, Self::dcp)
-            }
-            // 0xD4 - NOP see 0x14
-            // 0xD5 - CMP d,x
-            (Opcode::CMP, AddressMode::ZeroPageX) => {
-                self.load_instruction(Self::addr_zp_x, Self::compare_a)
-            }
-            // 0xD6 - DEC d,x
-            (Opcode::DEC, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::dec)
-            }
-            // 0xD7 - DCP d,x
-            (Opcode::DCP, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::dcp)
-            }
-            // 0xD8 - CLD
-            (Opcode::CLD, AddressMode::Implied) => self.cld(),
-            // 0xD9 - CMP a,y
-            (Opcode::CMP, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::compare_a)
-            }
-            // 0xDA - NOP see 0x1A
-            // 0xDB - DCP a,y
-            (Opcode::DCP, AddressMode::AbsoluteY) => {
-                self.rmw_instruction(Self::addr_absolute_y, Self::dcp)
-            }
-            // 0xDC - NOP see 0x1C
-            // 0xDD - CMP a,x
-            (Opcode::CMP, AddressMode::AbsoluteX) => {
-                self.load_instruction(Self::addr_absolute_x, Self::compare_a)
-            }
-            // 0xDE - DEC a,x
-            (Opcode::DEC, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::dec)
-            }
-            // 0xDF - DCP a,x
-            (Opcode::DCP, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::dcp)
-            }
-            // 0xE0 - CPX #i
-            (Opcode::CPX, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::compare_x)
-            }
-            // 0xE1 - SBC (d,x)
-            (Opcode::SBC, AddressMode::IndirectX) => {
-                self.load_instruction(Self::addr_indirect_x, Self::sbc)
-            }
-            // 0xE2 - NOP see 0x80
-            // 0xE3 - ISC (d,x)
-            (Opcode::ISC, AddressMode::IndirectX) => {
-                self.rmw_instruction(Self::addr_indirect_x, Self::isc)
-            }
-            // 0xE4 - CPX d
-            (Opcode::CPX, AddressMode::ZeroPage) => {
-                self.load_instruction(Self::addr_zp, Self::compare_x)
-            }
-            // 0xE5 - SBC d
-            (Opcode::SBC, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::sbc),
-            // 0xE6 - INC d
-            (Opcode::INC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::inc),
-            // 0xE7 - ISC d
-            (Opcode::ISC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::isc),
-            // 0xE8 - INX
-            (Opcode::INX, AddressMode::Implied) => {
-                self.load_register(Register::X, (self.x() + Wrapping(1)).0)
-            }
-            // 0xE9 0xEB - SBC #i
-            (Opcode::SBC, AddressMode::Immediate) => {
-                self.load_instruction(Self::addr_immediate, Self::sbc)
-            }
-            // 0xEA - NOP see 0x1A
-            // 0xEB - SBC see 0xE9
-            // 0xEC - CPX a
-            (Opcode::CPX, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::compare_x)
-            }
-            // 0xED - SBC a
-            (Opcode::SBC, AddressMode::Absolute) => {
-                self.load_instruction(Self::addr_absolute, Self::sbc)
-            }
-            // 0xEE - INC a
-            (Opcode::INC, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::inc)
-            }
-            // 0xEF - ISC a
-            (Opcode::ISC, AddressMode::Absolute) => {
-                self.rmw_instruction(Self::addr_absolute, Self::isc)
-            }
-            // 0xF0 - BEQ *+r
-            (Opcode::BEQ, AddressMode::Relative) => self.beq(),
-            // 0xF1 - SBC (d),y
-            (Opcode::SBC, AddressMode::IndirectY) => {
-                self.load_instruction(Self::addr_indirect_y, Self::sbc)
-            }
-            // 0xF2 - HLT see 0x02
-            // 0xF3 - ISC (d),y
-            (Opcode::ISC, AddressMode::IndirectY) => {
-                self.rmw_instruction(Self::addr_indirect_y, Self::isc)
-            }
-            // 0xF4 - NOP see 0x14
-            // 0xF5 - SBC d,x
-            (Opcode::SBC, AddressMode::ZeroPageX) => {
-                self.load_instruction(Self::addr_zp_x, Self::sbc)
-            }
-            // 0xF6 - INC d,x
-            (Opcode::INC, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::inc)
-            }
-            // 0xF7 - ISC d,x
-            (Opcode::ISC, AddressMode::ZeroPageX) => {
-                self.rmw_instruction(Self::addr_zp_x, Self::isc)
-            }
-            // 0xF8 - SED
-            (Opcode::SED, AddressMode::Implied) => self.sed(),
-            // 0xF9 - SBC a,y
-            (Opcode::SBC, AddressMode::AbsoluteY) => {
-                self.load_instruction(Self::addr_absolute_y, Self::sbc)
-            }
-            // 0xFA - NOP see 0x1A
-            // 0xFB - ISC a,y
-            (Opcode::ISC, AddressMode::AbsoluteY) => {
-                self.rmw_instruction(Self::addr_absolute_y, Self::isc)
-            }
-            // 0xFC - NOP see 0x1C
-            // 0xFD - SBC a,x
-            (Opcode::SBC, AddressMode::AbsoluteX) => {
-                self.load_instruction(Self::addr_absolute_x, Self::sbc)
-            }
-            // 0xFE - INC a,x
-            (Opcode::INC, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::inc)
-            }
-            // 0xFF - ISC a,x
-            (Opcode::ISC, AddressMode::AbsoluteX) => {
-                self.rmw_instruction(Self::addr_absolute_x, Self::isc)
-            }
-            _ => Err(eyre!(
-                "no implementation for {:?} {:?}",
-                self.op().op,
-                self.op().mode
-            )),
-        }
-    }
-
-    // ahx implements the undocumented AHX instruction based on the addressing mode passed in.
-    // The value stored is (A & X & (ADDR_HI + 1))
-    // Returns Done when complete and/or errors
-    fn ahx(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-    ) -> Result<OpState> {
-        // This is a store but we can't use store_instruction since it depends on knowing op_addr
-        // for the final computed value so we have to do the addressing mode ourselves.
-        match self.addr_done() {
-            OpState::Processing => {
-                let ret = address_mode(self, &InstructionMode::Store)?;
-                self.addr_done_mut(ret);
-                Ok(OpState::Processing)
-            }
-            OpState::Done => {
-                let val =
-                    (self.a() & self.x() & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
-                self.ram().borrow_mut().write(self.op_addr(), val);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // alr implements the undocumented opcode for ALR.
-    // This does AND #i (op_val) and then LSR on A setting all associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn alr(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 & self.op_val())?;
-        self.lsr_acc()
-    }
-
-    // anc implements the undocumented opcode for ANC. This does AND #i (op_val) and then
-    // sets carry based on bit 7 (sign extend).
-    // Always returns Done since this takes one tick and never returns an error.
-    fn anc(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 & self.op_val())?;
-        self.carry_check(u16::from(self.a().0) << 1);
-        Ok(OpState::Done)
-    }
-
-    // arr implements implements the undocumented opcode for ARR.
-    // This does AND #i (p.opVal) and then ROR except some flags are set differently.
-    // Implemented as described in http://nesdev.com/6502_cpu.txt
-    // Always returns Done since this takes one tick and never returns an error.
-    fn arr(&mut self) -> Result<OpState> {
-        let val = self.a().0 & self.op_val();
-        self.load_register(Register::A, val)?;
-        self.ror_acc()?;
-
-        // Flags are different based on BCD or not (since the ALU acts different).
-        if self.p() & P_DECIMAL != P_NONE {
-            // If bit 6 changed state between AND output and rotate output then set V.
-            if (val ^ self.a().0) & 0x40 == 0x00 {
-                self.p_mut(self.p() & !P_OVERFLOW);
-            } else {
-                self.p_mut(self.p() | P_OVERFLOW);
-            }
-
-            // Now do possible odd BCD fixups and set C
-            let ah = val >> 4;
-            let al = val & 0x0F;
-            if (al + (al & 0x01)) > 5 {
-                self.a_mut(Wrapping((self.a().0 & 0xF0) | ((self.a().0 + 6) & 0x0F)));
-            }
-            if (ah + (ah & 0x01)) > 5 {
-                self.p_mut(self.p() | P_CARRY);
-                self.a_mut(self.a() + Wrapping(0x60));
-            } else {
-                self.p_mut(self.p() & !P_CARRY);
-            }
-            return Ok(OpState::Done);
-        }
-
-        // C is bit 6
-        self.carry_check((u16::from(self.a().0) << 2) & 0x0100);
-        // V is bit 5 ^ bit 6
-        if ((self.a().0 & 0x40) >> 6) ^ ((self.a().0 & 0x20) >> 5) == 0x00 {
-            self.p_mut(self.p() & !P_OVERFLOW);
-        } else {
-            self.p_mut(self.p() | P_OVERFLOW);
-        }
-        Ok(OpState::Done)
-    }
-
-    // axs implements the undocumented opcode for AXS.
-    // (A AND X) - p.opVal (no borrow) setting all associated flags post SBC.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn axs(&mut self) -> Result<OpState> {
-        // Save A off to restore later
-        let a = self.a().0;
-        self.load_register(Register::A, self.a().0 & self.x().0)?;
-        // Carry is always set
-        self.p_mut(self.p() | P_CARRY);
-
-        // Save D & V state since it's always ignored for this but needs to keep values.
-        let d = self.p() & P_DECIMAL;
-        let v = self.p() & P_OVERFLOW;
-        // Clear D so SBC never uses BCD mode (we'll reset it later from saved state).
-        self.p_mut(self.p() & !P_DECIMAL);
-        self.sbc()?;
-
-        // Clear V now in case SBC set it so we can properly restore it below.
-        self.p_mut(self.p() & !P_OVERFLOW);
-
-        // Save A in a temp so we can load registers in the right order to set flags (based on X, not old A)
-        let x = self.a().0;
-        self.load_register(Register::A, a)?;
-        self.load_register(Register::X, x)?;
-
-        // Restore D & V from our initial state.
-        self.p_mut(self.p() | d | v);
-        Ok(OpState::Done)
-    }
-
-    // dcp implements the undocumented opcode for DCP.
-    // This decrements the value at op_addr and then does a CMP with A setting associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn dcp(&mut self) -> Result<OpState> {
-        self.op_val_mut((Wrapping(self.op_val()) - Wrapping(1)).0);
-        self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-        self.compare_a()
-    }
-
-    // isc implements the undocumented opcode for ISC.
-    // This increments the value at op_addr and then does an SBC and sets associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn isc(&mut self) -> Result<OpState> {
-        self.op_val_mut((Wrapping(self.op_val()) + Wrapping(1)).0);
-        self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-        self.sbc()
-    }
-
-    // las implements the undocumented opcode for LAS.
-    // This take op_val and ANDs it with S and then stores that in A,X,S setting flags accordingly.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn las(&mut self) -> Result<OpState> {
-        self.s_mut(Wrapping(self.s().0 & self.op_val()));
-        self.load_register(Register::X, self.s().0)?;
-        self.load_register(Register::A, self.s().0)
-    }
-
-    // lax implements the undocumented opcode for LAX.
-    // This loads A and X with the same value and sets all associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn lax(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.op_val())?;
-        self.load_register(Register::X, self.op_val())
-    }
-
-    // oal implements the undocumented opcode for OAL.
-    // This one acts a bit randomly. It somtimes does XAA and sometimes
-    // does A=X=A&val.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn oal(&mut self) -> Result<OpState> {
-        let mut rng = rand::thread_rng();
-        if rng.gen::<f64>() > 0.5 {
-            return self.xaa();
-        }
-        let val = self.a().0 & self.op_val();
-        self.load_register(Register::A, val)?;
-        self.load_register(Register::X, val)
-    }
-
-    // rla implements the undocumented opcode for RLA. This does a ROL on
-    // the contents of op_addr and then AND's it against A. Sets flags and carry.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn rla(&mut self) -> Result<OpState> {
-        let val = (self.op_val() << 1) | (self.p() & P_CARRY).0;
-        self.ram().borrow_mut().write(self.op_addr(), val);
-        self.carry_check(u16::from(self.op_val()) << 1);
-        self.load_register(Register::A, self.a().0 & val)
-    }
-
-    // rra implements the undocumented opcode for RRA. This does a ROR on op_addr
-    // and then ADC's it against A. Sets flags and carry.
-    // Always returns Done since this is one tick and never returns an error.
-    fn rra(&mut self) -> Result<OpState> {
-        let n = ((self.p() & P_CARRY).0 << 7) | (self.op_val() >> 1);
-        self.ram().borrow_mut().write(self.op_addr(), n);
-        // Old bit 0 becomes carry
-        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
-        self.op_val_mut(n);
-        self.adc()
-    }
-
-    // shx_shy_common implements the common logic for SHX and SHY.
-    fn shx_shy_common(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-        v: Wrapping<u8>,
-    ) -> Result<OpState> {
-        // This is a store but we can't use store_instruction since it depends on knowing op_addr
-        // for the final computed value so we have to do the addressing mode ourselves.
-        match self.addr_done() {
-            OpState::Processing => {
-                let ret = address_mode(self, &InstructionMode::Store)?;
-                self.addr_done_mut(ret);
-                Ok(OpState::Processing)
-            }
-            OpState::Done => {
-                let val = (v & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
-                self.ram().borrow_mut().write(self.op_addr(), val);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // shx implements the undocumented SHX instruction based on the addressing mode passed in.
-    // The value stored is (X & (ADDR_HI + 1))
-    // Returns Done and/or errors when complete.
-    fn shx(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-    ) -> Result<OpState> {
-        self.shx_shy_common(address_mode, self.x())
-    }
-
-    // shy implements the undocumented SHY instruction based on the addressing mode passed in.
-    // The value stored is (Y & (ADDR_HI + 1))
-    // Returns Done and/or errors when complete.
-    fn shy(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-    ) -> Result<OpState> {
-        self.shx_shy_common(address_mode, self.y())
-    }
-
-    // slo implements the undocumented opcode for SLO. This does an ASL on the
-    // contents of op_addr and then OR's it against A. Sets flags and carry.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn slo(&mut self) -> Result<OpState> {
-        self.ram()
-            .borrow_mut()
-            .write(self.op_addr(), self.op_val() << 1);
-        self.carry_check(u16::from(self.op_val()) << 1);
-        self.load_register(Register::A, (self.op_val() << 1) | self.a().0)
-    }
-
-    // sre implements the undocumented opcode for SRE. This does a LSR on
-    // op_addr and then XOR's it against A. Sets flags and carry.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn sre(&mut self) -> Result<OpState> {
-        self.ram()
-            .borrow_mut()
-            .write(self.op_addr(), self.op_val() >> 1);
-        // Old bit 0 becomes carry
-        self.carry_check(u16::from(self.op_val()) << 8);
-        self.load_register(Register::A, (self.op_val() >> 1) ^ self.a().0)
-    }
-
-    // tas implements the undocumented opcode for TAS which only has one addressing mode.
-    // This does the same operations as AHX above but then also sets S = A&X
-    // Returns Done and/or errors when complete.
-    fn tas(&mut self) -> Result<OpState> {
-        self.s_mut(self.a() & self.x());
-        self.ahx(Self::addr_absolute_y)
-    }
-
-    // xaa implements the undocumented opcode for XAA.
-    // We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
-    // for implementation and pick 0xEE as the constant. According to VICE this may break so
-    // we might need to change it to 0xFF.
-    // https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
-    // Always returns Done since this takes one tick and never returns an error.
-    fn xaa(&mut self) -> Result<OpState> {
-        self.load_register(
-            Register::A,
-            (self.a().0 | 0xEE) & self.x().0 & self.op_val(),
-        )
-    }
-}
-
-impl<'a> CPUNmosInternal<'a> for CPU6502<'a> {}
-impl<'a> CPUNmosInternal<'a> for CPU6510<'a> {}
-impl<'a> CPUNmosInternal<'a> for CPURicoh<'a> {}
-
 // The common implementation definitions for all 6502 chips but done as a private
 // crate only trait so the default implementations can get at all the internal
 // cpu entries without having to expose those publicly.
@@ -2235,6 +1213,9 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // The following methods are all ones which cannot be defaulted
     // and must be implmented by the relevant struct in order to provide
     // access and mutability for the default trait methods below.
+
+    // The internal RAM impl which means we can get at the last bus action, etc.
+    fn cpu_ram(&self) -> Rc<RefCell<RecordRAM>>;
 
     // state returns the current CPU state.
     fn state(&self) -> State;
@@ -3769,6 +2750,11 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
 
 macro_rules! cpu_internal {
     () => {
+        // cpu_ram returns the internal RAM impl.
+        fn cpu_ram(&self) -> Rc<RefCell<RecordRAM>> {
+            self.ram.clone()
+        }
+
         // state returns the current CPU state.
         fn state(&self) -> State {
             self.state
@@ -4546,6 +3532,1091 @@ impl<'a> CPUInternal<'a> for CPU65C02<'a> {
     }
 }
 
+// Common implementations which are NMOS only specific (undocumented opcodes
+// and opcode processing). CMOS can implement `process_opcode` directly and
+// doesn't need the rest.
+trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
+    #[allow(clippy::too_many_lines)]
+    fn process_opcode(&mut self) -> Result<OpState> {
+        match (self.op().op, self.op().mode) {
+            // 0x00 - BRK #i
+            (Opcode::BRK, AddressMode::Immediate) => self.brk(),
+            // 0x01 - ORA (d,x)
+            (Opcode::ORA, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::ora)
+            }
+            // 0x02 0x12 0x22 0x32 0x42 0x52 0x62 0x72 0x92 0xB2 0xD2 0xF2 - HLT
+            (Opcode::HLT, AddressMode::Implied) => {
+                self.state_mut(State::Halted);
+                Ok(OpState::Done)
+            }
+            // 0x03 - SLO (d,x)
+            (Opcode::SLO, AddressMode::IndirectX) => {
+                self.rmw_instruction(Self::addr_indirect_x, Self::slo)
+            }
+            // 0x04 0x44 0x64 - NOP d
+            (Opcode::NOP, AddressMode::ZeroPage) => self.addr_zp(&InstructionMode::Load),
+            // 0x05 - ORA d
+            (Opcode::ORA, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::ora),
+            // 0x06 - ASL d
+            (Opcode::ASL, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::asl),
+            // 0x07 - SLO d
+            (Opcode::SLO, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::slo),
+            // 0x08 - PHP
+            (Opcode::PHP, AddressMode::Implied) => self.php(),
+            // 0x09 - ORA #i
+            (Opcode::ORA, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::ora)
+            }
+            // 0x0A - ASL
+            (Opcode::ASL, AddressMode::Implied) => self.asl_acc(),
+            // 0x0B 0x2B - ANC #i
+            (Opcode::ANC, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::anc)
+            }
+            // 0x0C - NOP a
+            (Opcode::NOP, AddressMode::Absolute) => self.addr_absolute(&InstructionMode::Load),
+            // 0x0D - ORA a
+            (Opcode::ORA, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::ora)
+            }
+            // 0x0E - ASL a
+            (Opcode::ASL, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::asl)
+            }
+            // 0x0F - SLO a
+            (Opcode::SLO, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::slo)
+            }
+            // 0x10 - BPL *+r
+            (Opcode::BPL, AddressMode::Relative) => self.bpl(),
+            // 0x11 - ORA (d),y
+            (Opcode::ORA, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::ora)
+            }
+            // 0x12 - HLT see 0x02
+            // 0x13 - SLO (d),y
+            (Opcode::SLO, AddressMode::IndirectY) => {
+                self.rmw_instruction(Self::addr_indirect_y, Self::slo)
+            }
+            // 0x14 0x34 0x54 0x74 0xD4 0xF4 - NOP d,x
+            (Opcode::NOP, AddressMode::ZeroPageX) => self.addr_zp_x(&InstructionMode::Load),
+            // 0x15 - ORA d,x
+            (Opcode::ORA, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::ora)
+            }
+            // 0x16 - ASL d,x
+            (Opcode::ASL, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::asl)
+            }
+            // 0x17 - SLO d,x
+            (Opcode::SLO, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::slo)
+            }
+            // 0x18 - CLC
+            (Opcode::CLC, AddressMode::Implied) => self.clc(),
+            // 0x19 - ORA a,y
+            (Opcode::ORA, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::ora)
+            }
+            // 0x1A 0x3A 0x5A 0x7A 0xDA 0xEA 0xFA - NOP
+            (Opcode::NOP, AddressMode::Implied) => Ok(OpState::Done),
+            // 0x1B - SLO a,y
+            (Opcode::SLO, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::slo)
+            }
+            // 0x1C 0x3C 0x5C 0x7C 0xDC 0xFC - NOP a,x
+            (Opcode::NOP, AddressMode::AbsoluteX) => self.addr_absolute_x(&InstructionMode::Load),
+            // 0x1D - ORA a,x
+            (Opcode::ORA, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::ora)
+            }
+            // 0x1E - ASL a,x
+            (Opcode::ASL, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::asl)
+            }
+            // 0x1F - SLO a,x
+            (Opcode::SLO, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::slo)
+            }
+            // 0x20 - JSR a
+            (Opcode::JSR, AddressMode::Absolute) => self.jsr(),
+            // 0x21 - AND (d,x)
+            (Opcode::AND, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::and)
+            }
+            // 0x22 - HLT see 0x02
+            // 0x23 - RLA (d,x)
+            (Opcode::RLA, AddressMode::IndirectX) => {
+                self.rmw_instruction(Self::addr_indirect_x, Self::rla)
+            }
+            // 0x24 - BIT d
+            (Opcode::BIT, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::bit),
+            // 0x25 - AND d
+            (Opcode::AND, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::and),
+            // 0x26 - ROL d
+            (Opcode::ROL, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rol),
+            // 0x27 - RLA d
+            (Opcode::RLA, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rla),
+            // 0x28 - PLP
+            (Opcode::PLP, AddressMode::Implied) => self.plp(),
+            // 0x29 - AND #i
+            (Opcode::AND, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::and)
+            }
+            // 0x2A - ROL
+            (Opcode::ROL, AddressMode::Implied) => self.rol_acc(),
+            // 0x2B - ANC #i see 0x0B
+            // 0x2C - BIT a
+            (Opcode::BIT, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::bit)
+            }
+            // 0x2D - AND a
+            (Opcode::AND, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::and)
+            }
+            // 0x2E - ROL a
+            (Opcode::ROL, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::rol)
+            }
+            // 0x2F - RLA a
+            (Opcode::RLA, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::rla)
+            }
+            // 0x30 - BMI *+r
+            (Opcode::BMI, AddressMode::Relative) => self.bmi(),
+            // 0x31 - AND (d),y
+            (Opcode::AND, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::and)
+            }
+            // 0x32 - HLT see 0x02
+            // 0x33 - RLA (d),y
+            (Opcode::RLA, AddressMode::IndirectY) => {
+                self.rmw_instruction(Self::addr_indirect_y, Self::rla)
+            }
+            // 0x34 - NOP d,x see 0x14
+            // 0x35 - AND d,x
+            (Opcode::AND, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::and)
+            }
+            // 0x36 - ROL d,x
+            (Opcode::ROL, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::rol)
+            }
+            // 0x37 - RLA d,x
+            (Opcode::RLA, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::rla)
+            }
+            // 0x38 - SEC
+            (Opcode::SEC, AddressMode::Implied) => self.sec(),
+            // 0x39 - AND a,y
+            (Opcode::AND, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::and)
+            }
+            // 0x3A - NOP see 0x1A
+            // 0x3B - RLA a,y
+            (Opcode::RLA, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::rla)
+            }
+            // 0x3C - NOP see 0x1C
+            // 0x3D - AND a,x
+            (Opcode::AND, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::and)
+            }
+            // 0x3E - ROL a,x
+            (Opcode::ROL, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::rol)
+            }
+            // 0x3F - RLA a,x
+            (Opcode::RLA, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::rla)
+            }
+            // 0x40 - RTI
+            (Opcode::RTI, AddressMode::Implied) => self.rti(),
+            // 0x41 - EOR (d,x)
+            (Opcode::EOR, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::eor)
+            }
+            // 0x42 - HLT see 0x02
+            // 0x43 - SRE (d,x)
+            (Opcode::SRE, AddressMode::IndirectX) => {
+                self.rmw_instruction(Self::addr_indirect_x, Self::sre)
+            }
+            // 0x44 - NOP see 0x04
+            // 0x45 - EOR d
+            (Opcode::EOR, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::eor),
+            // 0x46 - LSR d
+            (Opcode::LSR, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::lsr),
+            // 0x47 - SRE d
+            (Opcode::SRE, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::sre),
+            // 0x48 - PHA
+            (Opcode::PHA, AddressMode::Implied) => self.pha(),
+            // 0x49 - EOR #i
+            (Opcode::EOR, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::eor)
+            }
+            // 0x4A - LSR
+            (Opcode::LSR, AddressMode::Implied) => self.lsr_acc(),
+            // 0x4B - ALR #i
+            (Opcode::ALR, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::alr)
+            }
+            // 0x4C - JMP a
+            (Opcode::JMP, AddressMode::Absolute) => self.jmp(),
+            // 0x4D - EOR a
+            (Opcode::EOR, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::eor)
+            }
+            // 0x4E - LSR a
+            (Opcode::LSR, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::lsr)
+            }
+            // 0x4F - SRE a
+            (Opcode::SRE, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::sre)
+            }
+            // 0x50 - BVC *+r
+            (Opcode::BVC, AddressMode::Relative) => self.bvc(),
+            // 0x51 - EOR (d),y
+            (Opcode::EOR, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::eor)
+            }
+            // 0x52 - HLT 0x02
+            // 0x53 - SRE (d),y
+            (Opcode::SRE, AddressMode::IndirectY) => {
+                self.rmw_instruction(Self::addr_indirect_y, Self::sre)
+            }
+            // 0x54 - NOP 0x14
+            // 0x55 - EOR d,x
+            (Opcode::EOR, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::eor)
+            }
+            // 0x56 - LSR d,x
+            (Opcode::LSR, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::lsr)
+            }
+            // 0x57 - SRE d,x
+            (Opcode::SRE, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::sre)
+            }
+            // 0x58 - CLI
+            (Opcode::CLI, AddressMode::Implied) => self.cli(),
+            // 0x59 - EOR a,y
+            (Opcode::EOR, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::eor)
+            }
+            // 0x5A - NOP see 0x1A
+            // 0x5B - SRE a,y
+            (Opcode::SRE, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::sre)
+            }
+            // 0x5C - NOP see 0x1C
+            // 0x5D - EOR a,x
+            (Opcode::EOR, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::eor)
+            }
+            // 0x5E - LSR a,x
+            (Opcode::LSR, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::lsr)
+            }
+            // 0x5F - SRE a,x
+            (Opcode::SRE, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::sre)
+            }
+            // 0x60 - RTS
+            (Opcode::RTS, AddressMode::Implied) => self.rts(),
+            // 0x61 - ADC (d,x)
+            (Opcode::ADC, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::adc)
+            }
+            // 0x62 - HLT see 0x02
+            // 0x63 - RRA (d,x)
+            (Opcode::RRA, AddressMode::IndirectX) => {
+                self.rmw_instruction(Self::addr_indirect_x, Self::rra)
+            }
+            // 0x64 - NOP - see 0x04
+            // 0x65 - ADC d
+            (Opcode::ADC, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::adc),
+            // 0x66 - ROR d
+            (Opcode::ROR, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::ror),
+            // 0x67 - RRA d
+            (Opcode::RRA, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::rra),
+            // 0x68 - PLA
+            (Opcode::PLA, AddressMode::Implied) => self.pla(),
+            // 0x69 - ADC #i
+            (Opcode::ADC, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::adc)
+            }
+            // 0x6A - ROR
+            (Opcode::ROR, AddressMode::Implied) => self.ror_acc(),
+            // 0x6B - ARR #i
+            (Opcode::ARR, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::arr)
+            }
+            // 0x6C - JMP (a)
+            (Opcode::JMP, AddressMode::AbsoluteIndirect) => self.jmp_indirect(),
+            // 0x6D - ADC a
+            (Opcode::ADC, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::adc)
+            }
+            // 0x6E - ROR a
+            (Opcode::ROR, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::ror)
+            }
+            // 0x6F - RRA a
+            (Opcode::RRA, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::rra)
+            }
+            // 0x70 - BVS *+r
+            (Opcode::BVS, AddressMode::Relative) => self.bvs(),
+            // 0x71 - ADC (d),y
+            (Opcode::ADC, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::adc)
+            }
+            // 0x72 - HLT - see 0x02
+            // 0x73 - RRA (d),y
+            (Opcode::RRA, AddressMode::IndirectY) => {
+                self.rmw_instruction(Self::addr_indirect_y, Self::rra)
+            }
+            // 0x74 - NOP - see 0x14
+            // 0x75 - ADC d,x
+            (Opcode::ADC, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::adc)
+            }
+            // 0x76 - ROR d,x
+            (Opcode::ROR, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::ror)
+            }
+            // 0x77 - RRA d,x
+            (Opcode::RRA, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::rra)
+            }
+            // 0x78 - SEI
+            (Opcode::SEI, AddressMode::Implied) => self.sei(),
+            // 0x79 - ADC a,y
+            (Opcode::ADC, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::adc)
+            }
+            // 0x7A - NOP - see 0x1A
+            // 0x7B - RRA a,y
+            (Opcode::RRA, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::rra)
+            }
+            // 0x7C - NOP - see 0x1C
+            // 0x7D - ADC a,x
+            (Opcode::ADC, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::adc)
+            }
+            // 0x7E - ROR a,x
+            (Opcode::ROR, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::ror)
+            }
+            // 0x7F - RRA a,x
+            (Opcode::RRA, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::rra)
+            }
+            // 0x80 0x82 0x89 0xC2 0xE2 - NOP #i
+            (Opcode::NOP, AddressMode::Immediate) => self.addr_immediate(&InstructionMode::Load),
+            // 0x81 - STA (d,x)
+            (Opcode::STA, AddressMode::IndirectX) => {
+                self.store_instruction(Self::addr_indirect_x, self.a().0)
+            }
+            // 0x82 - NOP see 0x80
+            // 0x83 - SAX (d,x)
+            (Opcode::SAX, AddressMode::IndirectX) => {
+                self.store_instruction(Self::addr_indirect_x, self.a().0 & self.x().0)
+            }
+            // 0x84 - STY d
+            (Opcode::STY, AddressMode::ZeroPage) => {
+                self.store_instruction(Self::addr_zp, self.y().0)
+            }
+            // 0x85 - STA d
+            (Opcode::STA, AddressMode::ZeroPage) => {
+                self.store_instruction(Self::addr_zp, self.a().0)
+            }
+            // 0x86 - STX d
+            (Opcode::STX, AddressMode::ZeroPage) => {
+                self.store_instruction(Self::addr_zp, self.x().0)
+            }
+            // 0x87 - SAX d
+            (Opcode::SAX, AddressMode::ZeroPage) => {
+                self.store_instruction(Self::addr_zp, self.a().0 & self.x().0)
+            }
+            // 0x88 - DEY
+            (Opcode::DEY, AddressMode::Implied) => {
+                self.load_register(Register::Y, (self.y() - Wrapping(1)).0)
+            }
+            // 0x89 - NOP see 0x80
+            // 0x8A - TXA
+            (Opcode::TXA, AddressMode::Implied) => self.load_register(Register::A, self.x().0),
+            // 0x8B - XAA #i
+            (Opcode::XAA, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::xaa)
+            }
+            // 0x8C - STY a
+            (Opcode::STY, AddressMode::Absolute) => {
+                self.store_instruction(Self::addr_absolute, self.y().0)
+            }
+            // 0x8D - STA a
+            (Opcode::STA, AddressMode::Absolute) => {
+                self.store_instruction(Self::addr_absolute, self.a().0)
+            }
+            // 0x8E - STX a
+            (Opcode::STX, AddressMode::Absolute) => {
+                self.store_instruction(Self::addr_absolute, self.x().0)
+            }
+            // 0x8F - SAX a
+            (Opcode::SAX, AddressMode::Absolute) => {
+                self.store_instruction(Self::addr_absolute, self.a().0 & self.x().0)
+            }
+            // 0x90 - BCC *+r
+            (Opcode::BCC, AddressMode::Relative) => self.bcc(),
+            // 0x91 - STA (d),y
+            (Opcode::STA, AddressMode::IndirectY) => {
+                self.store_instruction(Self::addr_indirect_y, self.a().0)
+            }
+            // 0x92 - HLT see 0x02
+            // 0x93 - AHX (d),y
+            (Opcode::AHX, AddressMode::IndirectY) => self.ahx(Self::addr_indirect_y),
+            // 0x94 - STY d,x
+            (Opcode::STY, AddressMode::ZeroPageX) => {
+                self.store_instruction(Self::addr_zp_x, self.y().0)
+            }
+            // 0x95 - STA d,x
+            (Opcode::STA, AddressMode::ZeroPageX) => {
+                self.store_instruction(Self::addr_zp_x, self.a().0)
+            }
+            // 0x96 - STX d,y
+            (Opcode::STX, AddressMode::ZeroPageY) => {
+                self.store_instruction(Self::addr_zp_y, self.x().0)
+            }
+            // 0x97 - SAX d,y
+            (Opcode::SAX, AddressMode::ZeroPageY) => {
+                self.store_instruction(Self::addr_zp_y, self.a().0 & self.x().0)
+            }
+            // 0x98 - TYA
+            (Opcode::TYA, AddressMode::Implied) => self.load_register(Register::A, self.y().0),
+            // 0x99 - STA a,y
+            (Opcode::STA, AddressMode::AbsoluteY) => {
+                self.store_instruction(Self::addr_absolute_y, self.a().0)
+            }
+            // 0x9A - TXS
+            (Opcode::TXS, AddressMode::Implied) => {
+                self.s_mut(self.x());
+                Ok(OpState::Done)
+            }
+            // 0x9B - TAS a,y
+            (Opcode::TAS, AddressMode::AbsoluteY) => self.tas(),
+            // 0x9C - SHY a,x
+            (Opcode::SHY, AddressMode::AbsoluteX) => self.shy(Self::addr_absolute_x),
+            // 0x9D - STA a,x
+            (Opcode::STA, AddressMode::AbsoluteX) => {
+                self.store_instruction(Self::addr_absolute_x, self.a().0)
+            }
+            // 0x9E - SHX a,y
+            (Opcode::SHX, AddressMode::AbsoluteY) => self.shx(Self::addr_absolute_y),
+            // 0x9F - AHX a,y
+            (Opcode::AHX, AddressMode::AbsoluteY) => self.ahx(Self::addr_absolute_y),
+            // 0xA0 - LDY #i
+            (Opcode::LDY, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::load_register_y)
+            }
+            // 0xA1 - LDA (d,x)
+            (Opcode::LDA, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::load_register_a)
+            }
+            // 0xA2 - LDX #i
+            (Opcode::LDX, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::load_register_x)
+            }
+            // 0xA3 - LAX (d,x)
+            (Opcode::LAX, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::lax)
+            }
+            // 0xA4 - LDY d
+            (Opcode::LDY, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::load_register_y)
+            }
+            // 0xA5 - LDA d
+            (Opcode::LDA, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::load_register_a)
+            }
+            // 0xA6 - LDX d
+            (Opcode::LDX, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::load_register_x)
+            }
+            // 0xA7 - LAX d
+            (Opcode::LAX, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::lax),
+            // 0xA8 - TAY
+            (Opcode::TAY, AddressMode::Implied) => self.load_register(Register::Y, self.a().0),
+            // 0xA9 - LDA #i
+            (Opcode::LDA, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::load_register_a)
+            }
+            // 0xAA - TAX
+            (Opcode::TAX, AddressMode::Implied) => self.load_register(Register::X, self.a().0),
+            // 0xAB - OAL #i
+            (Opcode::OAL, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::oal)
+            }
+            // 0xAC - LDY a
+            (Opcode::LDY, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::load_register_y)
+            }
+            // 0xAD - LDA a
+            (Opcode::LDA, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::load_register_a)
+            }
+            // 0xAE - LDX a
+            (Opcode::LDX, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::load_register_x)
+            }
+            // 0xAF - LAX a
+            (Opcode::LAX, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::lax)
+            }
+            // 0xB0 - BCS *+r
+            (Opcode::BCS, AddressMode::Relative) => self.bcs(),
+            // 0xB1 - LDA (d),y
+            (Opcode::LDA, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::load_register_a)
+            }
+            // 0xB2 - HLT see 0x02
+            // 0xB3 - LAX (d),y
+            (Opcode::LAX, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::lax)
+            }
+            // 0xB4 - LDY d,x
+            (Opcode::LDY, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::load_register_y)
+            }
+            // 0xB5 - LDA d,x
+            (Opcode::LDA, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::load_register_a)
+            }
+            // 0xB6 - LDX d,y
+            (Opcode::LDX, AddressMode::ZeroPageY) => {
+                self.load_instruction(Self::addr_zp_y, Self::load_register_x)
+            }
+            // 0xB7 - LAX d,y
+            (Opcode::LAX, AddressMode::ZeroPageY) => {
+                self.load_instruction(Self::addr_zp_y, Self::lax)
+            }
+            // 0xB8 - CLV
+            (Opcode::CLV, AddressMode::Implied) => self.clv(),
+            // 0xB9 - LDA a,y
+            (Opcode::LDA, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::load_register_a)
+            }
+            // 0xBA - TSX
+            (Opcode::TSX, AddressMode::Implied) => self.load_register(Register::X, self.s().0),
+            // 0xBB - LAS a,y
+            (Opcode::LAS, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::las)
+            }
+            // 0xBC - LDY a,x
+            (Opcode::LDY, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::load_register_y)
+            }
+            // 0xBD - LDA a,x
+            (Opcode::LDA, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::load_register_a)
+            }
+            // 0xBE - LDX a,y
+            (Opcode::LDX, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::load_register_x)
+            }
+            // 0xBF - LAX a,y
+            (Opcode::LAX, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::lax)
+            }
+            // 0xC0 - CPY #i
+            (Opcode::CPY, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::compare_y)
+            }
+            // 0xC1 - CMP (d,x)
+            (Opcode::CMP, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::compare_a)
+            }
+            // 0xC2 - NOP see 0x80
+            // 0xC3 - DCP (d,X)
+            (Opcode::DCP, AddressMode::IndirectX) => {
+                self.rmw_instruction(Self::addr_indirect_x, Self::dcp)
+            }
+            // 0xC4 - CPY d
+            (Opcode::CPY, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::compare_y)
+            }
+            // 0xC5 - CMP d
+            (Opcode::CMP, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::compare_a)
+            }
+            // 0xC6 - DEC d
+            (Opcode::DEC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::dec),
+            // 0xC7 - DCP d
+            (Opcode::DCP, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::dcp),
+            // 0xC8 - INY
+            (Opcode::INY, AddressMode::Implied) => {
+                self.load_register(Register::Y, (self.y() + Wrapping(1)).0)
+            }
+            // 0xC9 - CMP #i
+            (Opcode::CMP, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::compare_a)
+            }
+            // 0xCA - DEX
+            (Opcode::DEX, AddressMode::Implied) => {
+                self.load_register(Register::X, (self.x() - Wrapping(1)).0)
+            }
+            // 0xCB - AXS #i
+            (Opcode::AXS, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::axs)
+            }
+            // 0xCC - CPY a
+            (Opcode::CPY, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::compare_y)
+            }
+            // 0xCD - CMP a
+            (Opcode::CMP, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::compare_a)
+            }
+            // 0xCE - DEC a
+            (Opcode::DEC, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::dec)
+            }
+            // 0xCF - DCP a
+            (Opcode::DCP, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::dcp)
+            }
+            // 0xD0 - BNE *+r
+            (Opcode::BNE, AddressMode::Relative) => self.bne(),
+            // 0xD1 - CMP (d),y
+            (Opcode::CMP, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::compare_a)
+            }
+            // 0xD2 - HLT see 0x02
+            // 0xD3 - DCP (d),y
+            (Opcode::DCP, AddressMode::IndirectY) => {
+                self.rmw_instruction(Self::addr_indirect_y, Self::dcp)
+            }
+            // 0xD4 - NOP see 0x14
+            // 0xD5 - CMP d,x
+            (Opcode::CMP, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::compare_a)
+            }
+            // 0xD6 - DEC d,x
+            (Opcode::DEC, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::dec)
+            }
+            // 0xD7 - DCP d,x
+            (Opcode::DCP, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::dcp)
+            }
+            // 0xD8 - CLD
+            (Opcode::CLD, AddressMode::Implied) => self.cld(),
+            // 0xD9 - CMP a,y
+            (Opcode::CMP, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::compare_a)
+            }
+            // 0xDA - NOP see 0x1A
+            // 0xDB - DCP a,y
+            (Opcode::DCP, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::dcp)
+            }
+            // 0xDC - NOP see 0x1C
+            // 0xDD - CMP a,x
+            (Opcode::CMP, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::compare_a)
+            }
+            // 0xDE - DEC a,x
+            (Opcode::DEC, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::dec)
+            }
+            // 0xDF - DCP a,x
+            (Opcode::DCP, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::dcp)
+            }
+            // 0xE0 - CPX #i
+            (Opcode::CPX, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::compare_x)
+            }
+            // 0xE1 - SBC (d,x)
+            (Opcode::SBC, AddressMode::IndirectX) => {
+                self.load_instruction(Self::addr_indirect_x, Self::sbc)
+            }
+            // 0xE2 - NOP see 0x80
+            // 0xE3 - ISC (d,x)
+            (Opcode::ISC, AddressMode::IndirectX) => {
+                self.rmw_instruction(Self::addr_indirect_x, Self::isc)
+            }
+            // 0xE4 - CPX d
+            (Opcode::CPX, AddressMode::ZeroPage) => {
+                self.load_instruction(Self::addr_zp, Self::compare_x)
+            }
+            // 0xE5 - SBC d
+            (Opcode::SBC, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::sbc),
+            // 0xE6 - INC d
+            (Opcode::INC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::inc),
+            // 0xE7 - ISC d
+            (Opcode::ISC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::isc),
+            // 0xE8 - INX
+            (Opcode::INX, AddressMode::Implied) => {
+                self.load_register(Register::X, (self.x() + Wrapping(1)).0)
+            }
+            // 0xE9 0xEB - SBC #i
+            (Opcode::SBC, AddressMode::Immediate) => {
+                self.load_instruction(Self::addr_immediate, Self::sbc)
+            }
+            // 0xEA - NOP see 0x1A
+            // 0xEB - SBC see 0xE9
+            // 0xEC - CPX a
+            (Opcode::CPX, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::compare_x)
+            }
+            // 0xED - SBC a
+            (Opcode::SBC, AddressMode::Absolute) => {
+                self.load_instruction(Self::addr_absolute, Self::sbc)
+            }
+            // 0xEE - INC a
+            (Opcode::INC, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::inc)
+            }
+            // 0xEF - ISC a
+            (Opcode::ISC, AddressMode::Absolute) => {
+                self.rmw_instruction(Self::addr_absolute, Self::isc)
+            }
+            // 0xF0 - BEQ *+r
+            (Opcode::BEQ, AddressMode::Relative) => self.beq(),
+            // 0xF1 - SBC (d),y
+            (Opcode::SBC, AddressMode::IndirectY) => {
+                self.load_instruction(Self::addr_indirect_y, Self::sbc)
+            }
+            // 0xF2 - HLT see 0x02
+            // 0xF3 - ISC (d),y
+            (Opcode::ISC, AddressMode::IndirectY) => {
+                self.rmw_instruction(Self::addr_indirect_y, Self::isc)
+            }
+            // 0xF4 - NOP see 0x14
+            // 0xF5 - SBC d,x
+            (Opcode::SBC, AddressMode::ZeroPageX) => {
+                self.load_instruction(Self::addr_zp_x, Self::sbc)
+            }
+            // 0xF6 - INC d,x
+            (Opcode::INC, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::inc)
+            }
+            // 0xF7 - ISC d,x
+            (Opcode::ISC, AddressMode::ZeroPageX) => {
+                self.rmw_instruction(Self::addr_zp_x, Self::isc)
+            }
+            // 0xF8 - SED
+            (Opcode::SED, AddressMode::Implied) => self.sed(),
+            // 0xF9 - SBC a,y
+            (Opcode::SBC, AddressMode::AbsoluteY) => {
+                self.load_instruction(Self::addr_absolute_y, Self::sbc)
+            }
+            // 0xFA - NOP see 0x1A
+            // 0xFB - ISC a,y
+            (Opcode::ISC, AddressMode::AbsoluteY) => {
+                self.rmw_instruction(Self::addr_absolute_y, Self::isc)
+            }
+            // 0xFC - NOP see 0x1C
+            // 0xFD - SBC a,x
+            (Opcode::SBC, AddressMode::AbsoluteX) => {
+                self.load_instruction(Self::addr_absolute_x, Self::sbc)
+            }
+            // 0xFE - INC a,x
+            (Opcode::INC, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::inc)
+            }
+            // 0xFF - ISC a,x
+            (Opcode::ISC, AddressMode::AbsoluteX) => {
+                self.rmw_instruction(Self::addr_absolute_x, Self::isc)
+            }
+            _ => Err(eyre!(
+                "no implementation for {:?} {:?}",
+                self.op().op,
+                self.op().mode
+            )),
+        }
+    }
+
+    // ahx implements the undocumented AHX instruction based on the addressing mode passed in.
+    // The value stored is (A & X & (ADDR_HI + 1))
+    // Returns Done when complete and/or errors
+    fn ahx(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+    ) -> Result<OpState> {
+        // This is a store but we can't use store_instruction since it depends on knowing op_addr
+        // for the final computed value so we have to do the addressing mode ourselves.
+        match self.addr_done() {
+            OpState::Processing => {
+                let ret = address_mode(self, &InstructionMode::Store)?;
+                self.addr_done_mut(ret);
+                Ok(OpState::Processing)
+            }
+            OpState::Done => {
+                let val =
+                    (self.a() & self.x() & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
+                self.ram().borrow_mut().write(self.op_addr(), val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // alr implements the undocumented opcode for ALR.
+    // This does AND #i (op_val) and then LSR on A setting all associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn alr(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.a().0 & self.op_val())?;
+        self.lsr_acc()
+    }
+
+    // anc implements the undocumented opcode for ANC. This does AND #i (op_val) and then
+    // sets carry based on bit 7 (sign extend).
+    // Always returns Done since this takes one tick and never returns an error.
+    fn anc(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.a().0 & self.op_val())?;
+        self.carry_check(u16::from(self.a().0) << 1);
+        Ok(OpState::Done)
+    }
+
+    // arr implements implements the undocumented opcode for ARR.
+    // This does AND #i (p.opVal) and then ROR except some flags are set differently.
+    // Implemented as described in http://nesdev.com/6502_cpu.txt
+    // Always returns Done since this takes one tick and never returns an error.
+    fn arr(&mut self) -> Result<OpState> {
+        let val = self.a().0 & self.op_val();
+        self.load_register(Register::A, val)?;
+        self.ror_acc()?;
+
+        // Flags are different based on BCD or not (since the ALU acts different).
+        if self.p() & P_DECIMAL != P_NONE {
+            // If bit 6 changed state between AND output and rotate output then set V.
+            if (val ^ self.a().0) & 0x40 == 0x00 {
+                self.p_mut(self.p() & !P_OVERFLOW);
+            } else {
+                self.p_mut(self.p() | P_OVERFLOW);
+            }
+
+            // Now do possible odd BCD fixups and set C
+            let ah = val >> 4;
+            let al = val & 0x0F;
+            if (al + (al & 0x01)) > 5 {
+                self.a_mut(Wrapping((self.a().0 & 0xF0) | ((self.a().0 + 6) & 0x0F)));
+            }
+            if (ah + (ah & 0x01)) > 5 {
+                self.p_mut(self.p() | P_CARRY);
+                self.a_mut(self.a() + Wrapping(0x60));
+            } else {
+                self.p_mut(self.p() & !P_CARRY);
+            }
+            return Ok(OpState::Done);
+        }
+
+        // C is bit 6
+        self.carry_check((u16::from(self.a().0) << 2) & 0x0100);
+        // V is bit 5 ^ bit 6
+        if ((self.a().0 & 0x40) >> 6) ^ ((self.a().0 & 0x20) >> 5) == 0x00 {
+            self.p_mut(self.p() & !P_OVERFLOW);
+        } else {
+            self.p_mut(self.p() | P_OVERFLOW);
+        }
+        Ok(OpState::Done)
+    }
+
+    // axs implements the undocumented opcode for AXS.
+    // (A AND X) - p.opVal (no borrow) setting all associated flags post SBC.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn axs(&mut self) -> Result<OpState> {
+        // Save A off to restore later
+        let a = self.a().0;
+        self.load_register(Register::A, self.a().0 & self.x().0)?;
+        // Carry is always set
+        self.p_mut(self.p() | P_CARRY);
+
+        // Save D & V state since it's always ignored for this but needs to keep values.
+        let d = self.p() & P_DECIMAL;
+        let v = self.p() & P_OVERFLOW;
+        // Clear D so SBC never uses BCD mode (we'll reset it later from saved state).
+        self.p_mut(self.p() & !P_DECIMAL);
+        self.sbc()?;
+
+        // Clear V now in case SBC set it so we can properly restore it below.
+        self.p_mut(self.p() & !P_OVERFLOW);
+
+        // Save A in a temp so we can load registers in the right order to set flags (based on X, not old A)
+        let x = self.a().0;
+        self.load_register(Register::A, a)?;
+        self.load_register(Register::X, x)?;
+
+        // Restore D & V from our initial state.
+        self.p_mut(self.p() | d | v);
+        Ok(OpState::Done)
+    }
+
+    // dcp implements the undocumented opcode for DCP.
+    // This decrements the value at op_addr and then does a CMP with A setting associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn dcp(&mut self) -> Result<OpState> {
+        self.op_val_mut((Wrapping(self.op_val()) - Wrapping(1)).0);
+        self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+        self.compare_a()
+    }
+
+    // isc implements the undocumented opcode for ISC.
+    // This increments the value at op_addr and then does an SBC and sets associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn isc(&mut self) -> Result<OpState> {
+        self.op_val_mut((Wrapping(self.op_val()) + Wrapping(1)).0);
+        self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+        self.sbc()
+    }
+
+    // las implements the undocumented opcode for LAS.
+    // This take op_val and ANDs it with S and then stores that in A,X,S setting flags accordingly.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn las(&mut self) -> Result<OpState> {
+        self.s_mut(Wrapping(self.s().0 & self.op_val()));
+        self.load_register(Register::X, self.s().0)?;
+        self.load_register(Register::A, self.s().0)
+    }
+
+    // lax implements the undocumented opcode for LAX.
+    // This loads A and X with the same value and sets all associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn lax(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.op_val())?;
+        self.load_register(Register::X, self.op_val())
+    }
+
+    // oal implements the undocumented opcode for OAL.
+    // This one acts a bit randomly. It somtimes does XAA and sometimes
+    // does A=X=A&val.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn oal(&mut self) -> Result<OpState> {
+        let mut rng = rand::thread_rng();
+        if rng.gen::<f64>() > 0.5 {
+            return self.xaa();
+        }
+        let val = self.a().0 & self.op_val();
+        self.load_register(Register::A, val)?;
+        self.load_register(Register::X, val)
+    }
+
+    // rla implements the undocumented opcode for RLA. This does a ROL on
+    // the contents of op_addr and then AND's it against A. Sets flags and carry.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn rla(&mut self) -> Result<OpState> {
+        let val = (self.op_val() << 1) | (self.p() & P_CARRY).0;
+        self.ram().borrow_mut().write(self.op_addr(), val);
+        self.carry_check(u16::from(self.op_val()) << 1);
+        self.load_register(Register::A, self.a().0 & val)
+    }
+
+    // rra implements the undocumented opcode for RRA. This does a ROR on op_addr
+    // and then ADC's it against A. Sets flags and carry.
+    // Always returns Done since this is one tick and never returns an error.
+    fn rra(&mut self) -> Result<OpState> {
+        let n = ((self.p() & P_CARRY).0 << 7) | (self.op_val() >> 1);
+        self.ram().borrow_mut().write(self.op_addr(), n);
+        // Old bit 0 becomes carry
+        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
+        self.op_val_mut(n);
+        self.adc()
+    }
+
+    // shx_shy_common implements the common logic for SHX and SHY.
+    fn shx_shy_common(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        v: Wrapping<u8>,
+    ) -> Result<OpState> {
+        // This is a store but we can't use store_instruction since it depends on knowing op_addr
+        // for the final computed value so we have to do the addressing mode ourselves.
+        match self.addr_done() {
+            OpState::Processing => {
+                let ret = address_mode(self, &InstructionMode::Store)?;
+                self.addr_done_mut(ret);
+                Ok(OpState::Processing)
+            }
+            OpState::Done => {
+                let val = (v & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
+                self.ram().borrow_mut().write(self.op_addr(), val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // shx implements the undocumented SHX instruction based on the addressing mode passed in.
+    // The value stored is (X & (ADDR_HI + 1))
+    // Returns Done and/or errors when complete.
+    fn shx(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+    ) -> Result<OpState> {
+        self.shx_shy_common(address_mode, self.x())
+    }
+
+    // shy implements the undocumented SHY instruction based on the addressing mode passed in.
+    // The value stored is (Y & (ADDR_HI + 1))
+    // Returns Done and/or errors when complete.
+    fn shy(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+    ) -> Result<OpState> {
+        self.shx_shy_common(address_mode, self.y())
+    }
+
+    // slo implements the undocumented opcode for SLO. This does an ASL on the
+    // contents of op_addr and then OR's it against A. Sets flags and carry.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn slo(&mut self) -> Result<OpState> {
+        self.ram()
+            .borrow_mut()
+            .write(self.op_addr(), self.op_val() << 1);
+        self.carry_check(u16::from(self.op_val()) << 1);
+        self.load_register(Register::A, (self.op_val() << 1) | self.a().0)
+    }
+
+    // sre implements the undocumented opcode for SRE. This does a LSR on
+    // op_addr and then XOR's it against A. Sets flags and carry.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn sre(&mut self) -> Result<OpState> {
+        self.ram()
+            .borrow_mut()
+            .write(self.op_addr(), self.op_val() >> 1);
+        // Old bit 0 becomes carry
+        self.carry_check(u16::from(self.op_val()) << 8);
+        self.load_register(Register::A, (self.op_val() >> 1) ^ self.a().0)
+    }
+
+    // tas implements the undocumented opcode for TAS which only has one addressing mode.
+    // This does the same operations as AHX above but then also sets S = A&X
+    // Returns Done and/or errors when complete.
+    fn tas(&mut self) -> Result<OpState> {
+        self.s_mut(self.a() & self.x());
+        self.ahx(Self::addr_absolute_y)
+    }
+
+    // xaa implements the undocumented opcode for XAA.
+    // We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
+    // for implementation and pick 0xEE as the constant. According to VICE this may break so
+    // we might need to change it to 0xFF.
+    // https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
+    // Always returns Done since this takes one tick and never returns an error.
+    fn xaa(&mut self) -> Result<OpState> {
+        self.load_register(
+            Register::A,
+            (self.a().0 | 0xEE) & self.x().0 & self.op_val(),
+        )
+    }
+}
+
+impl<'a> CPUNmosInternal<'a> for CPU6502<'a> {}
+impl<'a> CPUNmosInternal<'a> for CPU6510<'a> {}
+impl<'a> CPUNmosInternal<'a> for CPURicoh<'a> {}
+
 macro_rules! cpu_nmos_power_reset {
     () => {
         /// `power_on` will reset the CPU to power on state which isn't well defined.
@@ -4761,7 +4832,7 @@ macro_rules! cpu_impl {
         }
 
         /// ram returns a reference to the Memory implementation.
-        fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
+        fn ram(&self) -> Rc<RefCell<dyn Memory>> {
             self.ram.clone()
         }
 
@@ -4769,6 +4840,7 @@ macro_rules! cpu_impl {
         fn pc(&self) -> u16 {
             self.pc.0
         }
+
         // pc_muts sets PC to the given address.
         fn pc_mut(&mut self, new: u16) {
             self.pc = Wrapping(new);
@@ -5016,20 +5088,24 @@ macro_rules! chip_impl_nmos {
                     }));
                 }
 
+                if self.state == State::RDY {
+                    let last = *self.cpu_ram().borrow().last_addr.borrow();
+                    self.ram().borrow().read(last);
+                    if let Some(rdy) = self.rdy {
+                        if rdy.raised() {
+                            return Ok(());
+                        }
+
+                        // Set to Tick so this replicates running even though
+                        // we did nothing. This way tick_done() is happy.
+                        self.state = State::Tick;
+                        return Ok(());
+                    }
+                }
+
                 // Handles improper states. Only tick_done() or reset() can move into this state.
                 if self.state != State::Running {
                     return Err(eyre!("CPU not in Running state - {}", self.state));
-                }
-
-                // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
-                // Ok, this technically only works like this in combination with SYNC being held high as well.
-                // Otherwise it acts like a single step and continues after the next clock.
-                // But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
-                // time so "good enough".
-                if let Some(rdy) = self.rdy {
-                    if rdy.raised() {
-                        return Ok(());
-                    }
                 }
 
                 // If we get a new interrupt while running one then NMI always wins until it's done.
@@ -5073,6 +5149,10 @@ macro_rules! chip_impl_nmos {
                     self.debug();
                 }
 
+                // Whether to actually run an opcode below. Certain cases in Tick1 we
+                // don't but still need to check RDY which is post opcode.
+                let mut run = true;
+
                 match self.op_tick {
                     Tick::Tick1 => {
                         // If we're in Tick1 this means start a new instruction based on the PC value so grab
@@ -5104,7 +5184,7 @@ macro_rules! chip_impl_nmos {
 
                         // Move out of the done state.
                         self.addr_done = OpState::Processing;
-                        return Ok(());
+                        run = false; // There's nothing else to do but check RDY below.
                     }
                     Tick::Tick2 => {
                         // All instructions fetch the value after the opcode (though some like BRK/PHP/etc ignore it).
@@ -5125,48 +5205,62 @@ macro_rules! chip_impl_nmos {
                     _ => {}
                 }
 
-                // Process the opcode or interrupt
-                let ret: Result<OpState>;
-                if self.interrupt_state == InterruptState::Running {
-                    let mut addr = IRQ_VECTOR;
-                    if self.irq_raised == InterruptStyle::NMI {
-                        addr = NMI_VECTOR;
-                    }
-                    ret = self.run_interrupt(addr, true);
-                } else {
-                    ret = self.process_opcode();
-                }
-
-                // We'll treat an error as halted since internal state is unknown at that point.
-                // For halted instructions though we'll return a custom error type so it can
-                // be detected vs internal errors.
-                if self.state == State::Halted || ret.is_err() {
-                    self.state = State::Halted;
-                    self.halt_opcode = self.op_raw;
-                    ret?;
-                    return Err(ErrReport::new(CPUError::Halted {
-                        op: self.halt_opcode,
-                    }));
-                }
-
-                let state;
-                // SAFETY: Err was checked above so just pull this out.
-                unsafe {
-                    state = ret.unwrap_unchecked();
-                }
-
-                if state == OpState::Done {
-                    // Reset so the next tick starts a new instruction
-                    // It'll handle doing start of instruction reset on state.
-                    self.op_tick = Tick::Reset;
-
-                    // If we're already running an IRQ clear state so we don't loop
-                    // trying to start it again.
+                if run {
+                    // Process the opcode or interrupt
+                    let ret: Result<OpState>;
                     if self.interrupt_state == InterruptState::Running {
-                        self.irq_raised = InterruptStyle::None;
+                        let mut addr = IRQ_VECTOR;
+                        if self.irq_raised == InterruptStyle::NMI {
+                            addr = NMI_VECTOR;
+                        }
+                        ret = self.run_interrupt(addr, true);
+                    } else {
+                        ret = self.process_opcode();
                     }
-                    self.interrupt_state = InterruptState::None;
+
+                    // We'll treat an error as halted since internal state is unknown at that point.
+                    // For halted instructions though we'll return a custom error type so it can
+                    // be detected vs internal errors.
+                    if self.state == State::Halted || ret.is_err() {
+                        self.state = State::Halted;
+                        self.halt_opcode = self.op_raw;
+                        ret?;
+                        return Err(ErrReport::new(CPUError::Halted {
+                            op: self.halt_opcode,
+                        }));
+                    }
+
+                    let state;
+                    // SAFETY: Err was checked above so just pull this out.
+                    unsafe {
+                        state = ret.unwrap_unchecked();
+                    }
+
+                    if state == OpState::Done {
+                        // Reset so the next tick starts a new instruction
+                        // It'll handle doing start of instruction reset on state.
+                        self.op_tick = Tick::Reset;
+
+                        // If we're already running an IRQ clear state so we don't loop
+                        // trying to start it again.
+                        if self.interrupt_state == InterruptState::Running {
+                            self.irq_raised = InterruptStyle::None;
+                        }
+                        self.interrupt_state = InterruptState::None;
+                    }
                 }
+
+                // If RDY is held high and we didn't just process a write we move into
+                // the RDY state. It'll keep rereading this last address but nothing else
+                // until RDY drops.
+                if let Some(rdy) = self.rdy {
+                    if rdy.raised()
+                        && *self.cpu_ram().borrow().bus_action.borrow() != LastBusAction::Write
+                    {
+                        self.state = State::RDY;
+                    }
+                }
+
                 Ok(())
             }
 
@@ -5179,10 +5273,8 @@ macro_rules! chip_impl_nmos {
             /// # Errors
             /// Bad internal state will result in errors.
             fn tick_done(&mut self) -> Result<()> {
-                if let Some(rdy) = self.rdy {
-                    if rdy.raised() {
-                        return Ok(());
-                    }
+                if self.state == State::RDY {
+                    return Ok(());
                 }
 
                 if self.state != State::Tick {
@@ -5219,23 +5311,27 @@ impl<'a> Chip for CPU65C02<'a> {
             }));
         }
 
+        if self.state == State::RDY {
+            let last = *self.cpu_ram().borrow().last_addr.borrow();
+            self.ram().borrow().read(last);
+            if let Some(rdy) = self.rdy {
+                if rdy.raised() {
+                    return Ok(());
+                }
+
+                // Set to Tick so this replicates running even though
+                // we did nothing. This way tick_done() is happy.
+                self.state = State::Tick;
+                return Ok(());
+            }
+        }
+
         // Handles improper states. Only tick_done() or reset() or wai() can move into these states.
         if self.state != State::Running && self.state != State::WaitingForInterrupt {
             return Err(eyre!(
                 "CPU not in Running or WaitingForInterrupt state - {}",
                 self.state
             ));
-        }
-
-        // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
-        // Ok, this technically only works like this in combination with SYNC being held high as well.
-        // Otherwise it acts like a single step and continues after the next clock.
-        // But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
-        // time so "good enough".
-        if let Some(rdy) = self.rdy {
-            if rdy.raised() {
-                return Ok(());
-            }
         }
 
         // If we get a new interrupt while running one then NMI always wins until it's done.
@@ -5285,6 +5381,10 @@ impl<'a> Chip for CPU65C02<'a> {
             self.debug();
         }
 
+        // Whether to actually run an opcode below. Certain cases in Tick1 we
+        // don't but still need to check RDY which is post opcode.
+        let mut run = true;
+
         match self.op_tick {
             Tick::Tick1 => {
                 // If we're in Tick1 this means start a new instruction based on the PC value so grab
@@ -5296,33 +5396,34 @@ impl<'a> Chip for CPU65C02<'a> {
                 if self.op.op == Opcode::NOP && self.op.mode == AddressMode::NOPCmos {
                     self.pc += 1;
                     self.op_tick = Tick::Reset;
-                    return Ok(());
-                }
-
-                // If one is raised and we're not skipping and interrupts
-                // are enabled or it's an NMI then we move into interrupt mode.
-                // If interrupts are disabled it doesn't change state.
-                if self.irq_raised != InterruptStyle::None
-                    && self.skip_interrupt != SkipInterrupt::Skip
-                {
-                    if self.p & P_INTERRUPT == P_INTERRUPT && self.irq_raised == InterruptStyle::IRQ
+                    run = false;
+                } else {
+                    // If one is raised and we're not skipping and interrupts
+                    // are enabled or it's an NMI then we move into interrupt mode.
+                    // If interrupts are disabled it doesn't change state.
+                    if self.irq_raised != InterruptStyle::None
+                        && self.skip_interrupt != SkipInterrupt::Skip
                     {
-                        self.irq_raised = InterruptStyle::None;
-                        self.interrupt_state = InterruptState::None;
-                    } else {
-                        self.interrupt_state = InterruptState::Running;
+                        if self.p & P_INTERRUPT == P_INTERRUPT
+                            && self.irq_raised == InterruptStyle::IRQ
+                        {
+                            self.irq_raised = InterruptStyle::None;
+                            self.interrupt_state = InterruptState::None;
+                        } else {
+                            self.interrupt_state = InterruptState::Running;
+                        }
                     }
-                }
 
-                // PC advances always when we start a new opcode except for IRQ/NMI
-                // (unless we're skipping to run one more instruction).
-                if self.interrupt_state != InterruptState::Running {
-                    self.pc += 1;
-                }
+                    // PC advances always when we start a new opcode except for IRQ/NMI
+                    // (unless we're skipping to run one more instruction).
+                    if self.interrupt_state != InterruptState::Running {
+                        self.pc += 1;
+                    }
 
-                // Move out of the done state.
-                self.addr_done = OpState::Processing;
-                return Ok(());
+                    // Move out of the done state.
+                    self.addr_done = OpState::Processing;
+                    run = false; // There's nothing else to do but check RDY below.
+                }
             }
             Tick::Tick2 => {
                 // All instructions fetch the value after the opcode (though some like BRK/PHP/etc ignore it).
@@ -5343,47 +5444,65 @@ impl<'a> Chip for CPU65C02<'a> {
             _ => {}
         }
 
-        // Process the opcode or interrupt
-        let ret: Result<OpState>;
-        if self.interrupt_state == InterruptState::Running {
-            let mut addr = IRQ_VECTOR;
-            if self.irq_raised == InterruptStyle::NMI {
-                addr = NMI_VECTOR;
-            }
-            ret = self.run_interrupt(addr, true);
-        } else {
-            ret = self.process_opcode();
-        }
-
-        // We'll treat an error as halted since internal state is unknown at that point.
-        // For halted instructions though we'll return a custom error type so it can
-        // be detected vs internal errors.
-        if self.state == State::Halted || ret.is_err() {
-            self.state = State::Halted;
-            self.halt_opcode = self.op_raw;
-            ret?;
-            return Err(ErrReport::new(CPUError::Halted {
-                op: self.halt_opcode,
-            }));
-        }
-
-        let state;
-        // SAFETY: Err was checked above so just pull this out.
-        unsafe {
-            state = ret.unwrap_unchecked();
-        }
-
-        if state == OpState::Done {
-            // Reset so the next tick starts a new instruction
-            // It'll handle doing start of instruction reset on state.
-            self.op_tick = Tick::Reset;
-
-            // If we're already running an IRQ clear state so we don't loop
-            // trying to start it again.
+        if run {
+            // Process the opcode or interrupt
+            let ret: Result<OpState>;
             if self.interrupt_state == InterruptState::Running {
-                self.irq_raised = InterruptStyle::None;
+                let mut addr = IRQ_VECTOR;
+                if self.irq_raised == InterruptStyle::NMI {
+                    addr = NMI_VECTOR;
+                }
+                ret = self.run_interrupt(addr, true);
+            } else {
+                ret = self.process_opcode();
             }
-            self.interrupt_state = InterruptState::None;
+
+            // We'll treat an error as halted since internal state is unknown at that point.
+            // For halted instructions though we'll return a custom error type so it can
+            // be detected vs internal errors.
+            if self.state == State::Halted || ret.is_err() {
+                self.state = State::Halted;
+                self.halt_opcode = self.op_raw;
+                ret?;
+                return Err(ErrReport::new(CPUError::Halted {
+                    op: self.halt_opcode,
+                }));
+            }
+
+            let state;
+            // SAFETY: Err was checked above so just pull this out.
+            unsafe {
+                state = ret.unwrap_unchecked();
+            }
+
+            if state == OpState::Done {
+                // Reset so the next tick starts a new instruction
+                // It'll handle doing start of instruction reset on state.
+                self.op_tick = Tick::Reset;
+
+                // If we're already running an IRQ clear state so we don't loop
+                // trying to start it again.
+                if self.interrupt_state == InterruptState::Running {
+                    self.irq_raised = InterruptStyle::None;
+                }
+                self.interrupt_state = InterruptState::None;
+            }
+        }
+
+        // If RDY is held high and we didn't just process a write we move into
+        // the RDY state. It'll keep rereading this last address but nothing else
+        // until RDY drops.
+        if let Some(rdy) = self.rdy {
+            println!(
+                "rdy: {} last: {}",
+                rdy.raised(),
+                *self.cpu_ram().borrow().bus_action.borrow()
+            );
+            if rdy.raised() && *self.cpu_ram().borrow().bus_action.borrow() != LastBusAction::Write
+            {
+                self.state = State::RDY;
+                return Ok(());
+            }
         }
         Ok(())
     }
@@ -5397,10 +5516,8 @@ impl<'a> Chip for CPU65C02<'a> {
     /// # Errors
     /// Bad internal state will result in errors.
     fn tick_done(&mut self) -> Result<()> {
-        if let Some(rdy) = self.rdy {
-            if rdy.raised() {
-                return Ok(());
-            }
+        if self.state == State::RDY {
+            return Ok(());
         }
 
         // If we're in WAI just return, no state changes.
@@ -5440,7 +5557,7 @@ macro_rules! cpu_new {
                 interrupt_state: InterruptState::default(),
                 skip_interrupt: SkipInterrupt::default(),
                 clocks: 0,
-                ram: Rc::new(RefCell::new(def.ram)),
+                ram: Rc::new(RefCell::new(RecordRAM::new(def.ram))),
                 op: Operation::default(),
                 op_raw: 0x00,
                 op_val: 0x00,
@@ -5480,8 +5597,7 @@ impl<'a> CPU6510<'a> {
         let mut r = Box::new(C6510RAM::new(def.ram, input));
         r.power_on();
         let io = r.io_state.clone();
-        let ram: std::rc::Rc<std::cell::RefCell<std::boxed::Box<(dyn memory::Memory + 'static)>>> =
-            Rc::new(RefCell::new(r));
+        let ram = Rc::new(RefCell::new(RecordRAM::new(r)));
         Self {
             a: Wrapping(0x00),
             x: Wrapping(0x00),
@@ -6615,6 +6731,53 @@ struct C6510RAM {
     // to build this requires mutating there by combining our 2 bytes plus
     // the underlying RAM together.
     memory: RefCell<[u8; MAX_SIZE]>,
+}
+
+/// A `RecordRAM` does all of the RAM operations by passing them through to
+/// the underlying RAM but records the address used and the style of operation.
+/// This is used by each of the CPU types to implement RDY correctly as we
+/// can only start RDY once we're on a read cycle.
+pub struct RecordRAM {
+    // The last bus action (read or write)
+    bus_action: RefCell<LastBusAction>,
+
+    // The last address seen on the bus.
+    last_addr: RefCell<u16>,
+
+    // The underlying RAM implementation.
+    ram: Box<dyn Memory>,
+}
+
+impl RecordRAM {
+    fn new(ram: Box<dyn Memory>) -> Self {
+        Self {
+            bus_action: RefCell::new(LastBusAction::Read),
+            last_addr: RefCell::new(0x000),
+            ram,
+        }
+    }
+}
+
+impl Memory for RecordRAM {
+    fn read(&self, addr: u16) -> u8 {
+        *self.bus_action.borrow_mut() = LastBusAction::Read;
+        *self.last_addr.borrow_mut() = addr;
+        self.ram.read(addr)
+    }
+
+    fn write(&mut self, addr: u16, val: u8) {
+        *self.bus_action.borrow_mut() = LastBusAction::Write;
+        *self.last_addr.borrow_mut() = addr;
+        self.ram.write(addr, val);
+    }
+
+    fn power_on(&mut self) {
+        self.ram.power_on();
+    }
+
+    fn ram(&self, dest: &mut [u8; MAX_SIZE]) {
+        self.ram.ram(dest);
+    }
 }
 
 impl C6510RAM {

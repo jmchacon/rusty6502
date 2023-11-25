@@ -31,12 +31,12 @@ struct Debug<T> {
     state: Vec<Rc<RefCell<T>>>,
     cur: RefCell<usize>,
     wrapped: RefCell<bool>,
-    full_dump_every_n: usize,
+    full_dump_every_n: Option<usize>,
     count: RefCell<usize>,
 }
 
 impl<T: Display + std::default::Default> Debug<T> {
-    fn new(cap: usize, full_dump_every_n: usize) -> Self {
+    fn new(cap: usize, full_dump_every_n: Option<usize>) -> Self {
         let mut d = Self {
             state: Vec::with_capacity(cap),
             cur: RefCell::new(0),
@@ -98,9 +98,9 @@ impl Debug<CPUState> {
         // Now roll the circular buffer portion of this.
         self.roll_buffer();
         let mut mem = false;
-        if self.full_dump_every_n != usize::MAX {
+        if let Some(n) = self.full_dump_every_n {
             *self.count.borrow_mut() += 1;
-            if (*self.count.borrow() % self.full_dump_every_n) == 0 {
+            if (*self.count.borrow() % n) == 0 {
                 mem = true;
             }
         }
@@ -290,7 +290,7 @@ fn invalid_states() -> Result<()> {
     let cpu = CPUState::default();
     let _ = cpu.clone();
 
-    let d = Debug::<CPUState>::new(128, 1);
+    let d = Debug::<CPUState>::new(128, Some(1));
     let debug = { || d.debug() };
     let nmi_addr = 0x1212;
     let mut cpu = setup_cpu_cmos(
@@ -470,7 +470,7 @@ fn invalid_states() -> Result<()> {
 
 #[test]
 fn wai_test() -> Result<()> {
-    let d = Debug::<CPUState>::new(128, 1);
+    let d = Debug::<CPUState>::new(128, Some(1));
     let debug = { || d.debug() };
     let irq = Irq {
         raised: RefCell::new(false),
@@ -646,7 +646,7 @@ fn disassemble_test() -> Result<()> {
         };
         write!(out, "{}", t.1)?;
 
-        cpu.disassemble(&mut s, addr.0, cpu.ram.borrow().as_ref());
+        cpu.disassemble(&mut s, addr.0, &*cpu.ram.borrow());
         assert!(s == out, "Expected output\n{out}\n\nDoesn't match\n{s}");
     }
     Ok(())
@@ -845,6 +845,134 @@ fn c6510_io_tests() {
     assert!(loc == 0x56, "0x1234 not 0x56 - is {loc:2X}");
 }
 
+macro_rules! rdy_test {
+    ($suite:ident, $($name:ident: $type:expr, $cmos:expr,)*) => {
+        mod $suite {
+            use super::*;
+
+            $(
+                #[test]
+                fn $name() -> Result<()> {
+                    let r = Irq {
+                        raised: RefCell::new(false),
+                    };
+                    let fill = 0xEE; // INC $EEEE
+
+                    let d = Debug::<CPUState>::new(128, None);
+                    let debug = { || d.debug() };
+                    let mut cpu = $type(0x1212, fill, None, None, Some(&r), Some(&debug));
+
+                    cpu.power_on()?;
+                    loop {
+                        match cpu.reset() {
+                            Ok(OpState::Done) => break,
+                            Ok(OpState::Processing) => continue,
+                            Err(e) => panic!("error from reset: {e:?}"),
+                        }
+                    }
+
+                    // Pull RDY high and tick should return true but not advance
+                    // after this tick is done.
+
+                    // Get a copy of tick and advance it as that's what should
+                    // happen when RDY runs once before engaging.
+                    let tick = cpu.op_tick;
+                    let tick = tick.next();
+
+                    // Same with clocks which should advance once.
+                    let clocks = cpu.clocks + 1;
+                    *r.raised.borrow_mut() = true;
+                    let ret = cpu.tick();
+                    assert!(ret.is_ok(), "Tick didn't return true - RDY high - {ret:?}");
+                    let ret = cpu.tick_done();
+                    assert!(
+                        ret.is_ok(),
+                        "Tick done didn't return true - RDY high - {ret:?}"
+                    );
+                    assert!(tick == cpu.op_tick, "op_tick didn't advance after 1 clock with RDY high?");
+                    assert!(clocks == cpu.clocks, "clocks didn't advance after 1 clock  with RDY high?");
+                    assert!(cpu.state == State::RDY, "State isn't in RDY with RDY about to clock high? - {}", cpu.state);
+
+                    // Let's run some iterations to prove it holds
+                    for _ in 0..10 {
+                        let ret = cpu.tick();
+                        assert!(ret.is_ok(), "Tick didn't return true - RDY high - {ret:?}");
+                        let ret = cpu.tick_done();
+                        assert!(
+                            ret.is_ok(),
+                            "Tick done didn't return true - RDY high - {ret:?}"
+                        );
+                        assert!(tick == cpu.op_tick, "op_tick advanced with RDY high?");
+                        assert!(clocks == cpu.clocks, "clocks advanced with RDY high?");
+                        assert!(cpu.state == State::RDY, "State isn't in RDY with RDY high?");
+                    }
+                    *r.raised.borrow_mut() = false;
+
+                    // Advance to tick 5 and assert again.
+
+                    // Reruns tick1
+                    cpu.tick()?;
+                    cpu.tick_done()?;
+
+                    // Tick2
+                    cpu.tick()?;
+                    cpu.tick_done()?;
+
+                    // Tick3
+                    cpu.tick()?;
+                    cpu.tick_done()?;
+
+                    // Tick4
+                    cpu.tick()?;
+                    cpu.tick_done()?;
+
+                    assert!(cpu.op_tick == Tick::Tick4, "Tick is not 4? {}", cpu.op_tick);
+
+                    if $cmos {
+                        // For CMOS advance to tick5 so we can move to tick6 which is where the write happens.
+                        cpu.tick()?;
+                        cpu.tick_done()?;
+                        assert!(cpu.op_tick == Tick::Tick5, "Tick is not 6? {}", cpu.op_tick);
+                        assert!(cpu.state == State::Running, "State is not running - {}", cpu.state);
+                        *r.raised.borrow_mut() = true;
+                    } else {
+                        // NMOS: Now re-enable and run tick5 which is a write so RDY should get skipped.
+                        *r.raised.borrow_mut() = true;
+                        cpu.tick()?;
+                        cpu.tick_done()?;
+
+                        assert!(cpu.op_tick == Tick::Tick5, "Tick is not 5? {}", cpu.op_tick);
+                        assert!(cpu.state == State::Running, "State is not running - {}", cpu.state);
+                    }
+
+                    // Now advance one more. For both NMOS/CMOS this is a write so RDY should also
+                    // be skipped.
+                    cpu.tick()?;
+                    cpu.tick_done()?;
+                    assert!(cpu.op_tick == Tick::Reset, "Tick is not done? {}", cpu.op_tick);
+                    assert!(cpu.state == State::Running, "State is not running - {}", cpu.state);
+
+                    // Now do one more which should be a new instruction start so RDY enables.
+                    cpu.tick()?;
+                    cpu.tick_done()?;
+                    assert!(cpu.op_tick == Tick::Tick1, "Tick is not 1? {}", cpu.op_tick);
+                    assert!(cpu.state == State::RDY, "State is not RDY after RMW instr? - {}", cpu.state);
+
+                    Ok(())
+                }
+            )*
+        }
+    }
+}
+
+rdy_test!(
+    rdy_tests,
+    nmos: setup_cpu_nmos, false,
+    ricoh: setup_cpu_ricoh, false,
+    nmos6510: setup_cpu_nmos_6510, false,
+    cmos: setup_cpu_cmos, true,
+);
+
 macro_rules! init_test {
     ($suite:ident, $($name:ident: $type:expr, $fill:expr, $rand:expr,)*) => {
         mod $suite {
@@ -867,7 +995,7 @@ macro_rules! init_test {
                         };
                         let fill = $fill;
 
-                        let d = Debug::<CPUState>::new(128, usize::MAX);
+                        let d = Debug::<CPUState>::new(128, None);
                         let debug = { || d.debug() };
                         let mut cpu = $type(0x1212, fill, None, None, Some(&r), Some(&debug));
 
@@ -894,18 +1022,6 @@ macro_rules! init_test {
                                 Err(e) => panic!("error from reset: {e:?}"),
                             }
                         }
-
-                        // Pull RDY high and tick should return true but not advance.
-                        let tick = cpu.op_tick;
-                        let clocks = cpu.clocks;
-                        *r.raised.borrow_mut() = true;
-                        let ret = cpu.tick();
-                        assert!(ret.is_ok(), "Tick didn't return true - RDY high - {ret:?}");
-                        let ret = cpu.tick_done();
-                        assert!(ret.is_ok(), "Tick done didn't return true - RDY high - {ret:?}");
-                        assert!(tick == cpu.op_tick, "op_tick advanced with RDY high?");
-                        assert!(clocks == cpu.clocks, "clocks advanced with RDY high?");
-                        *r.raised.borrow_mut() = false;
 
                         // This should fail now.
                         assert!(cpu.power_on().is_err(), "power_on passes twice");
@@ -1038,7 +1154,7 @@ macro_rules! nop_hlt_test {
                     fn $name() -> Result<()> {
                         let test = $test;
                         let addr = u16::from(test.halt) << 8 | u16::from(test.halt);
-                        let d = Debug::<CPUState>::new(128, 1);
+                        let d = Debug::<CPUState>::new(128, Some(1));
                         let debug = {|| d.debug()};
                         let mut cpu = setup_cpu_nmos(addr, $test.fill, None, None, None, Some(&debug));
                         // Make a copy so we can compare if RAM changed.
@@ -1192,7 +1308,7 @@ macro_rules! load_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Debug::<CPUState>::new(128, 1);
+                        let d = Debug::<CPUState>::new(128, Some(1));
                         let debug = {|| d.debug()};
                         let mut cpu = setup_cpu_nmos(0x1212, 0xEA, None, None, None, Some(&debug));
                         cpu.power_on()?;
@@ -1281,7 +1397,7 @@ macro_rules! store_test {
             $(
                 #[test]
                 fn $name() -> Result<()> {
-                    let d = Debug::<CPUState>::new(128, 1);
+                    let d = Debug::<CPUState>::new(128, Some(1));
                     let debug = {|| d.debug()};
                     let mut cpu = setup_cpu_nmos(0x1212, 0xEA, None, None, None, Some(&debug));
                     cpu.power_on()?;
@@ -1359,7 +1475,7 @@ store_test!(
 // as many clocks as expected.
 #[test]
 fn cmos_bbr_extra_clocks() -> Result<()> {
-    let d = Debug::<CPUState>::new(128, 1);
+    let d = Debug::<CPUState>::new(128, Some(1));
     let debug = { || d.debug() };
     let mut cpu = setup_cpu_cmos(0xFFFF, 0x00, None, None, None, Some(&debug));
     cpu.power_on()?;
@@ -1417,7 +1533,7 @@ macro_rules! irq_and_nmi_test {
                         raised: RefCell::new(false),
                     };
 
-                    let d = Debug::<CPUState>::new(128, 1);
+                    let d = Debug::<CPUState>::new(128, Some(1));
                     let debug = { || d.debug() };
                     let mut cpu = $setup(
                         nmi,
@@ -1946,7 +2062,7 @@ macro_rules! rom_test {
                         let mut cpu: $cpu<'_>;
                         // Initialize as always but then we'll overwrite it with a ROM image.
                         // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let d = Debug::<CPUState>::new(128, 1);
+                        let d = Debug::<CPUState>::new(128, Some(1));
                         let debug = { || d.debug() };
 
                         // If we want debugging setup the debug hook. Otherwise go for faster execution.
@@ -2060,8 +2176,8 @@ macro_rules! rom_test {
                             total_cycles += cycles;
                             total_instructions += 1;
 
-                            if (r.end_check)(old_pc, cpu.pc.0, cpu.ram.borrow().as_ref()) {
-                                let res = (r.success_check)(old_pc, cpu.pc.0, cpu.ram.borrow().as_ref());
+                            if (r.end_check)(old_pc, cpu.pc.0, &*cpu.ram.borrow()) {
+                                let res = (r.success_check)(old_pc, cpu.pc.0, &*cpu.ram.borrow());
                                 if let Err(err) = res {
                                     tester!(false, d, &cpu, "{err}");
                                 }
