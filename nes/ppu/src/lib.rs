@@ -34,6 +34,8 @@ pub trait PPUMapper {
     fn write(&mut self, addr: u16, val: u8);
 }
 
+/// The CPU side interface to the PPU. Technically only 3 bits are exposed here
+/// so many CPU side addresses mirror.
 impl Memory for PPU {
     fn read(&self, addr: u16) -> u8 {
         match addr & 0x08 {
@@ -71,11 +73,12 @@ impl PPU {
         }
     }
 
-    /// A `Memory` implementation which handles the public register locations
-    /// for the PPU.
-    pub fn ram(&mut self) -> &dyn Memory {
-        self
-    }
+    /// Do a power-on sequence for the PPU. As this is a superset of `reset`
+    /// that is not needed to be called as well (it is a no-op if it is).
+    pub fn power_on(&mut self) {}
+
+    /// Do a reset sequence for the PPU.
+    pub fn reset(&mut self) {}
 
     /// For use in OAM DMA transfers. Every write will write to the current OAM
     /// addr and then increment (and rollover) the addr.
@@ -86,6 +89,7 @@ impl PPU {
     }
 
     fn ppu_read(&self, addr: u16) -> u8 {
+        let addr = addr & 0x3FFF;
         if addr < 0x3F00 {
             return self.mapper.read(addr);
         }
@@ -93,6 +97,7 @@ impl PPU {
     }
 
     fn ppu_write(&mut self, addr: u16, val: u8) {
+        let addr = addr & 0x3FFF;
         if addr < 0x3F00 {
             return self.mapper.write(addr, val);
         }
