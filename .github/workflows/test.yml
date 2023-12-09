@@ -35,7 +35,7 @@ jobs:
       - name: cargo test --locked
         run: echo $GIT_WORKSPACE && ls $GIT_WORKSPACE && cargo test --locked --all-features --all-targets
         env:
-          TOM_HARTE_PROCESSOR_TESTS: "${{ git.workspace }}/TomHarte/ProcessorTests"
+          TOM_HARTE_PROCESSOR_TESTS: "${{ github.workspace }}/TomHarte/ProcessorTests"
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
