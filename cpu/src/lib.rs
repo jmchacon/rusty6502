@@ -1,5 +1,6 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
 use ahash::AHashMap;
+use serde::Deserialize;
 use std::cell::RefCell;
 use std::fmt;
 use std::fmt::Write;
@@ -1068,6 +1069,58 @@ pub trait CPU<'a>: Chip {
     }
 }
 
+#[derive(Debug, Display, PartialEq)]
+enum LastBusAction {
+    Read,
+    Write,
+}
+
+// Each 6502 implementation is built up from a few key items since 80% of the
+// basic implementation is the same (even for CMOS) and on NMOS sans BCD the
+// implementation is 100% the same. This leverages some internal traits with
+// default implementations in order to avoid excess macros which can be harder
+// to follow. Originally this was one set of code with an internal type enum
+// and checked in the locations that needed it. Splitting into 4 distinct impls
+// shaved 5-10% of runtime for heavy use of those functions (such as ADC/SBC).
+// This of course at the expense of a large number of traits/macros which are
+// explained below.
+//
+// NOTE: It is ok for a trait to reference a member function that isn't part
+//       of that trait so long as it exists once monomorphification happens.
+//       i.e. code in the Chip trait (tick) needs to call process_opcode which
+//       for NMOS is implemented in CPUNmosInternal but the CMOS chip just
+//       implements in it's direct impl block.
+//
+// A CPU6502 implements:
+//
+// CPU - The public API exposed for debugging/basic functions. As a lot of these
+//       functions are implemented similarly there are macros for those later on.
+//       These can't have default impls because that would require exposing all
+//       the get/set methods in CPUInternal (traits don't have member variables).
+//       This is most implemented then as macros (cpu_nmos_power_reset, cpu_impl)
+//       for most NMOS with specific implementations for Ricoh/CMOS power (cpu_cmos_ricoh_power_reset)
+//       and CMOS implementing other parts directly (non macro).
+// Chip - The public trait for all chips which implement tick and tick_done. This
+//        is implemented as a macro for NMOS (cpu_impl_nmos) and directly
+//        for CMOS.
+// CPUInternal - Private crate trait which implements all the common instructions/modes
+//               as default functions allowing easy reuse across impls. Then the
+//               areas which need changing (ADC/SBC for Ricoh for instance) can
+//               be overriden very compactly. This also implements a set of
+//               internal get/set methods for A/X/Y/PC/S/P, state, ram, etc
+//               since otherwise default impls would be trying to access self.X
+//               and that can't be done as traits don't have member vars.
+//               These accessors (pc() for instance) are generated via a macro (cpu_internal)
+//               while all the other implementation for this trait is done as default
+//               member functions.
+// CPUNmosInternal - Private trait for the undocumented NMOS opcodes. Again done
+//                   as default functions so all 3 NMOS chips can just use as-is.
+//
+// Finally its own impl block provides a new() function which is done as a macro
+// on all but the 6510 (cpu_new) since it needs to implement the I/O ports.
+// The CMOS version implements process_opcode here as well as any of the CMOS specific
+// implementations.
+
 // NOTE: All of the 65xx implementations below generate their base struct from
 // the attribute attached to them. Use cargo-expand or read the proc macro for
 // the description of all the members.
@@ -1142,6 +1195,2348 @@ common_cpu_funcs!(CPU6502, "NMOS");
 common_cpu_funcs!(CPU6510, "6510");
 common_cpu_funcs!(CPURicoh, "Ricoh");
 common_cpu_funcs!(CPU65C02, "CMOS");
+
+// The common implementation definitions for all 6502 chips but done as a private
+// crate only trait so the default implementations can get at all the internal
+// cpu entries without having to expose those publicly.
+trait CPUInternal<'a>: Chip + CPU<'a> {
+    // The following methods are all ones which cannot be defaulted
+    // and must be implmented by the relevant struct in order to provide
+    // access and mutability for the default trait methods below.
+
+    // state returns the current CPU state.
+    fn state(&self) -> State;
+    // state_mut sets the current CPU state.
+    fn state_mut(&mut self, new: State);
+
+    // a returns the contents of the A register.
+    fn a(&self) -> Wrapping<u8>;
+    // a_mut sets the contents of the A register.
+    fn a_mut(&mut self, new: Wrapping<u8>);
+
+    // x returns the contents of the X register.
+    fn x(&self) -> Wrapping<u8>;
+    // x_mut sets the contents of the X register.
+    fn x_mut(&mut self, new: Wrapping<u8>);
+
+    // y returns the contents of the Y register.
+    fn y(&self) -> Wrapping<u8>;
+    // y_mut sets the contents of the Y register.
+    fn y_mut(&mut self, new: Wrapping<u8>);
+
+    // s returns the contents of the S register.
+    fn s(&self) -> Wrapping<u8>;
+    // s_mut sets the contents of the S register.
+    fn s_mut(&mut self, new: Wrapping<u8>);
+
+    // p returns the current Flags from the P register.
+    fn p(&self) -> Flags;
+    // p_mut sets the P register to the given Flags.
+    fn p_mut(&mut self, new: Flags);
+
+    // op_val returns the internal op_val register.
+    fn op_val(&self) -> u8;
+    // op_val_mut sets the internal op_val register.
+    fn op_val_mut(&mut self, new: u8);
+
+    // op_addr returns the internal op_addr register.
+
+    fn op_addr(&self) -> u16;
+    // op_addr_mut sets the internal op_addr register.
+    fn op_addr_mut(&mut self, new: u16);
+
+    // op_raw returns the current opcode byte.
+    fn op_raw(&self) -> u8;
+
+    // op returns the current decoded Operation.
+    fn op(&self) -> Operation;
+
+    // addr_done returns the internal addr_done state.
+    fn addr_done(&self) -> OpState;
+    // addr_done_mut sets the internal addr_done state.
+    fn addr_done_mut(&mut self, new: OpState);
+
+    // skip_interrupt returns the current SkipInterrupt state.
+    fn skip_interrupt(&self) -> SkipInterrupt;
+    // skip_interrupt_mut sets the SkipInterrupt state.
+    fn skip_interrupt_mut(&mut self, new: SkipInterrupt);
+
+    // irq_raised returns the current InterruptStyle state.
+    fn irq_raised(&self) -> InterruptStyle;
+    // irq_raised_mut sets the InterruptStyle state.
+    fn irq_raised_mut(&mut self, new: InterruptStyle);
+
+    // op_addr_fixup returns whether this address mode had to fixup op_addr.
+    fn op_addr_fixup(&self) -> bool;
+    // op_addr_fixup_mut sets op_addr_fixup.
+    fn op_addr_fixup_mut(&mut self, new: bool);
+
+    // run_interrupt does all the heavy lifting for any interrupt processing.
+    // i.e. pushing values onto the stack and loading PC with the right address.
+    // Pass in the vector to be used for loading the PC (which means for BRK
+    // it can change if an NMI happens before we get to the load ticks).
+    // Returns OpState::Done when complete (and PC is correct). Can return an error on an
+    // invalid tick count.
+    fn run_interrupt(&mut self, vec: u16, irq: bool) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick8 => Err(eyre!(
+                "run_interrupt: invalid op_tick: {:?}",
+                self.op_tick()
+            )),
+            Tick::Tick2 => {
+                // Increment the PC on a non IRQ (i.e. BRK) since that changes where returns happen.
+                if !irq {
+                    self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                }
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // There is no truncation as we mask and shift into 8 bits.
+                #[allow(clippy::cast_possible_truncation)]
+                self.push_stack(((self.pc() & 0xFF00) >> 8) as u8);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // There is no truncation as we mask into 8 bits.
+                #[allow(clippy::cast_possible_truncation)]
+                self.push_stack((self.pc() & 0x00FF) as u8);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                let mut push = self.p();
+                // S1 is always set
+                push |= P_S1;
+                // B always set unless this triggered due to IRQ
+                push |= P_B;
+                if irq {
+                    push &= !P_B;
+                }
+                self.push_stack(push.0);
+                // Now set P after we've pushed.
+
+                // For BRK/IRQ we set I. NMI does not.
+                if self.irq_raised() != InterruptStyle::NMI {
+                    self.p_mut(self.p() | P_INTERRUPT);
+                }
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                self.op_val_mut(self.ram().borrow().read(vec));
+                Ok(OpState::Processing)
+            }
+            Tick::Tick7 => {
+                // Compute the new PC from the 2nd vector component and the previous val read.
+                self.pc_mut(
+                    (u16::from(self.ram().borrow().read(vec + 1)) << 8) | u16::from(self.op_val()),
+                );
+
+                // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
+                // a handler before firing again.
+                if irq && self.skip_interrupt() != SkipInterrupt::PrevSkip {
+                    self.skip_interrupt_mut(SkipInterrupt::Skip);
+                }
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // load_register takes the val and inserts it into the given register.
+    // It then does Z and N checks against the new value if and sets flags (only
+    // for A/X/Y).
+    // Always returns OpState::Done as this happens on a single tick.
+    #[allow(clippy::unnecessary_wraps)]
+    fn load_register(&mut self, reg: Register, val: u8) -> Result<OpState> {
+        match reg {
+            Register::A => self.a_mut(Wrapping(val)),
+            Register::X => self.x_mut(Wrapping(val)),
+            Register::Y => self.y_mut(Wrapping(val)),
+            Register::P => {
+                self.p_mut(Flags(val));
+                return Ok(OpState::Done);
+            }
+        };
+        self.zero_check(val);
+        self.negative_check(val);
+        Ok(OpState::Done)
+    }
+
+    // load_register_a is the curried version of load_register that uses op_val and A implicitly.
+    // This way it can be used as the op_func argument during load/rmw instructions.
+    // Always returns Done since this is a single tick operation.
+    fn load_register_a(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.op_val())
+    }
+
+    // load_register_x is the curried version of load_register that uses op_val and X implicitly.
+    // This way it can be used as the op_func argument during load/rmw instructions.
+    // Always returns Done since this is a single tick operation.
+    fn load_register_x(&mut self) -> Result<OpState> {
+        self.load_register(Register::X, self.op_val())
+    }
+
+    // load_register_y is the curried version of load_register that uses op_val and Y implicitly.
+    // This way it can be used as the op_func argument during load/rmw instructions.
+    // Always returns Done since this is a single tick operation.
+    fn load_register_y(&mut self) -> Result<OpState> {
+        self.load_register(Register::Y, self.op_val())
+    }
+
+    // store_with_flags writes the value to the address given but also updates
+    // N/Z flags at the same time.
+    #[allow(clippy::unnecessary_wraps)]
+    fn store_with_flags(&mut self, addr: u16, val: u8) -> Result<OpState> {
+        self.zero_check(val);
+        self.negative_check(val);
+        self.ram().borrow_mut().write(addr, val);
+        Ok(OpState::Done)
+    }
+
+    // compare implements the logic for all CMP/CPX/CPY instructions and
+    // sets flags accordingly from the results.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn compare(&mut self, reg: u8, val: u8) -> Result<OpState> {
+        let check = (Wrapping(reg) - Wrapping(val)).0;
+        self.zero_check(check);
+        self.negative_check(check);
+        // A-M done as 2's complement addition by ones complement and add 1
+        // This way we get valid sign extension and a carry bit test.
+        self.carry_check(u16::from(reg) + u16::from(!val) + 1);
+        Ok(OpState::Done)
+    }
+
+    // compare_a is a curried version of compare that references A and uses op_val for the value.
+    // This way it can be used as the op_func in load_instruction.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn compare_a(&mut self) -> Result<OpState> {
+        self.compare(self.a().0, self.op_val())
+    }
+
+    // compare_x is a curried version of compare that references X and uses op_val for the value.
+    // This way it can be used as the op_func in load_instruction.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn compare_x(&mut self) -> Result<OpState> {
+        self.compare(self.x().0, self.op_val())
+    }
+
+    // compare_y is a curried version of compare that references Y and uses op_val for the value.
+    // This way it can be used as the op_func in load_instruction.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn compare_y(&mut self) -> Result<OpState> {
+        self.compare(self.y().0, self.op_val())
+    }
+
+    // zero_check sets the Z flag based on the value.
+    fn zero_check(&mut self, val: u8) {
+        let mut new = self.p();
+        new &= !P_ZERO;
+        if val == 0 {
+            new |= P_ZERO;
+        }
+        self.p_mut(new);
+    }
+
+    // negative_check sets the N flag based on the value.
+    fn negative_check(&mut self, val: u8) {
+        let mut new = self.p();
+        new &= !P_NEGATIVE;
+        if (val & P_NEGATIVE) == P_NEGATIVE {
+            new |= P_NEGATIVE;
+        }
+        self.p_mut(new);
+    }
+
+    // carry_check sets the C flag based on the value.
+    fn carry_check(&mut self, val: u16) {
+        let mut new = self.p();
+        new &= !P_CARRY;
+        if val >= 0x0100 {
+            new |= P_CARRY;
+        }
+        self.p_mut(new);
+    }
+
+    // overflow_check sets the V flag is the result of the ALU operation
+    // caused a two's complement sign change.
+    // Taken from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
+    fn overflow_check(&mut self, reg: u8, arg: u8, result: u8) {
+        let mut new = self.p();
+        new &= !P_OVERFLOW;
+        // If the original sign differs from the end sign bit.
+        if (reg ^ result) & (arg ^ result) & 0x80 != 0x00 {
+            new |= P_OVERFLOW;
+        }
+        self.p_mut(new);
+    }
+
+    // load_instruction abstracts all load instruction opcodes. The address mode function is
+    // used to get the proper values loaded into op_addr and op_val.
+    // Then on the same tick this is done op_func is called to load the appropriate register.
+    // Returns OpState::Done when complete and/or any error.
+    fn load_instruction(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        op_func: fn(&mut Self) -> Result<OpState>,
+    ) -> Result<OpState> {
+        let ret = address_mode(self, &InstructionMode::Load)?;
+        self.addr_done_mut(ret);
+        match self.addr_done() {
+            OpState::Processing => Ok(OpState::Processing),
+            OpState::Done => op_func(self),
+        }
+    }
+
+    // rmw_instruction abstracts all RMW instruction opcodes. The address mode function is
+    // used to get the proper values loaded into op_addr and op_val.
+    // This assumes the address mode function also handle the extra write RMW instructions perform.
+    // Then on the next tick the op_func is called to perform the final write operation.
+    // Returns OpState::Done when complete and/or any error.
+    fn rmw_instruction(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        op_func: fn(&mut Self) -> Result<OpState>,
+    ) -> Result<OpState> {
+        match self.addr_done() {
+            OpState::Processing => {
+                let ret = address_mode(self, &InstructionMode::Rmw)?;
+                self.addr_done_mut(ret);
+                Ok(OpState::Processing)
+            }
+            OpState::Done => op_func(self),
+        }
+    }
+
+    // store_instruction abstracts all store instruction opcodes.  The address mode function is
+    // used to get the proper values loaded into op_addr and op_val.
+    // Then on the next tick the val passed is stored to op_addr.
+    // Returns OpState::Done when complete and/or any error.
+    fn store_instruction(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        val: u8,
+    ) -> Result<OpState> {
+        match self.addr_done() {
+            OpState::Processing => {
+                let ret = address_mode(self, &InstructionMode::Store)?;
+                self.addr_done_mut(ret);
+                Ok(OpState::Processing)
+            }
+            OpState::Done => {
+                self.ram().borrow_mut().write(self.op_addr(), val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_absolute implements Absolute mode - a
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_absolute(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 => {
+                // op_val has the first start of the address so start computing it.
+                self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                self.op_addr_mut(self.op_addr() | u16::from(self.op_val()) << 8);
+                match mode {
+                    // For a store we're done since the opcode can decide what to store.
+                    InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick4 => {
+                // For load and RMW we read the value
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                match mode {
+                    // For a load we're now done.
+                    &InstructionMode::Load => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick5 => {
+                // On NMOS there's a spurious write here where we replay back.
+                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_absolute_x implements Absolute X mode - a,x
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_absolute_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        self.addr_absolute_xy(mode, self.x().0)
+    }
+
+    // addr_absolute_y implements Absolute Y mode - a,y
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_absolute_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        self.addr_absolute_xy(mode, self.y().0)
+    }
+
+    // addr_absolute_xy implements the details for addr_absolute_x and addr_absolute_y since
+    // they only differ based on the register used.
+    // See those functions for arg/return specifics.
+    fn addr_absolute_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 => {
+                // op_val has the first start of the address so start computing it.
+                self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                self.op_addr_mut(self.op_addr() | u16::from(self.op_val()) << 8);
+                // Add reg but do it in a way which won't page wrap (if needed).
+                let a = (self.op_addr() & 0xFF00)
+                    | u16::from((Wrapping((self.op_addr() & 0x00FF) as u8) + Wrapping(reg)).0);
+                self.op_val_mut(0);
+                if a != (Wrapping(self.op_addr()) + Wrapping(u16::from(reg))).0 {
+                    // Signal for next phase fixup is needed
+                    self.op_val_mut(1);
+                }
+                self.op_addr_mut(a);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Check old opVal to see if it's non-zero. If so it means the reg addition
+                // crosses a page boundary and we'll have to fixup otherwise this is fine.
+                // For a load operation that means another tick to read the correct address.
+                // For RMW it doesn't matter (we always do the extra tick).
+                // For Store we're done. Just fixup p.opAddr so the return value is correct.
+
+                // If we didn't make the wrong address and load/storing we're good.
+                // For RMW we still read here but do continue to the next tick.
+                if self.op_val() == 0 {
+                    // Advance the PC since we didn't earlier as down below CMOS
+                    // can reread this value.
+                    self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                    self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                    if mode == &InstructionMode::Rmw {
+                        return Ok(OpState::Processing);
+                    }
+                    return Ok(OpState::Done);
+                }
+
+                self.op_addr_fixup_mut(true);
+                // Every tick requires a bus cycle so while we're fixing up
+                // we have to read something. In this case we read the wrong op_addr.
+                // Leave op_val as it was so the next tick can tell we had to
+                // do a fixup (for RMW since it always gets there).
+                _ = self.ram().borrow().read(self.op_addr());
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+
+                // We computed the wrong addr before so fix it now by page wrapping.
+                self.op_addr_mut((Wrapping(self.op_addr()) + Wrapping(0x0100)).0);
+
+                // Stores are done and ready to write on their next cycle since
+                // the addr is correct now.
+                if mode == &InstructionMode::Store {
+                    return Ok(OpState::Done);
+                }
+
+                // Everything else runs another tick at this point
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // So get the correct value in now for both loads (extra cycle for fixup)
+                // and RMW (which always gets here minimum).
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+
+                // For a load we're done.
+                // Otherwise RMW overflow always advances.
+                if mode == &InstructionMode::Load {
+                    return Ok(OpState::Done);
+                }
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read.
+                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_immediate implements Immediate mode - #i
+    // returning the value in op_val.
+    // NOTE: This has no mode other than load so the argument is ignored.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_immediate(&mut self, _mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick3
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!(
+                "addr_immediate invalid op_tick: {:?}",
+                self.op_tick()
+            )),
+            Tick::Tick2 => {
+                // Already read the value but need to bump the PC
+                // since this mode consumes op_val.
+                // Set op_addr in case ADC/SBC need an extra bus cycle and a place
+                // to read.
+                self.op_addr_mut(self.pc());
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_indirect_x implements Zero page indirect plus X mode - (d,x)
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_indirect_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick8 => Err(eyre!(
+                "addr_indirect_x invalid op_tick: {:?}",
+                self.op_tick()
+            )),
+            Tick::Tick2 => {
+                // We've already read the value but need to bump the PC
+                // and assign it into op_addr so the throw away read in
+                // tick3 reads the right place.
+                self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // A throwaway read from the ZP addr. We'll add the X register as well for the real read next.
+                _ = self.ram().borrow().read(self.op_addr());
+                // Does this as a Wrapping so it wraps as needed since it stays in ZP.
+                self.op_addr_mut(u16::from((Wrapping(self.op_val()) + self.x()).0));
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Read effective addr low byte
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                // Now increment (with ZP rollover) for next read.
+                // There is no truncation since we know this is always
+                // a u8 so within ZP.
+                #[allow(clippy::cast_possible_truncation)]
+                let a = Wrapping(self.op_addr() as u8);
+                self.op_addr_mut(u16::from((a + Wrapping(1)).0));
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Read high byte, shift over and add op_val which has the low byte.
+                self.op_addr_mut(
+                    (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
+                        | u16::from(self.op_val()),
+                );
+                match mode {
+                    // For a store we're done as op_addr now contains the destination address.
+                    InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick6 => {
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                match mode {
+                    // For a load we're done as we've loaded the value.
+                    InstructionMode::Load => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick7 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read.
+                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_indirect_y implements Zero page indirect plus Y mode - (d),y
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_indirect_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick8 => Err(eyre!(
+                "addr_indirect_y invalid op_tick: {:?}",
+                self.op_tick()
+            )),
+            Tick::Tick2 => {
+                // We've already read the value but need to bump the PC
+                // and assign it into op_addr so the throw away read in
+                // tick3 reads the right place.
+                self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read from the ZP addr to start building our pointer.
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                // Setup op_addr for next read and handle ZP wrapping.
+                #[allow(clippy::cast_possible_truncation)]
+                let a = u16::from((Wrapping(self.op_addr() as u8) + Wrapping(1)).0);
+                self.op_addr_mut(a);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Compute effective address and then add Y to it (possibly wrongly).
+                self.op_addr_mut(
+                    (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
+                        | u16::from(self.op_val()),
+                );
+                // Add Y but do it in a way which won't page wrap (if needed).
+                #[allow(clippy::cast_possible_truncation)]
+                let a = (self.op_addr() & 0xFF00)
+                    | u16::from((Wrapping(self.op_addr() as u8) + self.y()).0);
+                self.op_val_mut(0);
+                if a != (Wrapping(self.op_addr()) + Wrapping(u16::from(self.y().0))).0 {
+                    // Signal for next phase we got it wrong.
+                    self.op_val_mut(1);
+                }
+                self.op_addr_mut(a);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Save op_val so we know if this needed fixing.
+                let t = self.op_val();
+                // Even with an incorrect op_addr we still read from it.
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+
+                // Check old opVal to see if it's non-zero. If so it means the Y addition
+                // crosses a page boundary and we'll have to fixup.
+                // For a load operation that means another tick to read the correct
+                // address.
+                // For RMW it doesn't matter (we always do the extra tick).
+                // For Store we're done. Just fixup p.opAddr so the return value is correct.
+                let mut done = Ok(OpState::Done);
+                if t != 0 {
+                    self.op_addr_fixup_mut(true);
+                    self.op_addr_mut((Wrapping(self.op_addr()) + Wrapping(0x0100)).0);
+                    if mode == &InstructionMode::Load {
+                        done = Ok(OpState::Processing);
+                    }
+                }
+                // For RMW it doesn't matter, we tick again.
+                if mode == &InstructionMode::Rmw {
+                    done = Ok(OpState::Processing);
+                }
+                done
+            }
+            Tick::Tick6 => {
+                // Optional (on load) in case adding Y went past a page boundary.
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                match mode {
+                    InstructionMode::Rmw => Ok(OpState::Processing),
+                    _ => Ok(OpState::Done),
+                }
+            }
+            Tick::Tick7 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read.
+                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_zp implements Zero page mode - d
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates. In the CMOS case this is a 2nd read.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_zp(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_zp invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 => {
+                // Already read the value but need to bump the PC
+                self.op_addr_mut(u16::from(self.op_val()));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                match mode {
+                    // For a store we're done since we have the address needed.
+                    &InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick3 => {
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                match mode {
+                    // For a load we're now done since the value is loaded.
+                    &InstructionMode::Load => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick4 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read.
+                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_zp_x implements Zero page X mode - d,x
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_zp_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        self.addr_zp_xy(mode, self.x().0)
+    }
+
+    // addr_zp_y implements Zero page Y mode - d,y
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_zp_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        self.addr_zp_xy(mode, self.y().0)
+    }
+
+    // addr_zp_xy implements the details for addr_zp_x and addr_zp_y since they only differ based on the register used.
+    // See those functions for arg/return specifics.
+    fn addr_zp_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_zp_x invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 => {
+                // Already read the value but need to bump the PC.
+                self.op_addr_mut(u16::from(self.op_val()));
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read from the ZP addr and then add the register for the real read later.
+                _ = self.ram().borrow().read(self.op_addr());
+                // Do this as a u8 so it wraps as needed.
+                self.op_addr_mut(u16::from((Wrapping(self.op_val()) + Wrapping(reg)).0));
+                // For a store we're done since we have the address needed.
+                if mode == &InstructionMode::Store {
+                    Ok(OpState::Done)
+                } else {
+                    Ok(OpState::Processing)
+                }
+            }
+            Tick::Tick4 => {
+                // Now read from the final address.
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                // If we're load we're now done.
+                if mode == &InstructionMode::Load {
+                    Ok(OpState::Done)
+                } else {
+                    Ok(OpState::Processing)
+                }
+            }
+            Tick::Tick5 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read.
+                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // perform_branch does all of the main logic for processing a branch which is taken.
+    fn perform_branch(&mut self) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!(
+                    "perform_branch invalid op_tick: {:?}",
+                    self.op_tick()
+                ))
+            }
+            Tick::Tick2 => {
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // We only skip if the last instruction didn't. This way a branch always doesn't prevent interrupt processing
+                // since on real silicon this is what happens (just a delay in the pipelining).
+                if self.skip_interrupt() != SkipInterrupt::PrevSkip {
+                    self.skip_interrupt_mut(SkipInterrupt::Skip);
+                }
+                self.branch_taken()
+            }
+            Tick::Tick4 => self.branch_taken2(),
+        }
+    }
+
+    // branch_taken computes the first attempt to take a branch. This may be wrong
+    // due to page crossing so it will return Processing or Done to indicate
+    // whether to call branch_taken2 or not (call if Processing returns)
+    #[allow(clippy::unnecessary_wraps)]
+    fn branch_taken(&mut self) -> Result<OpState> {
+        // This always reads the next instruction even if we're branching now.
+        _ = self.ram().borrow().read(self.pc());
+
+        // Per http://www.6502.org/tutorials/6502opcodes.html
+        // the wrong page is defined as the a different page than
+        // the next byte after the jump. i.e. current PC at the moment.
+
+        // Now compute the new PC but possibly wrong page.
+        // Stash the old one in p.opAddr so we can use in tick 4 if needed.
+        self.op_addr_mut(self.pc());
+        self.pc_mut(
+            Wrapping(
+                (self.pc() & 0xFF00)
+                    | u16::from((Wrapping((self.pc() & 0x00FF) as u8) + Wrapping(self.op_val())).0),
+            )
+            .0,
+        );
+
+        // Now check the pc against one which didn't truncate for page by sign extending
+        // op_val and adding it to op_addr.
+        // NOTE: We don't lose the sign here since Wrapping will do the right thing.
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_lossless,
+            clippy::cast_possible_wrap
+        )]
+        if self.pc() == (Wrapping(self.op_addr()) + Wrapping(self.op_val() as i8 as i16 as u16)).0 {
+            return Ok(OpState::Done);
+        }
+        Ok(OpState::Processing)
+    }
+
+    // branch_taken2 is used when fixing up a page boundary issue from a previous
+    // branch_taken call.
+    #[allow(clippy::unnecessary_wraps)]
+    fn branch_taken2(&mut self) -> Result<OpState> {
+        // It always triggers a bus read of the newly computed PC (which is wrong if we got here).
+        _ = self.ram().borrow().read(self.pc());
+
+        // Set the correct PC value if we got here.
+        // NOTE: We don't lose the sign here since Wrapping will do the right thing.
+        #[allow(
+            clippy::cast_sign_loss,
+            clippy::cast_lossless,
+            clippy::cast_possible_wrap
+        )]
+        let val = Wrapping(self.op_addr()) + Wrapping(self.op_val() as i8 as i16 as u16);
+        self.pc_mut(val.0);
+
+        Ok(OpState::Done)
+    }
+
+    // branch_nop reads the next byte as the branch offset and increments the PC.
+    // Used for the 2nd tick when branches aren't taken.
+    fn branch_nop(&mut self) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick3
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("branch_nop invalid op_tick: {:?}", self.op_tick())),
+            Tick::Tick2 => {
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // pop_stack pops the top value from the stack and adjusts
+    // the stack pointer.
+    fn pop_stack(&mut self) -> u8 {
+        self.s_mut(self.s() + Wrapping(1));
+        self.ram()
+            .borrow()
+            .read(u16::from(self.s().0) + STACK_START)
+    }
+
+    // push_stack takes the given 8 bit value and pushes it into the stack and adjusts
+    // the stack pointer.
+    fn push_stack(&mut self, val: u8) {
+        self.ram()
+            .borrow_mut()
+            .write(u16::from(self.s().0) + STACK_START, val);
+        self.s_mut(self.s() - Wrapping(1));
+    }
+
+    // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
+    // This sets all associated flags in P. For SBC simply ones-complement op_val
+    // before calling.
+    // NOTE: For SBC this only works in non BCD mode. sbc() handles BCD directly but
+    // otherwise calls adc for binary mode.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn adc(&mut self) -> Result<OpState> {
+        // Pull the carry bit out which thankfully is the low bit so can be
+        // used directly.
+        let carry = (self.p() & P_CARRY).0;
+
+        // Do BCD mode.
+        if (self.p() & P_DECIMAL) != P_NONE {
+            // BCD details - http://6502.org/tutorials/decimal_mode.html
+            // Also http://nesdev.com/6502_cpu.txt but it has errors
+            let mut al =
+                Wrapping(self.a().0 & 0x0F) + Wrapping(self.op_val() & 0x0F) + Wrapping(carry);
+            // Low nibble fixup
+            if al >= Wrapping(0x0A) {
+                al = ((al + Wrapping(0x06)) & Wrapping(0x0F)) + Wrapping(0x10);
+            }
+            let mut sum = Wrapping(u16::from(self.a().0 & 0xF0))
+                + Wrapping(u16::from(self.op_val() & 0xF0))
+                + Wrapping(u16::from(al.0));
+            // High nibble fixup
+            if sum >= Wrapping(0xA0) {
+                sum += 0x60;
+            }
+            let res = (sum.0 & 0xFF) as u8;
+            let seq = Wrapping(self.a().0 & 0xF0) + Wrapping(self.op_val() & 0xF0) + al;
+            let bin = self.a() + Wrapping(self.op_val()) + Wrapping(carry);
+            self.overflow_check(self.a().0, self.op_val(), seq.0);
+            self.carry_check(sum.0);
+            self.negative_check(seq.0);
+            self.zero_check(bin.0);
+            self.a_mut(Wrapping(res));
+            return Ok(OpState::Done);
+        }
+
+        // Otherwise do normal binary math.
+        let sum = (self.a() + Wrapping(self.op_val()) + Wrapping(carry)).0;
+        self.overflow_check(self.a().0, self.op_val(), sum);
+
+        // Yes, could do bit checks here like the hardware but
+        // just treating as uint16 math is simpler to code.
+        self.carry_check(u16::from(self.a().0) + u16::from(self.op_val()) + u16::from(carry));
+        // Now set the accumulator so the other flag checks are against the result.
+        self.load_register(Register::A, sum)
+    }
+
+    // and implements the AND instruction on the given memory location in op_addr.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn and(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.a().0 & self.op_val())
+    }
+
+    // asl implements the ASL instruction on the given memory location in op_addr.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn asl(&mut self) -> Result<OpState> {
+        let new = self.op_val() << 1;
+        self.ram().borrow_mut().write(self.op_addr(), new);
+        self.carry_check(u16::from(self.op_val()) << 1);
+        self.zero_check(new);
+        self.negative_check(new);
+        Ok(OpState::Done)
+    }
+
+    // asl_acc implements the ASL instruction directly on the accumulator.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
+    fn asl_acc(&mut self) -> Result<OpState> {
+        self.carry_check(u16::from(self.a().0) << 1);
+        self.load_register(Register::A, self.a().0 << 1)
+    }
+
+    // bcc implements the BCC instruction and branches if C is clear.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bcc(&mut self) -> Result<OpState> {
+        if self.p() & P_CARRY == P_NONE {
+            self.perform_branch()
+        } else {
+            self.branch_nop()
+        }
+    }
+
+    // bcs implements the BCS instruction and branches if C is set.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bcs(&mut self) -> Result<OpState> {
+        if self.p() & P_CARRY == P_NONE {
+            self.branch_nop()
+        } else {
+            self.perform_branch()
+        }
+    }
+
+    // beq implements the BEQ instruction and branches is Z is set.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn beq(&mut self) -> Result<OpState> {
+        if self.p() & P_ZERO == P_NONE {
+            self.branch_nop()
+        } else {
+            self.perform_branch()
+        }
+    }
+
+    // bit implements the BIT instruction for AND'ing against A
+    // and setting N/V/Z based on the value.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn bit(&mut self) -> Result<OpState> {
+        self.zero_check(self.a().0 & self.op_val());
+        self.negative_check(self.op_val());
+        // Copy V from bit 6
+        self.p_mut(self.p() & !P_OVERFLOW);
+        if self.op_val() & P_OVERFLOW != P_NONE {
+            self.p_mut(self.p() | P_OVERFLOW);
+        }
+
+        Ok(OpState::Done)
+    }
+
+    // bmi implements the BMI instruction and branches if N is set.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bmi(&mut self) -> Result<OpState> {
+        if self.p() & P_NEGATIVE == P_NONE {
+            self.branch_nop()
+        } else {
+            self.perform_branch()
+        }
+    }
+
+    // bne implements the BNE instruction and branches is Z is clear.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bne(&mut self) -> Result<OpState> {
+        if self.p() & P_ZERO == P_NONE {
+            self.perform_branch()
+        } else {
+            self.branch_nop()
+        }
+    }
+
+    // bpl implements the BPL instruction and branches if N is clear.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bpl(&mut self) -> Result<OpState> {
+        if self.p() & P_NEGATIVE == P_NONE {
+            self.perform_branch()
+        } else {
+            self.branch_nop()
+        }
+    }
+
+    // bvc implements the BVC instruction and branches if V is clear.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bvc(&mut self) -> Result<OpState> {
+        if self.p() & P_OVERFLOW == P_NONE {
+            self.perform_branch()
+        } else {
+            self.branch_nop()
+        }
+    }
+
+    // bvs implements the BVS instruction and branches if V is set.
+    // Returns Done when the branch has set the correct PC and/or an error.
+    fn bvs(&mut self) -> Result<OpState> {
+        if self.p() & P_OVERFLOW == P_NONE {
+            self.branch_nop()
+        } else {
+            self.perform_branch()
+        }
+    }
+
+    // brk implements the BRK instruction. This does setup and then calls the
+    // interrupt processing handler refenced at IRQ_VECTOR (normally).
+    // Returns Done when done and/or errors.
+    fn brk(&mut self) -> Result<OpState> {
+        // This is the same as an interrupt handler so the vector we call
+        // can change on a per tick basis on NMOS. i.e. we might push P with P_B set
+        // but go to the NMI vector depending on timing.
+
+        // New PC comes from IRQ_VECTOR unless we've raised an NMI.
+        let ret = match self.irq_raised() {
+            InterruptStyle::IRQ => self.run_interrupt(IRQ_VECTOR, true)?,
+            InterruptStyle::NMI => self.run_interrupt(NMI_VECTOR, true)?,
+            InterruptStyle::None => self.run_interrupt(IRQ_VECTOR, false)?,
+        };
+        // If we're done on this tick eat any pending interrupt since BRK is special.
+        if ret == OpState::Done {
+            self.irq_raised_mut(InterruptStyle::None);
+        }
+        Ok(ret)
+    }
+
+    // clc implements the CLC instruction clearing the C status bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn clc(&mut self) -> Result<OpState> {
+        self.p_mut(self.p() & !P_CARRY);
+        Ok(OpState::Done)
+    }
+
+    // cld implements the CLD instruction clearing the D status bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn cld(&mut self) -> Result<OpState> {
+        self.p_mut(self.p() & !P_DECIMAL);
+        Ok(OpState::Done)
+    }
+
+    // cli implements the CLI instruction for clearing the I status bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn cli(&mut self) -> Result<OpState> {
+        self.p_mut(self.p() & !P_INTERRUPT);
+        Ok(OpState::Done)
+    }
+
+    // clv implements the CLV instruction clearing the V status bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn clv(&mut self) -> Result<OpState> {
+        self.p_mut(self.p() & !P_OVERFLOW);
+        Ok(OpState::Done)
+    }
+
+    // dec implements the DEC instruction by decrementing the value (op_val) at op_addr.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn dec(&mut self) -> Result<OpState> {
+        self.store_with_flags(self.op_addr(), (Wrapping(self.op_val()) - Wrapping(1)).0)
+    }
+
+    // eor implements the EOR instruction which XORs op_val with A.
+    // Always returns true since this takes one tick and never returns an error.
+    fn eor(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.a().0 ^ self.op_val())
+    }
+
+    // inc implements the INC instruction by incrementing the value (op_val) at op_addr.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn inc(&mut self) -> Result<OpState> {
+        self.store_with_flags(self.op_addr(), (Wrapping(self.op_val()) + Wrapping(1)).0)
+    }
+
+    // jmp implements the JMP instruction for jumping to a new address.
+    // Doesn't use addressing mode functions since it's technically not
+    // a load/rmw/store instruction so doesn't fit exactly.
+    // Returns Done when done and/or errors.
+    fn jmp(&mut self) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("jmp: invalid op_tick: {:?}", self.op_tick())),
+            Tick::Tick2 => {
+                // We've already read op_val which is the new PCL so increment PC only.
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read PCH and assemble the PC
+                self.op_addr_mut(
+                    (u16::from(self.ram().borrow().read(self.pc())) << 8)
+                        | u16::from(self.op_val()),
+                );
+                self.pc_mut(self.op_addr());
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // jmp_indirect implements the indirect JMP instruction for jumping through a pointer to a new address.
+    // Returns Done when the PC is correct. Returns an error on an invalid tick.
+    fn jmp_indirect(&mut self) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("jmp indirect: invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 | Tick::Tick3 => {
+                // Same as loading an absolute address
+                self.addr_absolute(&InstructionMode::Load)
+            }
+            Tick::Tick4 => {
+                // Read the low byte of the pointer and stash it in op_val if NMOS
+                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Read the high byte. On NMOS this tick reads the wrong address if there was a page wrap.
+                let addr = (self.op_addr() & 0xFF00)
+                    | u16::from((Wrapping((self.op_addr() & 0x00FF) as u8) + Wrapping(1)).0);
+                let val = self.ram().borrow().read(addr);
+                self.op_addr_mut((u16::from(val) << 8) | u16::from(self.op_val()));
+                self.pc_mut(self.op_addr());
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // jsr implements the JSR instruction for jumping to a subroutine.
+    // Returns Done when done and/or errors.
+    fn jsr(&mut self) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("jsr: invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 => {
+                // Nothing happens here except to make the PC correct.
+                // NOTE: This means the PC pushed below is actually off by one.
+                //       RTS handles this by adding one to the popped PC.
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Not 100% sure what happens on this cycle.
+                // Per http://nesdev.com/6502_cpu.txt we read the current stack
+                // value because there needs to be a tick to make S correct.
+                self.s_mut(self.s() - Wrapping(1));
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                self.push_stack(((self.pc() & 0xFF00) >> 8) as u8);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                self.push_stack((self.pc() & 0x00FF) as u8);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                self.pc_mut(
+                    (u16::from(self.ram().borrow().read(self.pc())) << 8)
+                        | u16::from(self.op_val()),
+                );
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // lsr implements the LSR instruction as a logical shift right on op_addr.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn lsr(&mut self) -> Result<OpState> {
+        let val = self.op_val() >> 1;
+        self.ram().borrow_mut().write(self.op_addr(), val);
+        // Get bit 0 from the original but as a 16 bit value so
+        // we can shift it into the carry position.
+        self.carry_check(u16::from(self.op_val() & 0x01) << 8);
+        self.zero_check(val);
+        self.negative_check(val);
+        Ok(OpState::Done)
+    }
+
+    // lsr_acc implements the LSR instruction as a logical shift right on A.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn lsr_acc(&mut self) -> Result<OpState> {
+        // Get bit 0 from A but in a 16 bit value and then shift it up into
+        // the carry position
+        self.carry_check(u16::from(self.a().0 & 0x01) << 8);
+        self.load_register(Register::A, self.a().0 >> 1)
+    }
+
+    // ora implements the ORA instruction which ORs op_val with A.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn ora(&mut self) -> Result<OpState> {
+        self.load_register(Register::A, self.a().0 | self.op_val())
+    }
+
+    // push_register is the common logic for pushing A,X,Y onto the stack.
+    fn push_register(&mut self, val: u8) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("pha: invalid op_tick: {:?}", self.op_tick())),
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                self.push_stack(val);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // pha implements the PHA instruction for pushing A onto the stack.
+    // Returns Done when done and/or errors.
+    fn pha(&mut self) -> Result<OpState> {
+        self.push_register(self.a().0)
+    }
+
+    // php implements the PHP instruction for pushing P onto the stack.
+    // Returns Done when done and/or errors.
+    fn php(&mut self) -> Result<OpState> {
+        let mut push = self.p();
+
+        // This is always set
+        push |= P_S1;
+
+        // PHP always sets B where-as IRQ/NMI don't.
+        push |= P_B;
+        self.push_register(push.0)
+    }
+
+    // pull_register is the common logic for pulling A,X,Y off the stack.
+    fn pull_register(&mut self, reg: Register) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("pla: invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // A read of the current stack happens while the CPU is incrementing S.
+                // Since our popStack does both of these together on this cycle it's just
+                // a throw away read.
+                self.s_mut(self.s() - Wrapping(1));
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // The real read
+                let val = self.pop_stack();
+                self.load_register(reg, val)
+            }
+        }
+    }
+
+    // pla implements the PLA instruction for pulling A from the stack.
+    // Returns Done when done and/or errors.
+    fn pla(&mut self) -> Result<OpState> {
+        self.pull_register(Register::A)
+    }
+
+    // plp implements the PLP instructions for pulling P from the stack.
+    // Returns Done when done and/or errors.
+    fn plp(&mut self) -> Result<OpState> {
+        let ret = self.pull_register(Register::P)?;
+        if ret == OpState::Done {
+            // The actual flags register always has S1 set to one.
+            self.p_mut(self.p() | P_S1);
+            // And the B bit is never set in the register.
+            self.p_mut(self.p() & !P_B);
+        }
+        Ok(ret)
+    }
+
+    // rol implements the ROL instruction which does a rotate left on op_addr.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn rol(&mut self) -> Result<OpState> {
+        let carry = (self.p() & P_CARRY).0;
+        let new = (self.op_val() << 1) | carry;
+        self.ram().borrow_mut().write(self.op_addr(), new);
+        self.carry_check(u16::from(self.op_val()) << 1);
+        self.zero_check(new);
+        self.negative_check(new);
+        Ok(OpState::Done)
+    }
+
+    // rol_acc implements the ROL instruction directly on the accumulator.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
+    fn rol_acc(&mut self) -> Result<OpState> {
+        let carry = (self.p() & P_CARRY).0;
+        self.carry_check(u16::from(self.a().0) << 1);
+        self.load_register(Register::A, (self.a().0 << 1) | carry)
+    }
+
+    // ror implements the ROR instruction for doing a rotate right on the contents
+    // of op_addr. Sets flags.
+    // Always returns Done since this is one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn ror(&mut self) -> Result<OpState> {
+        let carry = (self.p() & P_CARRY).0 << 7;
+        let new = (self.op_val() >> 1) | carry;
+        self.ram().borrow_mut().write(self.op_addr(), new);
+        // Just see if carry is set or not.
+        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
+        self.zero_check(new);
+        self.negative_check(new);
+        Ok(OpState::Done)
+    }
+
+    // ror_acc implements the ROR instruction directly on the accumulator.
+    // It then sets all associated flags and adjust cycles as needed.
+    // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
+    fn ror_acc(&mut self) -> Result<OpState> {
+        let carry = (self.p() & P_CARRY).0 << 7;
+        // Just see if carry is set or not.
+        self.carry_check((u16::from(self.a().0) << 8) & 0x0100);
+        self.load_register(Register::A, (self.a().0 >> 1) | carry)
+    }
+
+    // rti implements the RTI instruction for returning out of an interrupt handler.
+    // Returns Done when done and/or errors.
+    fn rti(&mut self) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("rti: invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // A read of the current stack happens while the CPU is incrementing S.
+                // Since our popStack does both of these together on this cycle it's just
+                // a throw away read.
+                self.s_mut(self.s() - Wrapping(1));
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // The real read for P
+                let p = self.pop_stack();
+                self.p_mut(Flags(p));
+                // The actual flags registers always has S1 set to one
+                self.p_mut(self.p() | P_S1);
+                // And B is never set.
+                self.p_mut(self.p() & !P_B);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // PCL
+                let o = self.pop_stack();
+                self.op_val_mut(o);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                // Pop PCH and set PC
+                let o = self.pop_stack();
+                self.pc_mut((u16::from(o) << 8) | u16::from(self.op_val()));
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // RTS implements the RTS instruction and pops the PC off the stack
+    // for returning from an subroutine.
+    // Returns Done when done and/or errors.
+    fn rts(&mut self) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("rts: invalid op_tick: {:?}", self.op_tick()))
+            }
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // A read of the current stack happens while the CPU is incrementing S.
+                // Since our popStack does both of these together on this cycle it's just
+                // a throw away read.
+                self.s_mut(self.s() - Wrapping(1));
+                _ = self.pop_stack();
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // PCL
+                let o = self.pop_stack();
+                self.op_val_mut(o);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // PCH
+                let o = self.pop_stack();
+                self.pc_mut((u16::from(o) << 8) | u16::from(self.op_val()));
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                // Read the current PC value then increment PC so we're pointing at the right addr.
+                _ = self.ram().borrow().read(self.pc());
+                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // sbc implements the SBC instruction for both binary and BCD modes (if implemented)
+    // and sets all associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn sbc(&mut self) -> Result<OpState> {
+        // Do BCD mode.
+        if (self.p() & P_DECIMAL) != P_NONE {
+            // Pull the carry bit out which thankfully is the low bit so can be
+            // used directly.
+            let carry = (self.p() & P_CARRY).0;
+
+            // BCD details - http://6502.org/tutorials/decimal_mode.html
+            // Also http://nesdev.com/6502_cpu.txt but it has errors
+            // Note: Wraps are ok here and intended as we're doing bit extensions on purpose.
+            #[allow(clippy::cast_possible_wrap)]
+            let mut al = Wrapping((self.a().0 & 0x0F) as i8)
+                - Wrapping((self.op_val() & 0x0F) as i8)
+                + Wrapping(carry as i8)
+                - Wrapping(1);
+
+            // Low nibble fixup.
+            if al < Wrapping(0) {
+                al = ((al - Wrapping(0x06)) & Wrapping(0x0F)) - Wrapping(0x10);
+            }
+
+            let mut sum;
+            sum = Wrapping(i16::from(self.a().0 & 0xF0))
+                - Wrapping(i16::from(self.op_val() & 0xF0))
+                + Wrapping(i16::from(al.0));
+            // High nibble fixup (for all)
+            if sum < Wrapping(0x0000) {
+                sum -= 0x60;
+            }
+
+            // NOTE: We don't lose the sign here BCD doesn't care.
+            #[allow(clippy::cast_sign_loss)]
+            let res = (sum.0 & 0xFF) as u8;
+
+            // Do normal binary math to set C,N,Z
+            let b = self.a() + Wrapping(!self.op_val()) + Wrapping(carry);
+            self.overflow_check(self.a().0, !self.op_val(), b.0);
+
+            self.negative_check(b.0);
+            self.zero_check(b.0);
+
+            // Yes, could do bit checks here like the hardware but
+            // just treating as uint16 math is simpler to code.
+            self.carry_check(u16::from(self.a().0) + u16::from(!self.op_val()) + u16::from(carry));
+            self.a_mut(Wrapping(res));
+            return Ok(OpState::Done);
+        }
+
+        // Otherwise binary mode is just ones complement p.opVal and ADC.
+        self.op_val_mut(!self.op_val());
+        self.adc()
+    }
+
+    // sec implements the SEC instruction for setting the carry bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn sec(&mut self) -> Result<OpState> {
+        self.p_mut(self.p() | P_CARRY);
+        Ok(OpState::Done)
+    }
+
+    // sed implements the SED instruction for setting the D status bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn sed(&mut self) -> Result<OpState> {
+        self.p_mut(self.p() | P_DECIMAL);
+        Ok(OpState::Done)
+    }
+
+    // sei implements the SEI instruction for setting the I status bit.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn sei(&mut self) -> Result<OpState> {
+        self.p_mut(self.p() | P_INTERRUPT);
+        Ok(OpState::Done)
+    }
+}
+
+macro_rules! cpu_internal {
+    () => {
+        // state returns the current CPU state.
+        fn state(&self) -> State {
+            self.state
+        }
+        // state_mut sets the current CPU state.
+        fn state_mut(&mut self, new: State) {
+            self.state = new;
+        }
+
+        // a returns the contents of the A register.
+        fn a(&self) -> Wrapping<u8> {
+            self.a
+        }
+        // a_mut sets the contents of the A register.
+        fn a_mut(&mut self, new: Wrapping<u8>) {
+            self.a = new;
+        }
+
+        // x returns the contents of the X register.
+        fn x(&self) -> Wrapping<u8> {
+            self.x
+        }
+        // x_mut sets the contents of the X register.
+        fn x_mut(&mut self, new: Wrapping<u8>) {
+            self.x = new;
+        }
+
+        // y returns the contents of the Y register.
+        fn y(&self) -> Wrapping<u8> {
+            self.y
+        }
+        // y_mut sets the contents of the Y register.
+        fn y_mut(&mut self, new: Wrapping<u8>) {
+            self.y = new;
+        }
+
+        // s returns the contents of the S register.
+        fn s(&self) -> Wrapping<u8> {
+            self.s
+        }
+        // s_mut sets the contents of the S register.
+        fn s_mut(&mut self, new: Wrapping<u8>) {
+            self.s = new;
+        }
+
+        // p returns the current Flags from the P register.
+        fn p(&self) -> Flags {
+            self.p
+        }
+        // p_mut sets the P register to the given Flags.
+        fn p_mut(&mut self, new: Flags) {
+            self.p = new;
+        }
+
+        // op_val returns the internal op_val register.
+        fn op_val(&self) -> u8 {
+            self.op_val
+        }
+        // op_val_mut sets the internal op_val register.
+        fn op_val_mut(&mut self, new: u8) {
+            self.op_val = new;
+        }
+
+        // op_addr returns the internal op_addr register.
+        fn op_addr(&self) -> u16 {
+            self.op_addr
+        }
+        // op_addr_mut sets the internal op_addr register.
+        fn op_addr_mut(&mut self, new: u16) {
+            self.op_addr = new;
+        }
+
+        // op_raw returns the current opcode byte.
+        fn op_raw(&self) -> u8 {
+            self.op_raw
+        }
+
+        // op returns the current decoded Operation.
+        fn op(&self) -> Operation {
+            self.op
+        }
+
+        // addr_done returns the internal addr_done state.
+        fn addr_done(&self) -> OpState {
+            self.addr_done
+        }
+        // addr_done_mut sets the internal addr_done state.
+        fn addr_done_mut(&mut self, new: OpState) {
+            self.addr_done = new;
+        }
+
+        // skip_interrupt returns the current SkipInterrupt state.
+        fn skip_interrupt(&self) -> SkipInterrupt {
+            self.skip_interrupt
+        }
+        // skip_interrupt_mut sets the SkipInterrupt state.
+        fn skip_interrupt_mut(&mut self, new: SkipInterrupt) {
+            self.skip_interrupt = new;
+        }
+
+        // irq_raised returns the current InterruptStyle state.
+        fn irq_raised(&self) -> InterruptStyle {
+            self.irq_raised
+        }
+        // irq_raised_mut sets the InterruptStyle state.
+        fn irq_raised_mut(&mut self, new: InterruptStyle) {
+            self.irq_raised = new;
+        }
+
+        // op_addr_fixup returns whether this addressing mode fixed up
+        // addresses and took extra cycles
+        fn op_addr_fixup(&self) -> bool {
+            self.op_addr_fixup
+        }
+        // op_addr_fixup_mut sets op_addr_fixup
+        fn op_addr_fixup_mut(&mut self, new: bool) {
+            self.op_addr_fixup = new
+        }
+    };
+}
+
+impl<'a> CPUInternal<'a> for CPU6502<'a> {
+    cpu_internal!();
+}
+impl<'a> CPUInternal<'a> for CPU6510<'a> {
+    cpu_internal!();
+}
+impl<'a> CPUInternal<'a> for CPURicoh<'a> {
+    cpu_internal!();
+
+    // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
+    // This sets all associated flags in P. For SBC simply ones-complement op_val
+    // before calling. For Richo this means no BCD.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn adc(&mut self) -> Result<OpState> {
+        // Pull the carry bit out which thankfully is the low bit so can be
+        // used directly.
+        let carry = (self.p & P_CARRY).0;
+
+        // Do normal binary math.
+        let sum = (self.a + Wrapping(self.op_val) + Wrapping(carry)).0;
+        self.overflow_check(self.a.0, self.op_val, sum);
+
+        // Yes, could do bit checks here like the hardware but
+        // just treating as uint16 math is simpler to code.
+        self.carry_check(u16::from(self.a.0) + u16::from(self.op_val) + u16::from(carry));
+        // Now set the accumulator so the other flag checks are against the result.
+        self.load_register(Register::A, sum)
+    }
+
+    // sbc implements the SBC instruction for binary math. This is just an
+    // inversion and calls ADC. As this is Ricoh there is no BCD support.
+    // Sets all associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn sbc(&mut self) -> Result<OpState> {
+        // Binary mode is just ones complement p.opVal and ADC.
+        self.op_val = !self.op_val;
+        self.adc()
+    }
+}
+
+impl<'a> CPUInternal<'a> for CPU65C02<'a> {
+    cpu_internal!();
+
+    // load_instruction abstracts all load instruction opcodes. The address mode function is
+    // used to get the proper values loaded into op_addr and op_val.
+    // Then on the same tick this is done op_func is called to load the appropriate register.
+    // Returns OpState::Done when complete and/or any error.
+    fn load_instruction(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        op_func: fn(&mut Self) -> Result<OpState>,
+    ) -> Result<OpState> {
+        // Account for ADC/SBC in D mode on CMOS needing to do one more cycle.
+        let mut skip_done = false;
+        if self.addr_done != OpState::Done {
+            self.addr_done = address_mode(self, &InstructionMode::Load)?;
+            if self.addr_done == OpState::Done {
+                skip_done = true;
+            }
+        }
+        match self.addr_done {
+            OpState::Processing => Ok(OpState::Processing),
+            OpState::Done => {
+                if skip_done
+                    && self.p & P_DECIMAL != P_NONE
+                    && (self.op.op == Opcode::ADC || self.op.op == Opcode::SBC)
+                {
+                    // Do another read cycle to account for SBC/ADC needing this
+                    self.op_val = self.ram.borrow().read(self.op_addr);
+                    Ok(OpState::Processing)
+                } else {
+                    op_func(self)
+                }
+            }
+        }
+    }
+
+    // addr_absolute implements Absolute mode - a
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_absolute(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // op_val has the first start of the address so start computing it.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                self.op_val = self.ram.borrow().read(self.pc.0);
+                self.pc += 1;
+                self.op_addr |= u16::from(self.op_val) << 8;
+                match mode {
+                    // For a store we're done since the opcode can decide what to store.
+                    InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick4 => {
+                // For load and RMW we read the value
+                self.op_val = self.ram.borrow().read(self.op_addr);
+                match mode {
+                    // For a load we're now done.
+                    &InstructionMode::Load => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick5 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                self.ram.borrow().read(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_absolute_xy implements the details for addr_absolute_x and addr_absolute_y since
+    // they only differ based on the register used.
+    // See those functions for arg/return specifics.
+    fn addr_absolute_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // op_val has the first start of the address so start computing it.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                self.op_val = self.ram.borrow().read(self.pc.0);
+                self.op_addr |= u16::from(self.op_val) << 8;
+                // Add reg but do it in a way which won't page wrap (if needed).
+                let a = (self.op_addr & 0xFF00)
+                    | u16::from((Wrapping((self.op_addr & 0x00FF) as u8) + Wrapping(reg)).0);
+                self.op_val = 0;
+                if a != (Wrapping(self.op_addr) + Wrapping(u16::from(reg))).0 {
+                    // Signal for next phase fixup is needed
+                    self.op_val = 1;
+                }
+                self.op_addr = a;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Check old opVal to see if it's non-zero. If so it means the reg addition
+                // crosses a page boundary and we'll have to fixup otherwise this is fine.
+                // For a load operation that means another tick to read the correct address.
+                // For RMW it doesn't matter (we always do the extra tick).
+                // For Store we're done. Just fixup p.opAddr so the return value is correct.
+
+                // If we didn't make the wrong address and load/storing we're good.
+                // For RMW we still read here but do continue to the next tick.
+                if self.op_val == 0 {
+                    // Advance the PC since we didn't earlier as down below CMOS
+                    // can reread this value.
+                    self.pc += 1;
+                    self.op_val = self.ram.borrow().read(self.op_addr);
+                    if mode == &InstructionMode::Rmw {
+                        return Ok(OpState::Processing);
+                    }
+                    return Ok(OpState::Done);
+                }
+
+                self.op_addr_fixup = true;
+                // Every tick requires a bus cycle so while we're fixing up
+                // we have to read something. CMOS rereads the last PC+2 value.
+                // Leave op_val as it was so the next tick can tell we had to
+                // do a fixup (for RMW since it always gets there).
+                _ = self.ram.borrow().read(self.pc.0);
+                self.pc += 1;
+
+                // We computed the wrong addr before so fix it now by page wrapping.
+                self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
+
+                // Stores are done and ready to write on their next cycle since
+                // the addr is correct now.
+                if mode == &InstructionMode::Store {
+                    return Ok(OpState::Done);
+                }
+
+                // Everything else runs another tick at this point
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                let t = self.op_val;
+                // So get the correct value in now for both loads (extra cycle for fixup)
+                // and RMW (which always gets here minimum).
+                self.op_val = self.ram.borrow().read(self.op_addr);
+
+                // For a load or a RMW that didn't overflow we're done. Unless...it's
+                // a INC/DEC in which case it always goes the extra cycle per
+                // http://www.6502.org/tutorials/65c02opcodes.html
+                // Otherwise RMW overflow always advances as does non CMOS RMW always.
+                if mode == &InstructionMode::Load
+                    || (t == 0 && self.op.op != Opcode::INC && self.op.op != Opcode::DEC)
+                {
+                    return Ok(OpState::Done);
+                }
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                // The WDC datasheet says this is AA+X+1 which
+                // I doubt actually. Everything else just seems to think it
+                // rereads the same addr twice.
+                _ = self.ram.borrow().read(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_indirect_x implements Zero page indirect plus X mode - (d,x)
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_indirect_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_indirect_x invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // We've already read the value but need to bump the PC
+                // and assign it into op_addr so the throw away read in
+                // tick3 reads the right place.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // A throwaway read from the ZP addr. We'll add the X register as well for the real read next.
+                self.ram.borrow().read(self.op_addr);
+                // Does this as a Wrapping so it wraps as needed since it stays in ZP.
+                self.op_addr = u16::from((Wrapping(self.op_val) + self.x).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Read effective addr low byte
+                self.op_val = self.ram.borrow().read(self.op_addr);
+                // Now increment (with ZP rollover) for next read.
+                // There is no truncation since we know this is always
+                // 0-255.
+                #[allow(clippy::cast_possible_truncation)]
+                let a = Wrapping(self.op_addr as u8);
+                self.op_addr = u16::from((a + Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Read high byte, shift over and add op_val which has the low byte.
+                self.op_addr =
+                    (u16::from(self.ram.borrow().read(self.op_addr)) << 8) | u16::from(self.op_val);
+                match mode {
+                    // For a store we're done as op_addr now contains the destination address.
+                    InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick6 => {
+                self.op_val = self.ram.borrow().read(self.op_addr);
+                // We're done as we've loaded the value and there are no
+                // RMW instructions for CMOS.
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_indirect_y implements Zero page indirect plus Y mode - (d),y
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_indirect_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_indirect_y invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // We've already read the value but need to bump the PC
+                // and assign it into op_addr so the throw away read in
+                // tick3 reads the right place.
+                self.op_addr = u16::from(self.op_val) & 0x00FF;
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read from the ZP addr to start building our pointer.
+                self.op_val = self.ram.borrow().read(self.op_addr);
+                // Setup op_addr for next read and handle ZP wrapping.
+                #[allow(clippy::cast_possible_truncation)]
+                let a = u16::from((Wrapping(self.op_addr as u8) + Wrapping(1)).0);
+                self.op_addr = a;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // Compute effective address and then add Y to it (possibly wrongly).
+                self.op_addr =
+                    (u16::from(self.ram.borrow().read(self.op_addr)) << 8) | u16::from(self.op_val);
+                // Add Y but do it in a way which won't page wrap (if needed).
+                #[allow(clippy::cast_possible_truncation)]
+                let a =
+                    (self.op_addr & 0xFF00) | u16::from((Wrapping(self.op_addr as u8) + self.y).0);
+                self.op_val = 0;
+                if a != (Wrapping(self.op_addr) + Wrapping(u16::from(self.y.0))).0 {
+                    // Signal for next phase we got it wrong.
+                    self.op_val = 1;
+                }
+                self.op_addr = a;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // Save op_val so we know if this needed fixing.
+                let t = self.op_val;
+                if t == 0 {
+                    // Read the right thing.
+                    self.op_val = self.ram.borrow().read(self.op_addr);
+                } else {
+                    self.op_addr_fixup = true;
+                    // CMOS doesn't spurious read the wrong op_addr. It just rereads the last PC.
+                    _ = self.ram.borrow().read((self.pc - Wrapping(1)).0);
+                }
+
+                // Check old opVal to see if it's non-zero. If so it means the Y addition
+                // crosses a page boundary and we'll have to fixup.
+                // For a load operation that means another tick to read the correct
+                // address.
+                // For Store we're done. Just fixup p.opAddr so the return value is correct.
+                let mut done = Ok(OpState::Done);
+                if t != 0 {
+                    self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
+                    if mode == &InstructionMode::Load {
+                        done = Ok(OpState::Processing);
+                    }
+                }
+                done
+            }
+            Tick::Tick6 => {
+                // Optional (on load) in case adding Y went past a page boundary.
+                self.op_val = self.ram.borrow().read(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_zp implements Zero page mode - d
+    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
+    // reread memory incorrectly to compute a storage address).
+    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
+    // the 6502 operates. In the CMOS case this is a 2nd read.
+    // Returns OpState::Done if this tick ends address processing and/or any errors.
+    fn addr_zp(&mut self, mode: &InstructionMode) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_zp invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // Already read the value but need to bump the PC
+                self.op_addr = u16::from(self.op_val);
+                self.pc += 1;
+                match mode {
+                    // For a store we're done since we have the address needed.
+                    &InstructionMode::Store => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick3 => {
+                self.op_val = self.ram.borrow().read(self.op_addr);
+                match mode {
+                    // For a load we're now done since the value is loaded.
+                    &InstructionMode::Load => Ok(OpState::Done),
+                    _ => Ok(OpState::Processing),
+                }
+            }
+            Tick::Tick4 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                self.ram.borrow().read(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // addr_zp_xy implements the details for addr_zp_x and addr_zp_y since they only differ based on the register used.
+    // See those functions for arg/return specifics.
+    fn addr_zp_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("addr_zp_x invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // Already read the value but need to bump the PC.
+                self.op_addr = u16::from(self.op_val);
+                self.pc += 1;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // Read from the ZP addr and then add the register for the real read later.
+                _ = self.ram.borrow().read(self.op_addr);
+                // Do this as a u8 so it wraps as needed.
+                self.op_addr = u16::from((Wrapping(self.op_val) + Wrapping(reg)).0);
+                // For a store we're done since we have the address needed.
+                if mode == &InstructionMode::Store {
+                    Ok(OpState::Done)
+                } else {
+                    Ok(OpState::Processing)
+                }
+            }
+            Tick::Tick4 => {
+                // Now read from the final address.
+                self.op_val = self.ram.borrow().read(self.op_addr);
+                // If we're load we're now done.
+                if mode == &InstructionMode::Load {
+                    Ok(OpState::Done)
+                } else {
+                    Ok(OpState::Processing)
+                }
+            }
+            Tick::Tick5 => {
+                // On NMOS there's a spurious write here where we replay back
+                // what we just read. On CMOS instead it's a spurious read.
+                self.ram.borrow().read(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // run_interrupt does all the heavy lifting for any interrupt processing.
+    // i.e. pushing values onto the stack and loading PC with the right address.
+    // Pass in the vector to be used for loading the PC (which means for BRK
+    // it can change if an NMI happens before we get to the load ticks).
+    // Returns OpState::Done when complete (and PC is correct). Can return an error on an
+    // invalid tick count.
+    fn run_interrupt(&mut self, vec: u16, irq: bool) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick8 => {
+                Err(eyre!("run_interrupt: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 => {
+                // Increment the PC on a non IRQ (i.e. BRK) since that changes where returns happen.
+                if !irq {
+                    self.pc += 1;
+                }
+                Ok(OpState::Processing)
+            }
+            Tick::Tick3 => {
+                // There is no truncation as we mask and shift into 8 bits.
+                #[allow(clippy::cast_possible_truncation)]
+                self.push_stack(((self.pc.0 & 0xFF00) >> 8) as u8);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 => {
+                // There is no truncation as we mask into 8 bits.
+                #[allow(clippy::cast_possible_truncation)]
+                self.push_stack((self.pc.0 & 0x00FF) as u8);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                let mut push = self.p;
+                // S1 is always set
+                push |= P_S1;
+                // B always set unless this triggered due to IRQ
+                push |= P_B;
+                if irq {
+                    push &= !P_B;
+                }
+                println!("Pushing {push} with {irq}");
+                self.push_stack(push.0);
+                // Now set P after we've pushed.
+
+                // CMOS turns off D always
+                self.p &= !P_DECIMAL;
+
+                // For BRK/IRQ we set I. NMI does not.
+                if self.irq_raised != InterruptStyle::NMI {
+                    self.p |= P_INTERRUPT;
+                }
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                self.op_val = self.ram.borrow().read(vec);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick7 => {
+                // Compute the new PC from the 2nd vector component and the previous val read.
+                self.pc = Wrapping(
+                    (u16::from(self.ram.borrow().read(vec + 1)) << 8) | u16::from(self.op_val),
+                );
+
+                // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
+                // a handler before firing again.
+                if irq && self.skip_interrupt != SkipInterrupt::PrevSkip {
+                    self.skip_interrupt = SkipInterrupt::Skip;
+                }
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
+    // This sets all associated flags in P. For SBC simply ones-complement op_val
+    // before calling.
+    // NOTE: SBC this only works in non BCD mode. sbc() handles this directly.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn adc(&mut self) -> Result<OpState> {
+        // Pull the carry bit out which thankfully is the low bit so can be
+        // used directly.
+        let carry = (self.p & P_CARRY).0;
+
+        // Do BCD.
+        if (self.p & P_DECIMAL) != P_NONE {
+            // BCD details - http://6502.org/tutorials/decimal_mode.html
+            // Also http://nesdev.com/6502_cpu.txt but it has errors
+            let mut al = Wrapping(self.a.0 & 0x0F) + Wrapping(self.op_val & 0x0F) + Wrapping(carry);
+            // Low nibble fixup
+            if al >= Wrapping(0x0A) {
+                al = ((al + Wrapping(0x06)) & Wrapping(0x0F)) + Wrapping(0x10);
+            }
+            let mut sum = Wrapping(u16::from(self.a.0 & 0xF0))
+                + Wrapping(u16::from(self.op_val & 0xF0))
+                + Wrapping(u16::from(al.0));
+            // High nibble fixup
+            if sum >= Wrapping(0xA0) {
+                sum += 0x60;
+            }
+            let res = (sum.0 & 0xFF) as u8;
+            let seq = Wrapping(self.a.0 & 0xF0) + Wrapping(self.op_val & 0xF0) + al;
+            self.overflow_check(self.a.0, self.op_val, seq.0);
+            self.carry_check(sum.0);
+            // Do the correct checks for CMOS.
+            self.negative_check(res);
+            self.zero_check(res);
+            self.a = Wrapping(res);
+            return Ok(OpState::Done);
+        }
+
+        // Otherwise do normal binary math.
+        let sum = (self.a + Wrapping(self.op_val) + Wrapping(carry)).0;
+        self.overflow_check(self.a.0, self.op_val, sum);
+
+        // Yes, could do bit checks here like the hardware but
+        // just treating as uint16 math is simpler to code.
+        self.carry_check(u16::from(self.a.0) + u16::from(self.op_val) + u16::from(carry));
+        // Now set the accumulator so the other flag checks are against the result.
+        self.load_register(Register::A, sum)
+    }
+
+    // bit implements the BIT instruction for AND'ing against A
+    // and setting N/V/Z based on the value.
+    // In immediate mode (CMOS only) only Z is set, not N/V.
+    // Always returns Done since this takes one tick and never returns an error.
+    #[allow(clippy::unnecessary_wraps)]
+    fn bit(&mut self) -> Result<OpState> {
+        self.zero_check(self.a.0 & self.op_val);
+        if self.op.mode != AddressMode::Immediate {
+            self.negative_check(self.op_val);
+            // Copy V from bit 6
+            self.p &= !P_OVERFLOW;
+            if self.op_val & P_OVERFLOW != P_NONE {
+                self.p |= P_OVERFLOW;
+            }
+        }
+        Ok(OpState::Done)
+    }
+
+    // brk implements the BRK instruction. This does setup and then calls the
+    // interrupt processing handler refenced at IRQ_VECTOR (normally).
+    // Returns Done when done and/or errors.
+    fn brk(&mut self) -> Result<OpState> {
+        // This is the same as an interrupt handler so the vector we call
+        // can change on a per tick basis on NMOS. i.e. we might push P with P_B set
+        // but go to the NMI vector depending on timing.
+        // CMOS doesn't do this. It will always run BRK to completion first.
+        self.run_interrupt(IRQ_VECTOR, false)
+    }
+
+    // jmp_indirect implements the indirect JMP instruction for jumping through a pointer to a new address.
+    // Returns Done when the PC is correct. Returns an error on an invalid tick.
+    fn jmp_indirect(&mut self) -> Result<OpState> {
+        match self.op_tick {
+            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
+                Err(eyre!("jmp indirect: invalid op_tick: {:?}", self.op_tick))
+            }
+            Tick::Tick2 | Tick::Tick3 => {
+                // Same as loading an absolute address
+                self.addr_absolute(&InstructionMode::Load)
+            }
+            Tick::Tick4 => {
+                // Read the low byte of the pointer and stash it in op_val if NMOS
+                // For CMOS we simply reread PC+2
+                self.op_val = self.ram.borrow().read((self.pc - Wrapping(1)).0);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick5 => {
+                // CMOS always reads the right low byte as compared to NMOS.
+                self.op_val = self.ram.borrow().read(self.op_addr);
+                self.op_addr = (Wrapping(self.op_addr) + Wrapping(1)).0;
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 => {
+                // CMOS always takes this tick to correct the final addr.
+                let val = self.ram.borrow().read(self.op_addr);
+                self.op_addr = (u16::from(val) << 8) | u16::from(self.op_val);
+                self.pc = Wrapping(self.op_addr);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
+    // sbc implements the SBC instruction for both binary and BCD modes.
+    // and sets all associated flags.
+    // Always returns Done since this takes one tick and never returns an error.
+    fn sbc(&mut self) -> Result<OpState> {
+        // Do BCD
+        if (self.p & P_DECIMAL) != P_NONE {
+            // Pull the carry bit out which thankfully is the low bit so can be
+            // used directly.
+            let carry = (self.p & P_CARRY).0;
+
+            // BCD details - http://6502.org/tutorials/decimal_mode.html
+            // Also http://nesdev.com/6502_cpu.txt but it has errors
+            // Note: Wraps are ok here and intended as we're doing bit extensions on purpose.
+            #[allow(clippy::cast_possible_wrap)]
+            let al = Wrapping((self.a.0 & 0x0F) as i8) - Wrapping((self.op_val & 0x0F) as i8)
+                + Wrapping(carry as i8)
+                - Wrapping(1);
+
+            let mut sum = Wrapping(i16::from(self.a.0)) - Wrapping(i16::from(self.op_val))
+                + Wrapping(i16::from(carry))
+                - Wrapping(1);
+            // High nibble fixup
+            if sum < Wrapping(0x0000) {
+                sum -= 0x60;
+            }
+            // Fixup low nibble
+            if al < Wrapping(0x0000) {
+                sum -= 0x06;
+            }
+
+            // NOTE: We don't lose the sign here BCD doesn't care.
+            #[allow(clippy::cast_sign_loss)]
+            let res = (sum.0 & 0xFF) as u8;
+
+            // Do normal binary math to set C,N,Z
+            let b = self.a + Wrapping(!self.op_val) + Wrapping(carry);
+            self.overflow_check(self.a.0, !self.op_val, b.0);
+
+            // CMOS gets these right.
+            self.negative_check(res);
+            self.zero_check(res);
+
+            // Yes, could do bit checks here like the hardware but
+            // just treating as uint16 math is simpler to code.
+            self.carry_check(u16::from(self.a.0) + u16::from(!self.op_val) + u16::from(carry));
+            self.a = Wrapping(res);
+            return Ok(OpState::Done);
+        }
+
+        // Otherwise binary mode is just ones complement p.opVal and ADC.
+        self.op_val = !self.op_val;
+        self.adc()
+    }
+}
 
 // Common implementations which are NMOS only specific (undocumented opcodes
 // and opcode processing). CMOS can implement `process_opcode` directly and
@@ -2228,2324 +4623,6 @@ impl<'a> CPUNmosInternal<'a> for CPU6502<'a> {}
 impl<'a> CPUNmosInternal<'a> for CPU6510<'a> {}
 impl<'a> CPUNmosInternal<'a> for CPURicoh<'a> {}
 
-// The common implementation definitions for all 6502 chips but done as a private
-// crate only trait so the default implementations can get at all the internal
-// cpu entries without having to expose those publicly.
-trait CPUInternal<'a>: Chip + CPU<'a> {
-    // The following methods are all ones which cannot be defaulted
-    // and must be implmented by the relevant struct in order to provide
-    // access and mutability for the default trait methods below.
-
-    // state returns the current CPU state.
-    fn state(&self) -> State;
-    // state_mut sets the current CPU state.
-    fn state_mut(&mut self, new: State);
-
-    // a returns the contents of the A register.
-    fn a(&self) -> Wrapping<u8>;
-    // a_mut sets the contents of the A register.
-    fn a_mut(&mut self, new: Wrapping<u8>);
-
-    // x returns the contents of the X register.
-    fn x(&self) -> Wrapping<u8>;
-    // x_mut sets the contents of the X register.
-    fn x_mut(&mut self, new: Wrapping<u8>);
-
-    // y returns the contents of the Y register.
-    fn y(&self) -> Wrapping<u8>;
-    // y_mut sets the contents of the Y register.
-    fn y_mut(&mut self, new: Wrapping<u8>);
-
-    // s returns the contents of the S register.
-    fn s(&self) -> Wrapping<u8>;
-    // s_mut sets the contents of the S register.
-    fn s_mut(&mut self, new: Wrapping<u8>);
-
-    // p returns the current Flags from the P register.
-    fn p(&self) -> Flags;
-    // p_mut sets the P register to the given Flags.
-    fn p_mut(&mut self, new: Flags);
-
-    // op_val returns the internal op_val register.
-    fn op_val(&self) -> u8;
-    // op_val_mut sets the internal op_val register.
-    fn op_val_mut(&mut self, new: u8);
-
-    // op_addr returns the internal op_addr register.
-
-    fn op_addr(&self) -> u16;
-    // op_addr_mut sets the internal op_addr register.
-    fn op_addr_mut(&mut self, new: u16);
-
-    // op_raw returns the current opcode byte.
-    fn op_raw(&self) -> u8;
-
-    // op returns the current decoded Operation.
-    fn op(&self) -> Operation;
-
-    // addr_done returns the internal addr_done state.
-    fn addr_done(&self) -> OpState;
-    // addr_done_mut sets the internal addr_done state.
-    fn addr_done_mut(&mut self, new: OpState);
-
-    // skip_interrupt returns the current SkipInterrupt state.
-    fn skip_interrupt(&self) -> SkipInterrupt;
-    // skip_interrupt_mut sets the SkipInterrupt state.
-    fn skip_interrupt_mut(&mut self, new: SkipInterrupt);
-
-    // irq_raised returns the current InterruptStyle state.
-    fn irq_raised(&self) -> InterruptStyle;
-    // irq_raised_mut sets the InterruptStyle state.
-    fn irq_raised_mut(&mut self, new: InterruptStyle);
-
-    // run_interrupt does all the heavy lifting for any interrupt processing.
-    // i.e. pushing values onto the stack and loading PC with the right address.
-    // Pass in the vector to be used for loading the PC (which means for BRK
-    // it can change if an NMI happens before we get to the load ticks).
-    // Returns OpState::Done when complete (and PC is correct). Can return an error on an
-    // invalid tick count.
-    fn run_interrupt(&mut self, vec: u16, irq: bool) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick8 => Err(eyre!(
-                "run_interrupt: invalid op_tick: {:?}",
-                self.op_tick()
-            )),
-            Tick::Tick2 => {
-                // Increment the PC on a non IRQ (i.e. BRK) since that changes where returns happen.
-                if !irq {
-                    self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                }
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // There is no truncation as we mask and shift into 8 bits.
-                #[allow(clippy::cast_possible_truncation)]
-                self.push_stack(((self.pc() & 0xFF00) >> 8) as u8);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // There is no truncation as we mask into 8 bits.
-                #[allow(clippy::cast_possible_truncation)]
-                self.push_stack((self.pc() & 0x00FF) as u8);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                let mut push = self.p();
-                // S1 is always set
-                push |= P_S1;
-                // B always set unless this triggered due to IRQ
-                push |= P_B;
-                if irq {
-                    push &= !P_B;
-                }
-                self.push_stack(push.0);
-                // Now set P after we've pushed.
-
-                // For BRK/IRQ we set I. NMI does not.
-                if self.irq_raised() != InterruptStyle::NMI {
-                    self.p_mut(self.p() | P_INTERRUPT);
-                }
-                Ok(OpState::Processing)
-            }
-            Tick::Tick6 => {
-                self.op_val_mut(self.ram().borrow().read(vec));
-                Ok(OpState::Processing)
-            }
-            Tick::Tick7 => {
-                // Compute the new PC from the 2nd vector component and the previous val read.
-                self.pc_mut(
-                    (u16::from(self.ram().borrow().read(vec + 1)) << 8) | u16::from(self.op_val()),
-                );
-
-                // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
-                // a handler before firing again.
-                if irq && self.skip_interrupt() != SkipInterrupt::PrevSkip {
-                    self.skip_interrupt_mut(SkipInterrupt::Skip);
-                }
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // load_register takes the val and inserts it into the given register.
-    // It then does Z and N checks against the new value if and sets flags (only
-    // for A/X/Y).
-    // Always returns OpState::Done as this happens on a single tick.
-    #[allow(clippy::unnecessary_wraps)]
-    fn load_register(&mut self, reg: Register, val: u8) -> Result<OpState> {
-        match reg {
-            Register::A => self.a_mut(Wrapping(val)),
-            Register::X => self.x_mut(Wrapping(val)),
-            Register::Y => self.y_mut(Wrapping(val)),
-            Register::P => {
-                self.p_mut(Flags(val));
-                return Ok(OpState::Done);
-            }
-        };
-        self.zero_check(val);
-        self.negative_check(val);
-        Ok(OpState::Done)
-    }
-
-    // load_register_a is the curried version of load_register that uses op_val and A implicitly.
-    // This way it can be used as the op_func argument during load/rmw instructions.
-    // Always returns Done since this is a single tick operation.
-    fn load_register_a(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.op_val())
-    }
-
-    // load_register_x is the curried version of load_register that uses op_val and X implicitly.
-    // This way it can be used as the op_func argument during load/rmw instructions.
-    // Always returns Done since this is a single tick operation.
-    fn load_register_x(&mut self) -> Result<OpState> {
-        self.load_register(Register::X, self.op_val())
-    }
-
-    // load_register_y is the curried version of load_register that uses op_val and Y implicitly.
-    // This way it can be used as the op_func argument during load/rmw instructions.
-    // Always returns Done since this is a single tick operation.
-    fn load_register_y(&mut self) -> Result<OpState> {
-        self.load_register(Register::Y, self.op_val())
-    }
-
-    // store_with_flags writes the value to the address given but also updates
-    // N/Z flags at the same time.
-    #[allow(clippy::unnecessary_wraps)]
-    fn store_with_flags(&mut self, addr: u16, val: u8) -> Result<OpState> {
-        self.zero_check(val);
-        self.negative_check(val);
-        self.ram().borrow_mut().write(addr, val);
-        Ok(OpState::Done)
-    }
-
-    // compare implements the logic for all CMP/CPX/CPY instructions and
-    // sets flags accordingly from the results.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn compare(&mut self, reg: u8, val: u8) -> Result<OpState> {
-        let check = (Wrapping(reg) - Wrapping(val)).0;
-        self.zero_check(check);
-        self.negative_check(check);
-        // A-M done as 2's complement addition by ones complement and add 1
-        // This way we get valid sign extension and a carry bit test.
-        self.carry_check(u16::from(reg) + u16::from(!val) + 1);
-        Ok(OpState::Done)
-    }
-
-    // compare_a is a curried version of compare that references A and uses op_val for the value.
-    // This way it can be used as the op_func in load_instruction.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn compare_a(&mut self) -> Result<OpState> {
-        self.compare(self.a().0, self.op_val())
-    }
-
-    // compare_x is a curried version of compare that references X and uses op_val for the value.
-    // This way it can be used as the op_func in load_instruction.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn compare_x(&mut self) -> Result<OpState> {
-        self.compare(self.x().0, self.op_val())
-    }
-
-    // compare_y is a curried version of compare that references Y and uses op_val for the value.
-    // This way it can be used as the op_func in load_instruction.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn compare_y(&mut self) -> Result<OpState> {
-        self.compare(self.y().0, self.op_val())
-    }
-
-    // zero_check sets the Z flag based on the value.
-    fn zero_check(&mut self, val: u8) {
-        let mut new = self.p();
-        new &= !P_ZERO;
-        if val == 0 {
-            new |= P_ZERO;
-        }
-        self.p_mut(new);
-    }
-
-    // negative_check sets the N flag based on the value.
-    fn negative_check(&mut self, val: u8) {
-        let mut new = self.p();
-        new &= !P_NEGATIVE;
-        if (val & P_NEGATIVE) == P_NEGATIVE {
-            new |= P_NEGATIVE;
-        }
-        self.p_mut(new);
-    }
-
-    // carry_check sets the C flag based on the value.
-    fn carry_check(&mut self, val: u16) {
-        let mut new = self.p();
-        new &= !P_CARRY;
-        if val >= 0x0100 {
-            new |= P_CARRY;
-        }
-        self.p_mut(new);
-    }
-
-    // overflow_check sets the V flag is the result of the ALU operation
-    // caused a two's complement sign change.
-    // Taken from http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
-    fn overflow_check(&mut self, reg: u8, arg: u8, result: u8) {
-        let mut new = self.p();
-        new &= !P_OVERFLOW;
-        // If the original sign differs from the end sign bit.
-        if (reg ^ result) & (arg ^ result) & 0x80 != 0x00 {
-            new |= P_OVERFLOW;
-        }
-        self.p_mut(new);
-    }
-
-    // load_instruction abstracts all load instruction opcodes. The address mode function is
-    // used to get the proper values loaded into op_addr and op_val.
-    // Then on the same tick this is done op_func is called to load the appropriate register.
-    // Returns OpState::Done when complete and/or any error.
-    fn load_instruction(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-        op_func: fn(&mut Self) -> Result<OpState>,
-    ) -> Result<OpState> {
-        let ret = address_mode(self, &InstructionMode::Load)?;
-        self.addr_done_mut(ret);
-        match self.addr_done() {
-            OpState::Processing => Ok(OpState::Processing),
-            OpState::Done => op_func(self),
-        }
-    }
-
-    // rmw_instruction abstracts all RMW instruction opcodes. The address mode function is
-    // used to get the proper values loaded into op_addr and op_val.
-    // This assumes the address mode function also handle the extra write RMW instructions perform.
-    // Then on the next tick the op_func is called to perform the final write operation.
-    // Returns OpState::Done when complete and/or any error.
-    fn rmw_instruction(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-        op_func: fn(&mut Self) -> Result<OpState>,
-    ) -> Result<OpState> {
-        match self.addr_done() {
-            OpState::Processing => {
-                let ret = address_mode(self, &InstructionMode::Rmw)?;
-                self.addr_done_mut(ret);
-                Ok(OpState::Processing)
-            }
-            OpState::Done => op_func(self),
-        }
-    }
-
-    // store_instruction abstracts all store instruction opcodes.  The address mode function is
-    // used to get the proper values loaded into op_addr and op_val.
-    // Then on the next tick the val passed is stored to op_addr.
-    // Returns OpState::Done when complete and/or any error.
-    fn store_instruction(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-        val: u8,
-    ) -> Result<OpState> {
-        match self.addr_done() {
-            OpState::Processing => {
-                let ret = address_mode(self, &InstructionMode::Store)?;
-                self.addr_done_mut(ret);
-                Ok(OpState::Processing)
-            }
-            OpState::Done => {
-                self.ram().borrow_mut().write(self.op_addr(), val);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_absolute implements Absolute mode - a
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_absolute(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 => {
-                // op_val has the first start of the address so start computing it.
-                self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.pc()));
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                self.op_addr_mut(self.op_addr() | u16::from(self.op_val()) << 8);
-                match mode {
-                    // For a store we're done since the opcode can decide what to store.
-                    InstructionMode::Store => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick4 => {
-                // For load and RMW we read the value
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                match mode {
-                    // For a load we're now done.
-                    &InstructionMode::Load => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick5 => {
-                // On NMOS there's a spurious write here where we replay back.
-                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_absolute_x implements Absolute X mode - a,x
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_absolute_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        self.addr_absolute_xy(mode, self.x().0)
-    }
-
-    // addr_absolute_y implements Absolute Y mode - a,y
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_absolute_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        self.addr_absolute_xy(mode, self.y().0)
-    }
-
-    // addr_absolute_xy implements the details for addr_absolute_x and addr_absolute_y since
-    // they only differ based on the register used.
-    // See those functions for arg/return specifics.
-    fn addr_absolute_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 => {
-                // op_val has the first start of the address so start computing it.
-                self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.pc()));
-                self.op_addr_mut(self.op_addr() | u16::from(self.op_val()) << 8);
-                // Add reg but do it in a way which won't page wrap (if needed).
-                let a = (self.op_addr() & 0xFF00)
-                    | u16::from((Wrapping((self.op_addr() & 0x00FF) as u8) + Wrapping(reg)).0);
-                self.op_val_mut(0);
-                if a != (Wrapping(self.op_addr()) + Wrapping(u16::from(reg))).0 {
-                    // Signal for next phase fixup is needed
-                    self.op_val_mut(1);
-                }
-                self.op_addr_mut(a);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // Check old opVal to see if it's non-zero. If so it means the reg addition
-                // crosses a page boundary and we'll have to fixup otherwise this is fine.
-                // For a load operation that means another tick to read the correct address.
-                // For RMW it doesn't matter (we always do the extra tick).
-                // For Store we're done. Just fixup p.opAddr so the return value is correct.
-
-                // If we didn't make the wrong address and load/storing we're good.
-                // For RMW we still read here but do continue to the next tick.
-                if self.op_val() == 0 {
-                    // Advance the PC since we didn't earlier as down below CMOS
-                    // can reread this value.
-                    self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                    self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                    if mode == &InstructionMode::Rmw {
-                        return Ok(OpState::Processing);
-                    }
-                    return Ok(OpState::Done);
-                }
-
-                // Every tick requires a bus cycle so while we're fixing up
-                // we have to read something. In this case we read the wrong op_addr.
-                // Leave op_val as it was so the next tick can tell we had to
-                // do a fixup (for RMW since it always gets there).
-                _ = self.ram().borrow().read(self.op_addr());
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-
-                // We computed the wrong addr before so fix it now by page wrapping.
-                self.op_addr_mut((Wrapping(self.op_addr()) + Wrapping(0x0100)).0);
-
-                // Stores are done and ready to write on their next cycle since
-                // the addr is correct now.
-                if mode == &InstructionMode::Store {
-                    return Ok(OpState::Done);
-                }
-
-                // Everything else runs another tick at this point
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // So get the correct value in now for both loads (extra cycle for fixup)
-                // and RMW (which always gets here minimum).
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-
-                // For a load we're done.
-                // Otherwise RMW overflow always advances.
-                if mode == &InstructionMode::Load {
-                    return Ok(OpState::Done);
-                }
-                Ok(OpState::Processing)
-            }
-            Tick::Tick6 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read.
-                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_immediate implements Immediate mode - #i
-    // returning the value in op_val.
-    // NOTE: This has no mode other than load so the argument is ignored.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_immediate(&mut self, _mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset
-            | Tick::Tick1
-            | Tick::Tick3
-            | Tick::Tick4
-            | Tick::Tick5
-            | Tick::Tick6
-            | Tick::Tick7
-            | Tick::Tick8 => Err(eyre!(
-                "addr_immediate invalid op_tick: {:?}",
-                self.op_tick()
-            )),
-            Tick::Tick2 => {
-                // Already read the value but need to bump the PC
-                // since this mode consumes op_val.
-                // Set op_addr in case ADC/SBC need an extra bus cycle and a place
-                // to read.
-                self.op_addr_mut(self.pc());
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_indirect_x implements Zero page indirect plus X mode - (d,x)
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_indirect_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick8 => Err(eyre!(
-                "addr_indirect_x invalid op_tick: {:?}",
-                self.op_tick()
-            )),
-            Tick::Tick2 => {
-                // We've already read the value but need to bump the PC
-                // and assign it into op_addr so the throw away read in
-                // tick3 reads the right place.
-                self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // A throwaway read from the ZP addr. We'll add the X register as well for the real read next.
-                _ = self.ram().borrow().read(self.op_addr());
-                // Does this as a Wrapping so it wraps as needed since it stays in ZP.
-                self.op_addr_mut(u16::from((Wrapping(self.op_val()) + self.x()).0));
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // Read effective addr low byte
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                // Now increment (with ZP rollover) for next read.
-                // There is no truncation since we know this is always
-                // a u8 so within ZP.
-                #[allow(clippy::cast_possible_truncation)]
-                let a = Wrapping(self.op_addr() as u8);
-                self.op_addr_mut(u16::from((a + Wrapping(1)).0));
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // Read high byte, shift over and add op_val which has the low byte.
-                self.op_addr_mut(
-                    (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
-                        | u16::from(self.op_val()),
-                );
-                match mode {
-                    // For a store we're done as op_addr now contains the destination address.
-                    InstructionMode::Store => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick6 => {
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                match mode {
-                    // For a load we're done as we've loaded the value.
-                    InstructionMode::Load => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick7 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read.
-                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_indirect_y implements Zero page indirect plus Y mode - (d),y
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_indirect_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick8 => Err(eyre!(
-                "addr_indirect_y invalid op_tick: {:?}",
-                self.op_tick()
-            )),
-            Tick::Tick2 => {
-                // We've already read the value but need to bump the PC
-                // and assign it into op_addr so the throw away read in
-                // tick3 reads the right place.
-                self.op_addr_mut(u16::from(self.op_val()) & 0x00FF);
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // Read from the ZP addr to start building our pointer.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                // Setup op_addr for next read and handle ZP wrapping.
-                #[allow(clippy::cast_possible_truncation)]
-                let a = u16::from((Wrapping(self.op_addr() as u8) + Wrapping(1)).0);
-                self.op_addr_mut(a);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // Compute effective address and then add Y to it (possibly wrongly).
-                self.op_addr_mut(
-                    (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
-                        | u16::from(self.op_val()),
-                );
-                // Add Y but do it in a way which won't page wrap (if needed).
-                #[allow(clippy::cast_possible_truncation)]
-                let a = (self.op_addr() & 0xFF00)
-                    | u16::from((Wrapping(self.op_addr() as u8) + self.y()).0);
-                self.op_val_mut(0);
-                if a != (Wrapping(self.op_addr()) + Wrapping(u16::from(self.y().0))).0 {
-                    // Signal for next phase we got it wrong.
-                    self.op_val_mut(1);
-                }
-                self.op_addr_mut(a);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // Save op_val so we know if this needed fixing.
-                let t = self.op_val();
-                // Even with an incorrect op_addr we still read from it.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-
-                // Check old opVal to see if it's non-zero. If so it means the Y addition
-                // crosses a page boundary and we'll have to fixup.
-                // For a load operation that means another tick to read the correct
-                // address.
-                // For RMW it doesn't matter (we always do the extra tick).
-                // For Store we're done. Just fixup p.opAddr so the return value is correct.
-                let mut done = Ok(OpState::Done);
-                if t != 0 {
-                    self.op_addr_mut((Wrapping(self.op_addr()) + Wrapping(0x0100)).0);
-                    if mode == &InstructionMode::Load {
-                        done = Ok(OpState::Processing);
-                    }
-                }
-                // For RMW it doesn't matter, we tick again.
-                if mode == &InstructionMode::Rmw {
-                    done = Ok(OpState::Processing);
-                }
-                done
-            }
-            Tick::Tick6 => {
-                // Optional (on load) in case adding Y went past a page boundary.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                match mode {
-                    InstructionMode::Rmw => Ok(OpState::Processing),
-                    _ => Ok(OpState::Done),
-                }
-            }
-            Tick::Tick7 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read.
-                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_zp implements Zero page mode - d
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates. In the CMOS case this is a 2nd read.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_zp(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_zp invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 => {
-                // Already read the value but need to bump the PC
-                self.op_addr_mut(u16::from(self.op_val()));
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                match mode {
-                    // For a store we're done since we have the address needed.
-                    &InstructionMode::Store => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                match mode {
-                    // For a load we're now done since the value is loaded.
-                    &InstructionMode::Load => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick4 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read.
-                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_zp_x implements Zero page X mode - d,x
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_zp_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        self.addr_zp_xy(mode, self.x().0)
-    }
-
-    // addr_zp_y implements Zero page Y mode - d,y
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_zp_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        self.addr_zp_xy(mode, self.y().0)
-    }
-
-    // addr_zp_xy implements the details for addr_zp_x and addr_zp_y since they only differ based on the register used.
-    // See those functions for arg/return specifics.
-    fn addr_zp_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_zp_x invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 => {
-                // Already read the value but need to bump the PC.
-                self.op_addr_mut(u16::from(self.op_val()));
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // Read from the ZP addr and then add the register for the real read later.
-                _ = self.ram().borrow().read(self.op_addr());
-                // Do this as a u8 so it wraps as needed.
-                self.op_addr_mut(u16::from((Wrapping(self.op_val()) + Wrapping(reg)).0));
-                // For a store we're done since we have the address needed.
-                if mode == &InstructionMode::Store {
-                    Ok(OpState::Done)
-                } else {
-                    Ok(OpState::Processing)
-                }
-            }
-            Tick::Tick4 => {
-                // Now read from the final address.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                // If we're load we're now done.
-                if mode == &InstructionMode::Load {
-                    Ok(OpState::Done)
-                } else {
-                    Ok(OpState::Processing)
-                }
-            }
-            Tick::Tick5 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read.
-                self.ram().borrow_mut().write(self.op_addr(), self.op_val());
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // perform_branch does all of the main logic for processing a branch which is taken.
-    fn perform_branch(&mut self) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!(
-                    "perform_branch invalid op_tick: {:?}",
-                    self.op_tick()
-                ))
-            }
-            Tick::Tick2 => {
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // We only skip if the last instruction didn't. This way a branch always doesn't prevent interrupt processing
-                // since on real silicon this is what happens (just a delay in the pipelining).
-                if self.skip_interrupt() != SkipInterrupt::PrevSkip {
-                    self.skip_interrupt_mut(SkipInterrupt::Skip);
-                }
-                self.branch_taken()
-            }
-            Tick::Tick4 => self.branch_taken2(),
-        }
-    }
-
-    // branch_taken computes the first attempt to take a branch. This may be wrong
-    // due to page crossing so it will return Processing or Done to indicate
-    // whether to call branch_taken2 or not (call if Processing returns)
-    #[allow(clippy::unnecessary_wraps)]
-    fn branch_taken(&mut self) -> Result<OpState> {
-        // Per http://www.6502.org/tutorials/6502opcodes.html
-        // the wrong page is defined as the a different page than
-        // the next byte after the jump. i.e. current PC at the moment.
-
-        // Now compute the new PC but possibly wrong page.
-        // Stash the old one in p.opAddr so we can use in tick 4 if needed.
-        self.op_addr_mut(self.pc());
-        self.pc_mut(
-            Wrapping(
-                (self.pc() & 0xFF00)
-                    | u16::from((Wrapping((self.pc() & 0x00FF) as u8) + Wrapping(self.op_val())).0),
-            )
-            .0,
-        ); // It always triggers a bus read of the newly computed PC.
-        _ = self.ram().borrow().read(self.pc());
-        // Now check the pc against one which didn't truncate for page by sign extending
-        // op_val and adding it to op_addr.
-        // NOTE: We don't lose the sign here since Wrapping will do the right thing.
-        #[allow(
-            clippy::cast_sign_loss,
-            clippy::cast_lossless,
-            clippy::cast_possible_wrap
-        )]
-        if self.pc() == (Wrapping(self.op_addr()) + Wrapping(self.op_val() as i8 as i16 as u16)).0 {
-            return Ok(OpState::Done);
-        }
-        Ok(OpState::Processing)
-    }
-
-    // branch_taken2 is used when fixing up a page boundary issue from a previous
-    // branch_taken call.
-    #[allow(clippy::unnecessary_wraps)]
-    fn branch_taken2(&mut self) -> Result<OpState> {
-        // Set the correct PC value if we got here.
-        // NOTE: We don't lose the sign here since Wrapping will do the right thing.
-        #[allow(
-            clippy::cast_sign_loss,
-            clippy::cast_lossless,
-            clippy::cast_possible_wrap
-        )]
-        let val = Wrapping(self.op_addr()) + Wrapping(self.op_val() as i8 as i16 as u16);
-        self.pc_mut(val.0);
-        // Always read the next opcode now.
-        _ = self.ram().borrow().read(self.pc());
-        Ok(OpState::Done)
-    }
-
-    // branch_nop reads the next byte as the branch offset and increments the PC.
-    // Used for the 2nd tick when branches aren't taken.
-    fn branch_nop(&mut self) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset
-            | Tick::Tick1
-            | Tick::Tick3
-            | Tick::Tick4
-            | Tick::Tick5
-            | Tick::Tick6
-            | Tick::Tick7
-            | Tick::Tick8 => Err(eyre!("branch_nop invalid op_tick: {:?}", self.op_tick())),
-            Tick::Tick2 => {
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // pop_stack pops the top value from the stack and adjusts
-    // the stack pointer.
-    fn pop_stack(&mut self) -> u8 {
-        self.s_mut(self.s() + Wrapping(1));
-        self.ram()
-            .borrow()
-            .read(u16::from(self.s().0) + STACK_START)
-    }
-
-    // push_stack takes the given 8 bit value and pushes it into the stack and adjusts
-    // the stack pointer.
-    fn push_stack(&mut self, val: u8) {
-        self.ram()
-            .borrow_mut()
-            .write(u16::from(self.s().0) + STACK_START, val);
-        self.s_mut(self.s() - Wrapping(1));
-    }
-
-    // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
-    // This sets all associated flags in P. For SBC simply ones-complement op_val
-    // before calling.
-    // NOTE: For SBC this only works in non BCD mode. sbc() handles BCD directly but
-    // otherwise calls adc for binary mode.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn adc(&mut self) -> Result<OpState> {
-        // Pull the carry bit out which thankfully is the low bit so can be
-        // used directly.
-        let carry = (self.p() & P_CARRY).0;
-
-        // Do BCD mode.
-        if (self.p() & P_DECIMAL) != P_NONE {
-            // BCD details - http://6502.org/tutorials/decimal_mode.html
-            // Also http://nesdev.com/6502_cpu.txt but it has errors
-            let mut al =
-                Wrapping(self.a().0 & 0x0F) + Wrapping(self.op_val() & 0x0F) + Wrapping(carry);
-            // Low nibble fixup
-            if al >= Wrapping(0x0A) {
-                al = ((al + Wrapping(0x06)) & Wrapping(0x0F)) + Wrapping(0x10);
-            }
-            let mut sum = Wrapping(u16::from(self.a().0 & 0xF0))
-                + Wrapping(u16::from(self.op_val() & 0xF0))
-                + Wrapping(u16::from(al.0));
-            // High nibble fixup
-            if sum >= Wrapping(0xA0) {
-                sum += 0x60;
-            }
-            let res = (sum.0 & 0xFF) as u8;
-            let seq = Wrapping(self.a().0 & 0xF0) + Wrapping(self.op_val() & 0xF0) + al;
-            let bin = self.a() + Wrapping(self.op_val()) + Wrapping(carry);
-            self.overflow_check(self.a().0, self.op_val(), seq.0);
-            self.carry_check(sum.0);
-            self.negative_check(seq.0);
-            self.zero_check(bin.0);
-            self.a_mut(Wrapping(res));
-            return Ok(OpState::Done);
-        }
-
-        // Otherwise do normal binary math.
-        let sum = (self.a() + Wrapping(self.op_val()) + Wrapping(carry)).0;
-        self.overflow_check(self.a().0, self.op_val(), sum);
-
-        // Yes, could do bit checks here like the hardware but
-        // just treating as uint16 math is simpler to code.
-        self.carry_check(u16::from(self.a().0) + u16::from(self.op_val()) + u16::from(carry));
-        // Now set the accumulator so the other flag checks are against the result.
-        self.load_register(Register::A, sum)
-    }
-
-    // and implements the AND instruction on the given memory location in op_addr.
-    // It then sets all associated flags and adjust cycles as needed.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn and(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 & self.op_val())
-    }
-
-    // asl implements the ASL instruction on the given memory location in op_addr.
-    // It then sets all associated flags and adjust cycles as needed.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn asl(&mut self) -> Result<OpState> {
-        let new = self.op_val() << 1;
-        self.ram().borrow_mut().write(self.op_addr(), new);
-        self.carry_check(u16::from(self.op_val()) << 1);
-        self.zero_check(new);
-        self.negative_check(new);
-        Ok(OpState::Done)
-    }
-
-    // asl_acc implements the ASL instruction directly on the accumulator.
-    // It then sets all associated flags and adjust cycles as needed.
-    // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
-    fn asl_acc(&mut self) -> Result<OpState> {
-        self.carry_check(u16::from(self.a().0) << 1);
-        self.load_register(Register::A, self.a().0 << 1)
-    }
-
-    // bcc implements the BCC instruction and branches if C is clear.
-    // Returns Done when the branch has set the correct PC and/or an error.
-    fn bcc(&mut self) -> Result<OpState> {
-        if self.p() & P_CARRY == P_NONE {
-            self.perform_branch()
-        } else {
-            self.branch_nop()
-        }
-    }
-
-    // bcs implements the BCS instruction and branches if C is set.
-    // Returns Done when the branch has set the correct PC and/or an error.
-    fn bcs(&mut self) -> Result<OpState> {
-        if self.p() & P_CARRY == P_NONE {
-            self.branch_nop()
-        } else {
-            self.perform_branch()
-        }
-    }
-
-    // beq implements the BEQ instruction and branches is Z is set.
-    // Returns Done when the branch has set the correct PC and/or an error.
-    fn beq(&mut self) -> Result<OpState> {
-        if self.p() & P_ZERO == P_NONE {
-            self.branch_nop()
-        } else {
-            self.perform_branch()
-        }
-    }
-
-    // bit implements the BIT instruction for AND'ing against A
-    // and setting N/V/Z based on the value.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn bit(&mut self) -> Result<OpState> {
-        self.zero_check(self.a().0 & self.op_val());
-        self.negative_check(self.op_val());
-        // Copy V from bit 6
-        self.p_mut(self.p() & !P_OVERFLOW);
-        if self.op_val() & P_OVERFLOW != P_NONE {
-            self.p_mut(self.p() | P_OVERFLOW);
-        }
-
-        Ok(OpState::Done)
-    }
-
-    // bmi implements the BMI instruction and branches if N is set.
-    // Returns Done when the branch has set the correct PC and/or an error.
-    fn bmi(&mut self) -> Result<OpState> {
-        if self.p() & P_NEGATIVE == P_NONE {
-            self.branch_nop()
-        } else {
-            self.perform_branch()
-        }
-    }
-
-    // bne implements the BNE instruction and branches is Z is clear.
-    // Returns Done when the branch has set the correct PC and/or an error.
-    fn bne(&mut self) -> Result<OpState> {
-        if self.p() & P_ZERO == P_NONE {
-            self.perform_branch()
-        } else {
-            self.branch_nop()
-        }
-    }
-
-    // bpl implements the BPL instruction and branches if N is clear.
-    // Returns Done when the branch has set the correct PC and/or an error.
-    fn bpl(&mut self) -> Result<OpState> {
-        if self.p() & P_NEGATIVE == P_NONE {
-            self.perform_branch()
-        } else {
-            self.branch_nop()
-        }
-    }
-
-    // bvc implements the BVC instruction and branches if V is clear.
-    // Returns Done when the branch has set the correct PC and/or an error.
-    fn bvc(&mut self) -> Result<OpState> {
-        if self.p() & P_OVERFLOW == P_NONE {
-            self.perform_branch()
-        } else {
-            self.branch_nop()
-        }
-    }
-
-    // bvs implements the BVS instruction and branches if V is set.
-    // Returns Done when the branch has set the correct PC and/or an error.
-    fn bvs(&mut self) -> Result<OpState> {
-        if self.p() & P_OVERFLOW == P_NONE {
-            self.branch_nop()
-        } else {
-            self.perform_branch()
-        }
-    }
-
-    // brk implements the BRK instruction. This does setup and then calls the
-    // interrupt processing handler refenced at IRQ_VECTOR (normally).
-    // Returns Done when done and/or errors.
-    fn brk(&mut self) -> Result<OpState> {
-        // This is the same as an interrupt handler so the vector we call
-        // can change on a per tick basis on NMOS. i.e. we might push P with P_B set
-        // but go to the NMI vector depending on timing.
-
-        // New PC comes from IRQ_VECTOR unless we've raised an NMI.
-        let ret = match self.irq_raised() {
-            InterruptStyle::IRQ => self.run_interrupt(IRQ_VECTOR, true)?,
-            InterruptStyle::NMI => self.run_interrupt(NMI_VECTOR, true)?,
-            InterruptStyle::None => self.run_interrupt(IRQ_VECTOR, false)?,
-        };
-        // If we're done on this tick eat any pending interrupt since BRK is special.
-        if ret == OpState::Done {
-            self.irq_raised_mut(InterruptStyle::None);
-        }
-        Ok(ret)
-    }
-
-    // clc implements the CLC instruction clearing the C status bit.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn clc(&mut self) -> Result<OpState> {
-        self.p_mut(self.p() & !P_CARRY);
-        Ok(OpState::Done)
-    }
-
-    // cld implements the CLD instruction clearing the D status bit.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn cld(&mut self) -> Result<OpState> {
-        self.p_mut(self.p() & !P_DECIMAL);
-        Ok(OpState::Done)
-    }
-
-    // cli implements the CLI instruction for clearing the I status bit.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn cli(&mut self) -> Result<OpState> {
-        self.p_mut(self.p() & !P_INTERRUPT);
-        Ok(OpState::Done)
-    }
-
-    // clv implements the CLV instruction clearing the V status bit.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn clv(&mut self) -> Result<OpState> {
-        self.p_mut(self.p() & !P_OVERFLOW);
-        Ok(OpState::Done)
-    }
-
-    // dec implements the DEC instruction by decrementing the value (op_val) at op_addr.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn dec(&mut self) -> Result<OpState> {
-        self.store_with_flags(self.op_addr(), (Wrapping(self.op_val()) - Wrapping(1)).0)
-    }
-
-    // eor implements the EOR instruction which XORs op_val with A.
-    // Always returns true since this takes one tick and never returns an error.
-    fn eor(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 ^ self.op_val())
-    }
-
-    // inc implements the INC instruction by incrementing the value (op_val) at op_addr.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn inc(&mut self) -> Result<OpState> {
-        self.store_with_flags(self.op_addr(), (Wrapping(self.op_val()) + Wrapping(1)).0)
-    }
-
-    // jmp implements the JMP instruction for jumping to a new address.
-    // Doesn't use addressing mode functions since it's technically not
-    // a load/rmw/store instruction so doesn't fit exactly.
-    // Returns Done when done and/or errors.
-    fn jmp(&mut self) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset
-            | Tick::Tick1
-            | Tick::Tick4
-            | Tick::Tick5
-            | Tick::Tick6
-            | Tick::Tick7
-            | Tick::Tick8 => Err(eyre!("jmp: invalid op_tick: {:?}", self.op_tick())),
-            Tick::Tick2 => {
-                // We've already read op_val which is the new PCL so increment PC only.
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // Read PCH and assemble the PC
-                self.op_addr_mut(
-                    (u16::from(self.ram().borrow().read(self.pc())) << 8)
-                        | u16::from(self.op_val()),
-                );
-                self.pc_mut(self.op_addr());
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // jmp_indirect implements the indirect JMP instruction for jumping through a pointer to a new address.
-    // Returns Done when the PC is correct. Returns an error on an invalid tick.
-    fn jmp_indirect(&mut self) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("jmp indirect: invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 | Tick::Tick3 => {
-                // Same as loading an absolute address
-                self.addr_absolute(&InstructionMode::Load)
-            }
-            Tick::Tick4 => {
-                // Read the low byte of the pointer and stash it in op_val if NMOS
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // Read the high byte. On NMOS this tick reads the wrong address if there was a page wrap.
-                let addr = (self.op_addr() & 0xFF00)
-                    | u16::from((Wrapping((self.op_addr() & 0x00FF) as u8) + Wrapping(1)).0);
-                let val = self.ram().borrow().read(addr);
-                self.op_addr_mut((u16::from(val) << 8) | u16::from(self.op_val()));
-                self.pc_mut(self.op_addr());
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // jsr implements the JSR instruction for jumping to a subroutine.
-    // Returns Done when done and/or errors.
-    fn jsr(&mut self) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("jsr: invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 => {
-                // Nothing happens here except to make the PC correct.
-                // NOTE: This means the PC pushed below is actually off by one.
-                //       RTS handles this by adding one to the popped PC.
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // Not 100% sure what happens on this cycle.
-                // Per http://nesdev.com/6502_cpu.txt we read the current stack
-                // value because there needs to be a tick to make S correct.
-                self.s_mut(self.s() - Wrapping(1));
-                _ = self.pop_stack();
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                self.push_stack(((self.pc() & 0xFF00) >> 8) as u8);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                self.push_stack((self.pc() & 0x00FF) as u8);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick6 => {
-                self.pc_mut(
-                    (u16::from(self.ram().borrow().read(self.pc())) << 8)
-                        | u16::from(self.op_val()),
-                );
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // lsr implements the LSR instruction as a logical shift right on op_addr.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn lsr(&mut self) -> Result<OpState> {
-        let val = self.op_val() >> 1;
-        self.ram().borrow_mut().write(self.op_addr(), val);
-        // Get bit 0 from the original but as a 16 bit value so
-        // we can shift it into the carry position.
-        self.carry_check(u16::from(self.op_val() & 0x01) << 8);
-        self.zero_check(val);
-        self.negative_check(val);
-        Ok(OpState::Done)
-    }
-
-    // lsr_acc implements the LSR instruction as a logical shift right on A.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn lsr_acc(&mut self) -> Result<OpState> {
-        // Get bit 0 from A but in a 16 bit value and then shift it up into
-        // the carry position
-        self.carry_check(u16::from(self.a().0 & 0x01) << 8);
-        self.load_register(Register::A, self.a().0 >> 1)
-    }
-
-    // ora implements the ORA instruction which ORs op_val with A.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn ora(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 | self.op_val())
-    }
-
-    // push_register is the common logic for pushing A,X,Y onto the stack.
-    fn push_register(&mut self, val: u8) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset
-            | Tick::Tick1
-            | Tick::Tick4
-            | Tick::Tick5
-            | Tick::Tick6
-            | Tick::Tick7
-            | Tick::Tick8 => Err(eyre!("pha: invalid op_tick: {:?}", self.op_tick())),
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                self.push_stack(val);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // pha implements the PHA instruction for pushing A onto the stack.
-    // Returns Done when done and/or errors.
-    fn pha(&mut self) -> Result<OpState> {
-        self.push_register(self.a().0)
-    }
-
-    // php implements the PHP instruction for pushing P onto the stack.
-    // Returns Done when done and/or errors.
-    fn php(&mut self) -> Result<OpState> {
-        let mut push = self.p();
-
-        // This is always set
-        push |= P_S1;
-
-        // PHP always sets B where-as IRQ/NMI don't.
-        push |= P_B;
-        self.push_register(push.0)
-    }
-
-    // pull_register is the common logic for pulling A,X,Y off the stack.
-    fn pull_register(&mut self, reg: Register) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("pla: invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                // A read of the current stack happens while the CPU is incrementing S.
-                // Since our popStack does both of these together on this cycle it's just
-                // a throw away read.
-                self.s_mut(self.s() - Wrapping(1));
-                _ = self.pop_stack();
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // The real read
-                let val = self.pop_stack();
-                self.load_register(reg, val)
-            }
-        }
-    }
-
-    // pla implements the PLA instruction for pulling A from the stack.
-    // Returns Done when done and/or errors.
-    fn pla(&mut self) -> Result<OpState> {
-        self.pull_register(Register::A)
-    }
-
-    // plp implements the PLP instructions for pulling P from the stack.
-    // Returns Done when done and/or errors.
-    fn plp(&mut self) -> Result<OpState> {
-        let ret = self.pull_register(Register::P)?;
-        if ret == OpState::Done {
-            // The actual flags register always has S1 set to one.
-            self.p_mut(self.p() | P_S1);
-            // And the B bit is never set in the register.
-            self.p_mut(self.p() & !P_B);
-        }
-        Ok(ret)
-    }
-
-    // rol implements the ROL instruction which does a rotate left on op_addr.
-    // It then sets all associated flags and adjust cycles as needed.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn rol(&mut self) -> Result<OpState> {
-        let carry = (self.p() & P_CARRY).0;
-        let new = (self.op_val() << 1) | carry;
-        self.ram().borrow_mut().write(self.op_addr(), new);
-        self.carry_check(u16::from(self.op_val()) << 1);
-        self.zero_check(new);
-        self.negative_check(new);
-        Ok(OpState::Done)
-    }
-
-    // rol_acc implements the ROL instruction directly on the accumulator.
-    // It then sets all associated flags and adjust cycles as needed.
-    // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
-    fn rol_acc(&mut self) -> Result<OpState> {
-        let carry = (self.p() & P_CARRY).0;
-        self.carry_check(u16::from(self.a().0) << 1);
-        self.load_register(Register::A, (self.a().0 << 1) | carry)
-    }
-
-    // ror implements the ROR instruction for doing a rotate right on the contents
-    // of op_addr. Sets flags.
-    // Always returns Done since this is one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn ror(&mut self) -> Result<OpState> {
-        let carry = (self.p() & P_CARRY).0 << 7;
-        let new = (self.op_val() >> 1) | carry;
-        self.ram().borrow_mut().write(self.op_addr(), new);
-        // Just see if carry is set or not.
-        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
-        self.zero_check(new);
-        self.negative_check(new);
-        Ok(OpState::Done)
-    }
-
-    // ror_acc implements the ROR instruction directly on the accumulator.
-    // It then sets all associated flags and adjust cycles as needed.
-    // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
-    fn ror_acc(&mut self) -> Result<OpState> {
-        let carry = (self.p() & P_CARRY).0 << 7;
-        // Just see if carry is set or not.
-        self.carry_check((u16::from(self.a().0) << 8) & 0x0100);
-        self.load_register(Register::A, (self.a().0 >> 1) | carry)
-    }
-
-    // rti implements the RTI instruction for returning out of an interrupt handler.
-    // Returns Done when done and/or errors.
-    fn rti(&mut self) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("rti: invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                // A read of the current stack happens while the CPU is incrementing S.
-                // Since our popStack does both of these together on this cycle it's just
-                // a throw away read.
-                self.s_mut(self.s() - Wrapping(1));
-                _ = self.pop_stack();
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // The real read for P
-                let p = self.pop_stack();
-                self.p_mut(Flags(p));
-                // The actual flags registers always has S1 set to one
-                self.p_mut(self.p() | P_S1);
-                // And B is never set.
-                self.p_mut(self.p() & !P_B);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // PCL
-                let o = self.pop_stack();
-                self.op_val_mut(o);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick6 => {
-                // Pop PCH and set PC
-                let o = self.pop_stack();
-                self.pc_mut((u16::from(o) << 8) | u16::from(self.op_val()));
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // RTS implements the RTS instruction and pops the PC off the stack
-    // for returning from an subroutine.
-    // Returns Done when done and/or errors.
-    fn rts(&mut self) -> Result<OpState> {
-        match self.op_tick() {
-            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("rts: invalid op_tick: {:?}", self.op_tick()))
-            }
-            Tick::Tick2 => Ok(OpState::Processing),
-            Tick::Tick3 => {
-                // A read of the current stack happens while the CPU is incrementing S.
-                // Since our popStack does both of these together on this cycle it's just
-                // a throw away read.
-                self.s_mut(self.s() - Wrapping(1));
-                _ = self.pop_stack();
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // PCL
-                let o = self.pop_stack();
-                self.op_val_mut(o);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // PCH
-                let o = self.pop_stack();
-                self.pc_mut((u16::from(o) << 8) | u16::from(self.op_val()));
-                Ok(OpState::Processing)
-            }
-            Tick::Tick6 => {
-                // Read the current PC value then increment PC so we're pointing at the right addr.
-                _ = self.ram().borrow().read(self.pc());
-                self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // sbc implements the SBC instruction for both binary and BCD modes (if implemented)
-    // and sets all associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn sbc(&mut self) -> Result<OpState> {
-        // Do BCD mode.
-        if (self.p() & P_DECIMAL) != P_NONE {
-            // Pull the carry bit out which thankfully is the low bit so can be
-            // used directly.
-            let carry = (self.p() & P_CARRY).0;
-
-            // BCD details - http://6502.org/tutorials/decimal_mode.html
-            // Also http://nesdev.com/6502_cpu.txt but it has errors
-            // Note: Wraps are ok here and intended as we're doing bit extensions on purpose.
-            #[allow(clippy::cast_possible_wrap)]
-            let mut al = Wrapping((self.a().0 & 0x0F) as i8)
-                - Wrapping((self.op_val() & 0x0F) as i8)
-                + Wrapping(carry as i8)
-                - Wrapping(1);
-
-            // Low nibble fixup.
-            if al < Wrapping(0) {
-                al = ((al - Wrapping(0x06)) & Wrapping(0x0F)) - Wrapping(0x10);
-            }
-
-            let mut sum;
-            sum = Wrapping(i16::from(self.a().0 & 0xF0))
-                - Wrapping(i16::from(self.op_val() & 0xF0))
-                + Wrapping(i16::from(al.0));
-            // High nibble fixup (for all)
-            if sum < Wrapping(0x0000) {
-                sum -= 0x60;
-            }
-
-            // NOTE: We don't lose the sign here BCD doesn't care.
-            #[allow(clippy::cast_sign_loss)]
-            let res = (sum.0 & 0xFF) as u8;
-
-            // Do normal binary math to set C,N,Z
-            let b = self.a() + Wrapping(!self.op_val()) + Wrapping(carry);
-            self.overflow_check(self.a().0, !self.op_val(), b.0);
-
-            self.negative_check(b.0);
-            self.zero_check(b.0);
-
-            // Yes, could do bit checks here like the hardware but
-            // just treating as uint16 math is simpler to code.
-            self.carry_check(u16::from(self.a().0) + u16::from(!self.op_val()) + u16::from(carry));
-            self.a_mut(Wrapping(res));
-            return Ok(OpState::Done);
-        }
-
-        // Otherwise binary mode is just ones complement p.opVal and ADC.
-        self.op_val_mut(!self.op_val());
-        self.adc()
-    }
-
-    // sec implements the SEC instruction for setting the carry bit.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn sec(&mut self) -> Result<OpState> {
-        self.p_mut(self.p() | P_CARRY);
-        Ok(OpState::Done)
-    }
-
-    // sed implements the SED instruction for setting the D status bit.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn sed(&mut self) -> Result<OpState> {
-        self.p_mut(self.p() | P_DECIMAL);
-        Ok(OpState::Done)
-    }
-
-    // sei implements the SEI instruction for setting the I status bit.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn sei(&mut self) -> Result<OpState> {
-        self.p_mut(self.p() | P_INTERRUPT);
-        Ok(OpState::Done)
-    }
-}
-
-macro_rules! cpu_internal {
-    () => {
-        // state returns the current CPU state.
-        fn state(&self) -> State {
-            self.state
-        }
-        // state_mut sets the current CPU state.
-        fn state_mut(&mut self, new: State) {
-            self.state = new;
-        }
-
-        // a returns the contents of the A register.
-        fn a(&self) -> Wrapping<u8> {
-            self.a
-        }
-        // a_mut sets the contents of the A register.
-        fn a_mut(&mut self, new: Wrapping<u8>) {
-            self.a = new;
-        }
-
-        // x returns the contents of the X register.
-        fn x(&self) -> Wrapping<u8> {
-            self.x
-        }
-        // x_mut sets the contents of the X register.
-        fn x_mut(&mut self, new: Wrapping<u8>) {
-            self.x = new;
-        }
-
-        // y returns the contents of the Y register.
-        fn y(&self) -> Wrapping<u8> {
-            self.y
-        }
-        // y_mut sets the contents of the Y register.
-        fn y_mut(&mut self, new: Wrapping<u8>) {
-            self.y = new;
-        }
-
-        // s returns the contents of the S register.
-        fn s(&self) -> Wrapping<u8> {
-            self.s
-        }
-        // s_mut sets the contents of the S register.
-        fn s_mut(&mut self, new: Wrapping<u8>) {
-            self.s = new;
-        }
-
-        // p returns the current Flags from the P register.
-        fn p(&self) -> Flags {
-            self.p
-        }
-        // p_mut sets the P register to the given Flags.
-        fn p_mut(&mut self, new: Flags) {
-            self.p = new;
-        }
-
-        // op_val returns the internal op_val register.
-        fn op_val(&self) -> u8 {
-            self.op_val
-        }
-        // op_val_mut sets the internal op_val register.
-        fn op_val_mut(&mut self, new: u8) {
-            self.op_val = new;
-        }
-
-        // op_addr returns the internal op_addr register.
-        fn op_addr(&self) -> u16 {
-            self.op_addr
-        }
-        // op_addr_mut sets the internal op_addr register.
-        fn op_addr_mut(&mut self, new: u16) {
-            self.op_addr = new;
-        }
-
-        // op_raw returns the current opcode byte.
-        fn op_raw(&self) -> u8 {
-            self.op_raw
-        }
-
-        // op returns the current decoded Operation.
-        fn op(&self) -> Operation {
-            self.op
-        }
-
-        // addr_done returns the internal addr_done state.
-        fn addr_done(&self) -> OpState {
-            self.addr_done
-        }
-        // addr_done_mut sets the internal addr_done state.
-        fn addr_done_mut(&mut self, new: OpState) {
-            self.addr_done = new;
-        }
-
-        // skip_interrupt returns the current SkipInterrupt state.
-        fn skip_interrupt(&self) -> SkipInterrupt {
-            self.skip_interrupt
-        }
-        // skip_interrupt_mut sets the SkipInterrupt state.
-        fn skip_interrupt_mut(&mut self, new: SkipInterrupt) {
-            self.skip_interrupt = new;
-        }
-
-        // irq_raised returns the current InterruptStyle state.
-        fn irq_raised(&self) -> InterruptStyle {
-            self.irq_raised
-        }
-        // irq_raised_mut sets the InterruptStyle state.
-        fn irq_raised_mut(&mut self, new: InterruptStyle) {
-            self.irq_raised = new;
-        }
-    };
-}
-
-impl<'a> CPUInternal<'a> for CPU6502<'a> {
-    cpu_internal!();
-}
-impl<'a> CPUInternal<'a> for CPU6510<'a> {
-    cpu_internal!();
-}
-impl<'a> CPUInternal<'a> for CPURicoh<'a> {
-    cpu_internal!();
-
-    // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
-    // This sets all associated flags in P. For SBC simply ones-complement op_val
-    // before calling. For Richo this means no BCD.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn adc(&mut self) -> Result<OpState> {
-        // Pull the carry bit out which thankfully is the low bit so can be
-        // used directly.
-        let carry = (self.p & P_CARRY).0;
-
-        // Do normal binary math.
-        let sum = (self.a + Wrapping(self.op_val) + Wrapping(carry)).0;
-        self.overflow_check(self.a.0, self.op_val, sum);
-
-        // Yes, could do bit checks here like the hardware but
-        // just treating as uint16 math is simpler to code.
-        self.carry_check(u16::from(self.a.0) + u16::from(self.op_val) + u16::from(carry));
-        // Now set the accumulator so the other flag checks are against the result.
-        self.load_register(Register::A, sum)
-    }
-
-    // sbc implements the SBC instruction for binary math. This is just an
-    // inversion and calls ADC. As this is Ricoh there is no BCD support.
-    // Sets all associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn sbc(&mut self) -> Result<OpState> {
-        // Binary mode is just ones complement p.opVal and ADC.
-        self.op_val = !self.op_val;
-        self.adc()
-    }
-}
-
-impl<'a> CPUInternal<'a> for CPU65C02<'a> {
-    cpu_internal!();
-
-    // load_instruction abstracts all load instruction opcodes. The address mode function is
-    // used to get the proper values loaded into op_addr and op_val.
-    // Then on the same tick this is done op_func is called to load the appropriate register.
-    // Returns OpState::Done when complete and/or any error.
-    fn load_instruction(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-        op_func: fn(&mut Self) -> Result<OpState>,
-    ) -> Result<OpState> {
-        // Account for ADC/SBC in D mode on CMOS needing to do one more cycle.
-        let mut skip_done = false;
-        if self.addr_done != OpState::Done {
-            self.addr_done = address_mode(self, &InstructionMode::Load)?;
-            if self.addr_done == OpState::Done {
-                skip_done = true;
-            }
-        }
-        match self.addr_done {
-            OpState::Processing => Ok(OpState::Processing),
-            OpState::Done => {
-                if skip_done
-                    && self.p & P_DECIMAL != P_NONE
-                    && (self.op.op == Opcode::ADC || self.op.op == Opcode::SBC)
-                {
-                    // Do another read cycle to account for SBC/ADC needing this
-                    self.op_val = self.ram.borrow().read(self.op_addr);
-                    Ok(OpState::Processing)
-                } else {
-                    op_func(self)
-                }
-            }
-        }
-    }
-
-    // addr_absolute implements Absolute mode - a
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_absolute(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => {
-                // op_val has the first start of the address so start computing it.
-                self.op_addr = u16::from(self.op_val) & 0x00FF;
-                self.pc += 1;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                self.op_val = self.ram.borrow().read(self.pc.0);
-                self.pc += 1;
-                self.op_addr |= u16::from(self.op_val) << 8;
-                match mode {
-                    // For a store we're done since the opcode can decide what to store.
-                    InstructionMode::Store => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick4 => {
-                // For load and RMW we read the value
-                self.op_val = self.ram.borrow().read(self.op_addr);
-                match mode {
-                    // For a load we're now done.
-                    &InstructionMode::Load => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick5 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read. On CMOS instead it's a spurious read.
-                self.ram.borrow().read(self.op_addr);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_absolute_xy implements the details for addr_absolute_x and addr_absolute_y since
-    // they only differ based on the register used.
-    // See those functions for arg/return specifics.
-    fn addr_absolute_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_absolute invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => {
-                // op_val has the first start of the address so start computing it.
-                self.op_addr = u16::from(self.op_val) & 0x00FF;
-                self.pc += 1;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                self.op_val = self.ram.borrow().read(self.pc.0);
-                self.op_addr |= u16::from(self.op_val) << 8;
-                // Add reg but do it in a way which won't page wrap (if needed).
-                let a = (self.op_addr & 0xFF00)
-                    | u16::from((Wrapping((self.op_addr & 0x00FF) as u8) + Wrapping(reg)).0);
-                self.op_val = 0;
-                if a != (Wrapping(self.op_addr) + Wrapping(u16::from(reg))).0 {
-                    // Signal for next phase fixup is needed
-                    self.op_val = 1;
-                }
-                self.op_addr = a;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // Check old opVal to see if it's non-zero. If so it means the reg addition
-                // crosses a page boundary and we'll have to fixup otherwise this is fine.
-                // For a load operation that means another tick to read the correct address.
-                // For RMW it doesn't matter (we always do the extra tick).
-                // For Store we're done. Just fixup p.opAddr so the return value is correct.
-
-                // If we didn't make the wrong address and load/storing we're good.
-                // For RMW we still read here but do continue to the next tick.
-                if self.op_val == 0 {
-                    // Advance the PC since we didn't earlier as down below CMOS
-                    // can reread this value.
-                    self.pc += 1;
-                    self.op_val = self.ram.borrow().read(self.op_addr);
-                    if mode == &InstructionMode::Rmw {
-                        return Ok(OpState::Processing);
-                    }
-                    return Ok(OpState::Done);
-                }
-
-                // Every tick requires a bus cycle so while we're fixing up
-                // we have to read something. CMOS rereads the last PC+2 value.
-                // Leave op_val as it was so the next tick can tell we had to
-                // do a fixup (for RMW since it always gets there).
-                _ = self.ram.borrow().read(self.pc.0);
-                self.pc += 1;
-
-                // We computed the wrong addr before so fix it now by page wrapping.
-                self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
-
-                // Stores are done and ready to write on their next cycle since
-                // the addr is correct now.
-                if mode == &InstructionMode::Store {
-                    return Ok(OpState::Done);
-                }
-
-                // Everything else runs another tick at this point
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                let t = self.op_val;
-                // So get the correct value in now for both loads (extra cycle for fixup)
-                // and RMW (which always gets here minimum).
-                self.op_val = self.ram.borrow().read(self.op_addr);
-
-                // For a load or a RMW that didn't overflow we're done. Unless...it's
-                // a INC/DEC in which case it always goes the extra cycle per
-                // http://www.6502.org/tutorials/65c02opcodes.html
-                // Otherwise RMW overflow always advances as does non CMOS RMW always.
-                if mode == &InstructionMode::Load
-                    || (t == 0 && self.op.op != Opcode::INC && self.op.op != Opcode::DEC)
-                {
-                    return Ok(OpState::Done);
-                }
-                Ok(OpState::Processing)
-            }
-            Tick::Tick6 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read. On CMOS instead it's a spurious read.
-                // The WDC datasheet says this is AA+X+1 which
-                // I doubt actually. Everything else just seems to think it
-                // rereads the same addr twice.
-                _ = self.ram.borrow().read(self.op_addr);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_indirect_x implements Zero page indirect plus X mode - (d,x)
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_indirect_x(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_indirect_x invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => {
-                // We've already read the value but need to bump the PC
-                // and assign it into op_addr so the throw away read in
-                // tick3 reads the right place.
-                self.op_addr = u16::from(self.op_val) & 0x00FF;
-                self.pc += 1;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // A throwaway read from the ZP addr. We'll add the X register as well for the real read next.
-                self.ram.borrow().read(self.op_addr);
-                // Does this as a Wrapping so it wraps as needed since it stays in ZP.
-                self.op_addr = u16::from((Wrapping(self.op_val) + self.x).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // Read effective addr low byte
-                self.op_val = self.ram.borrow().read(self.op_addr);
-                // Now increment (with ZP rollover) for next read.
-                // There is no truncation since we know this is always
-                // 0-255.
-                #[allow(clippy::cast_possible_truncation)]
-                let a = Wrapping(self.op_addr as u8);
-                self.op_addr = u16::from((a + Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // Read high byte, shift over and add op_val which has the low byte.
-                self.op_addr =
-                    (u16::from(self.ram.borrow().read(self.op_addr)) << 8) | u16::from(self.op_val);
-                match mode {
-                    // For a store we're done as op_addr now contains the destination address.
-                    InstructionMode::Store => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick6 => {
-                self.op_val = self.ram.borrow().read(self.op_addr);
-                // We're done as we've loaded the value and there are no
-                // RMW instructions for CMOS.
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_indirect_y implements Zero page indirect plus Y mode - (d),y
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_indirect_y(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_indirect_y invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => {
-                // We've already read the value but need to bump the PC
-                // and assign it into op_addr so the throw away read in
-                // tick3 reads the right place.
-                self.op_addr = u16::from(self.op_val) & 0x00FF;
-                self.pc += 1;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // Read from the ZP addr to start building our pointer.
-                self.op_val = self.ram.borrow().read(self.op_addr);
-                // Setup op_addr for next read and handle ZP wrapping.
-                #[allow(clippy::cast_possible_truncation)]
-                let a = u16::from((Wrapping(self.op_addr as u8) + Wrapping(1)).0);
-                self.op_addr = a;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // Compute effective address and then add Y to it (possibly wrongly).
-                self.op_addr =
-                    (u16::from(self.ram.borrow().read(self.op_addr)) << 8) | u16::from(self.op_val);
-                // Add Y but do it in a way which won't page wrap (if needed).
-                #[allow(clippy::cast_possible_truncation)]
-                let a =
-                    (self.op_addr & 0xFF00) | u16::from((Wrapping(self.op_addr as u8) + self.y).0);
-                self.op_val = 0;
-                if a != (Wrapping(self.op_addr) + Wrapping(u16::from(self.y.0))).0 {
-                    // Signal for next phase we got it wrong.
-                    self.op_val = 1;
-                }
-                self.op_addr = a;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // Save op_val so we know if this needed fixing.
-                let t = self.op_val;
-                if t == 0 {
-                    // Read the right thing.
-                    self.op_val = self.ram.borrow().read(self.op_addr);
-                } else {
-                    // CMOS doesn't spurious read the wrong op_addr. It just rereads the last PC.
-                    _ = self.ram.borrow().read((self.pc - Wrapping(1)).0);
-                }
-
-                // Check old opVal to see if it's non-zero. If so it means the Y addition
-                // crosses a page boundary and we'll have to fixup.
-                // For a load operation that means another tick to read the correct
-                // address.
-                // For Store we're done. Just fixup p.opAddr so the return value is correct.
-                let mut done = Ok(OpState::Done);
-                if t != 0 {
-                    self.op_addr = (Wrapping(self.op_addr) + Wrapping(0x0100)).0;
-                    if mode == &InstructionMode::Load {
-                        done = Ok(OpState::Processing);
-                    }
-                }
-                done
-            }
-            Tick::Tick6 => {
-                // Optional (on load) in case adding Y went past a page boundary.
-                self.op_val = self.ram.borrow().read(self.op_addr);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_zp implements Zero page mode - d
-    // returning the value in op_val and the address read in op_addr (so RW operations can do things without having to
-    // reread memory incorrectly to compute a storage address).
-    // If mode is RMW then another tick will occur that writes the read value back to the same address due to how
-    // the 6502 operates. In the CMOS case this is a 2nd read.
-    // Returns OpState::Done if this tick ends address processing and/or any errors.
-    fn addr_zp(&mut self, mode: &InstructionMode) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick5 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_zp invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => {
-                // Already read the value but need to bump the PC
-                self.op_addr = u16::from(self.op_val);
-                self.pc += 1;
-                match mode {
-                    // For a store we're done since we have the address needed.
-                    &InstructionMode::Store => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick3 => {
-                self.op_val = self.ram.borrow().read(self.op_addr);
-                match mode {
-                    // For a load we're now done since the value is loaded.
-                    &InstructionMode::Load => Ok(OpState::Done),
-                    _ => Ok(OpState::Processing),
-                }
-            }
-            Tick::Tick4 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read. On CMOS instead it's a spurious read.
-                self.ram.borrow().read(self.op_addr);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // addr_zp_xy implements the details for addr_zp_x and addr_zp_y since they only differ based on the register used.
-    // See those functions for arg/return specifics.
-    fn addr_zp_xy(&mut self, mode: &InstructionMode, reg: u8) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick6 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("addr_zp_x invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => {
-                // Already read the value but need to bump the PC.
-                self.op_addr = u16::from(self.op_val);
-                self.pc += 1;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // Read from the ZP addr and then add the register for the real read later.
-                _ = self.ram.borrow().read(self.op_addr);
-                // Do this as a u8 so it wraps as needed.
-                self.op_addr = u16::from((Wrapping(self.op_val) + Wrapping(reg)).0);
-                // For a store we're done since we have the address needed.
-                if mode == &InstructionMode::Store {
-                    Ok(OpState::Done)
-                } else {
-                    Ok(OpState::Processing)
-                }
-            }
-            Tick::Tick4 => {
-                // Now read from the final address.
-                self.op_val = self.ram.borrow().read(self.op_addr);
-                // If we're load we're now done.
-                if mode == &InstructionMode::Load {
-                    Ok(OpState::Done)
-                } else {
-                    Ok(OpState::Processing)
-                }
-            }
-            Tick::Tick5 => {
-                // On NMOS there's a spurious write here where we replay back
-                // what we just read. On CMOS instead it's a spurious read.
-                self.ram.borrow().read(self.op_addr);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // run_interrupt does all the heavy lifting for any interrupt processing.
-    // i.e. pushing values onto the stack and loading PC with the right address.
-    // Pass in the vector to be used for loading the PC (which means for BRK
-    // it can change if an NMI happens before we get to the load ticks).
-    // Returns OpState::Done when complete (and PC is correct). Can return an error on an
-    // invalid tick count.
-    fn run_interrupt(&mut self, vec: u16, irq: bool) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick8 => {
-                Err(eyre!("run_interrupt: invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 => {
-                // Increment the PC on a non IRQ (i.e. BRK) since that changes where returns happen.
-                if !irq {
-                    self.pc += 1;
-                }
-                Ok(OpState::Processing)
-            }
-            Tick::Tick3 => {
-                // There is no truncation as we mask and shift into 8 bits.
-                #[allow(clippy::cast_possible_truncation)]
-                self.push_stack(((self.pc.0 & 0xFF00) >> 8) as u8);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick4 => {
-                // There is no truncation as we mask into 8 bits.
-                #[allow(clippy::cast_possible_truncation)]
-                self.push_stack((self.pc.0 & 0x00FF) as u8);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                let mut push = self.p;
-                // S1 is always set
-                push |= P_S1;
-                // B always set unless this triggered due to IRQ
-                push |= P_B;
-                if irq {
-                    push &= !P_B;
-                }
-                println!("Pushing {push} with {irq}");
-                self.push_stack(push.0);
-                // Now set P after we've pushed.
-
-                // CMOS turns off D always
-                self.p &= !P_DECIMAL;
-
-                // For BRK/IRQ we set I. NMI does not.
-                if self.irq_raised != InterruptStyle::NMI {
-                    self.p |= P_INTERRUPT;
-                }
-                Ok(OpState::Processing)
-            }
-            Tick::Tick6 => {
-                self.op_val = self.ram.borrow().read(vec);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick7 => {
-                // Compute the new PC from the 2nd vector component and the previous val read.
-                self.pc = Wrapping(
-                    (u16::from(self.ram.borrow().read(vec + 1)) << 8) | u16::from(self.op_val),
-                );
-
-                // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
-                // a handler before firing again.
-                if irq && self.skip_interrupt != SkipInterrupt::PrevSkip {
-                    self.skip_interrupt = SkipInterrupt::Skip;
-                }
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // adc implements the ADC/SBC opcodes which does add/subtract with carry on A.
-    // This sets all associated flags in P. For SBC simply ones-complement op_val
-    // before calling.
-    // NOTE: SBC this only works in non BCD mode. sbc() handles this directly.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn adc(&mut self) -> Result<OpState> {
-        // Pull the carry bit out which thankfully is the low bit so can be
-        // used directly.
-        let carry = (self.p & P_CARRY).0;
-
-        // Do BCD.
-        if (self.p & P_DECIMAL) != P_NONE {
-            // BCD details - http://6502.org/tutorials/decimal_mode.html
-            // Also http://nesdev.com/6502_cpu.txt but it has errors
-            let mut al = Wrapping(self.a.0 & 0x0F) + Wrapping(self.op_val & 0x0F) + Wrapping(carry);
-            // Low nibble fixup
-            if al >= Wrapping(0x0A) {
-                al = ((al + Wrapping(0x06)) & Wrapping(0x0F)) + Wrapping(0x10);
-            }
-            let mut sum = Wrapping(u16::from(self.a.0 & 0xF0))
-                + Wrapping(u16::from(self.op_val & 0xF0))
-                + Wrapping(u16::from(al.0));
-            // High nibble fixup
-            if sum >= Wrapping(0xA0) {
-                sum += 0x60;
-            }
-            let res = (sum.0 & 0xFF) as u8;
-            let seq = Wrapping(self.a.0 & 0xF0) + Wrapping(self.op_val & 0xF0) + al;
-            self.overflow_check(self.a.0, self.op_val, seq.0);
-            self.carry_check(sum.0);
-            // Do the correct checks for CMOS.
-            self.negative_check(res);
-            self.zero_check(res);
-            self.a = Wrapping(res);
-            return Ok(OpState::Done);
-        }
-
-        // Otherwise do normal binary math.
-        let sum = (self.a + Wrapping(self.op_val) + Wrapping(carry)).0;
-        self.overflow_check(self.a.0, self.op_val, sum);
-
-        // Yes, could do bit checks here like the hardware but
-        // just treating as uint16 math is simpler to code.
-        self.carry_check(u16::from(self.a.0) + u16::from(self.op_val) + u16::from(carry));
-        // Now set the accumulator so the other flag checks are against the result.
-        self.load_register(Register::A, sum)
-    }
-
-    // bit implements the BIT instruction for AND'ing against A
-    // and setting N/V/Z based on the value.
-    // In immediate mode (CMOS only) only Z is set, not N/V.
-    // Always returns Done since this takes one tick and never returns an error.
-    #[allow(clippy::unnecessary_wraps)]
-    fn bit(&mut self) -> Result<OpState> {
-        self.zero_check(self.a.0 & self.op_val);
-        if self.op.mode != AddressMode::Immediate {
-            self.negative_check(self.op_val);
-            // Copy V from bit 6
-            self.p &= !P_OVERFLOW;
-            if self.op_val & P_OVERFLOW != P_NONE {
-                self.p |= P_OVERFLOW;
-            }
-        }
-        Ok(OpState::Done)
-    }
-
-    // brk implements the BRK instruction. This does setup and then calls the
-    // interrupt processing handler refenced at IRQ_VECTOR (normally).
-    // Returns Done when done and/or errors.
-    fn brk(&mut self) -> Result<OpState> {
-        // This is the same as an interrupt handler so the vector we call
-        // can change on a per tick basis on NMOS. i.e. we might push P with P_B set
-        // but go to the NMI vector depending on timing.
-        // CMOS doesn't do this. It will always run BRK to completion first.
-        self.run_interrupt(IRQ_VECTOR, false)
-    }
-
-    // jmp_indirect implements the indirect JMP instruction for jumping through a pointer to a new address.
-    // Returns Done when the PC is correct. Returns an error on an invalid tick.
-    fn jmp_indirect(&mut self) -> Result<OpState> {
-        match self.op_tick {
-            Tick::Reset | Tick::Tick1 | Tick::Tick7 | Tick::Tick8 => {
-                Err(eyre!("jmp indirect: invalid op_tick: {:?}", self.op_tick))
-            }
-            Tick::Tick2 | Tick::Tick3 => {
-                // Same as loading an absolute address
-                self.addr_absolute(&InstructionMode::Load)
-            }
-            Tick::Tick4 => {
-                // Read the low byte of the pointer and stash it in op_val if NMOS
-                // For CMOS we simply reread PC+2
-                self.op_val = self.ram.borrow().read((self.pc - Wrapping(1)).0);
-                Ok(OpState::Processing)
-            }
-            Tick::Tick5 => {
-                // CMOS always reads the right low byte as compared to NMOS.
-                self.op_val = self.ram.borrow().read(self.op_addr);
-                self.op_addr = (Wrapping(self.op_addr) + Wrapping(1)).0;
-                Ok(OpState::Processing)
-            }
-            Tick::Tick6 => {
-                // CMOS always takes this tick to correct the final addr.
-                let val = self.ram.borrow().read(self.op_addr);
-                self.op_addr = (u16::from(val) << 8) | u16::from(self.op_val);
-                self.pc = Wrapping(self.op_addr);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
-    // sbc implements the SBC instruction for both binary and BCD modes.
-    // and sets all associated flags.
-    // Always returns Done since this takes one tick and never returns an error.
-    fn sbc(&mut self) -> Result<OpState> {
-        // Do BCD
-        if (self.p & P_DECIMAL) != P_NONE {
-            // Pull the carry bit out which thankfully is the low bit so can be
-            // used directly.
-            let carry = (self.p & P_CARRY).0;
-
-            // BCD details - http://6502.org/tutorials/decimal_mode.html
-            // Also http://nesdev.com/6502_cpu.txt but it has errors
-            // Note: Wraps are ok here and intended as we're doing bit extensions on purpose.
-            #[allow(clippy::cast_possible_wrap)]
-            let al = Wrapping((self.a.0 & 0x0F) as i8) - Wrapping((self.op_val & 0x0F) as i8)
-                + Wrapping(carry as i8)
-                - Wrapping(1);
-
-            let mut sum = Wrapping(i16::from(self.a.0)) - Wrapping(i16::from(self.op_val))
-                + Wrapping(i16::from(carry))
-                - Wrapping(1);
-            // High nibble fixup
-            if sum < Wrapping(0x0000) {
-                sum -= 0x60;
-            }
-            // Fixup low nibble
-            if al < Wrapping(0x0000) {
-                sum -= 0x06;
-            }
-
-            // NOTE: We don't lose the sign here BCD doesn't care.
-            #[allow(clippy::cast_sign_loss)]
-            let res = (sum.0 & 0xFF) as u8;
-
-            // Do normal binary math to set C,N,Z
-            let b = self.a + Wrapping(!self.op_val) + Wrapping(carry);
-            self.overflow_check(self.a.0, !self.op_val, b.0);
-
-            // CMOS gets these right.
-            self.negative_check(res);
-            self.zero_check(res);
-
-            // Yes, could do bit checks here like the hardware but
-            // just treating as uint16 math is simpler to code.
-            self.carry_check(u16::from(self.a.0) + u16::from(!self.op_val) + u16::from(carry));
-            self.a = Wrapping(res);
-            return Ok(OpState::Done);
-        }
-
-        // Otherwise binary mode is just ones complement p.opVal and ADC.
-        self.op_val = !self.op_val;
-        self.adc()
-    }
-}
-
 macro_rules! cpu_nmos_power_reset {
     () => {
         /// `power_on` will reset the CPU to power on state which isn't well defined.
@@ -5016,20 +5093,24 @@ macro_rules! chip_impl_nmos {
                     }));
                 }
 
+                if self.state == State::RDY {
+                    let last = *self.cpu_ram().borrow().last_addr.borrow();
+                    self.ram().borrow().read(last);
+                    if let Some(rdy) = self.rdy {
+                        if rdy.raised() {
+                            return Ok(());
+                        }
+
+                        // Set to Tick so this replicates running even though
+                        // we did nothing. This way tick_done() is happy.
+                        self.state = State::Tick;
+                        return Ok(());
+                    }
+                }
+
                 // Handles improper states. Only tick_done() or reset() can move into this state.
                 if self.state != State::Running {
                     return Err(eyre!("CPU not in Running state - {}", self.state));
-                }
-
-                // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
-                // Ok, this technically only works like this in combination with SYNC being held high as well.
-                // Otherwise it acts like a single step and continues after the next clock.
-                // But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
-                // time so "good enough".
-                if let Some(rdy) = self.rdy {
-                    if rdy.raised() {
-                        return Ok(());
-                    }
                 }
 
                 // If we get a new interrupt while running one then NMI always wins until it's done.
@@ -5079,6 +5160,7 @@ macro_rules! chip_impl_nmos {
                         // the opcode now and look it up.
                         self.op_raw = self.ram.borrow().read(self.pc.0);
                         self.op = self.opcode_op(self.op_raw);
+                        self.op_addr_fixup = false;
 
                         // If one is raised and we're not skipping and interrupts
                         // are enabled or it's an NMI then we move into interrupt mode.
@@ -5167,6 +5249,18 @@ macro_rules! chip_impl_nmos {
                     }
                     self.interrupt_state = InterruptState::None;
                 }
+
+                // If RDY is held high and we didn't just process a write we move into
+                // the RDY state. It'll keep rereading this last address but nothing else
+                // until RDY drops.
+                if let Some(rdy) = self.rdy {
+                    if rdy.raised()
+                        && *self.cpu_ram().borrow().bus_action.borrow() != LastBusAction::Write
+                    {
+                        self.state = State::RDY;
+                    }
+                }
+
                 Ok(())
             }
 
@@ -5217,6 +5311,21 @@ impl<'a> Chip for CPU65C02<'a> {
             return Err(ErrReport::new(CPUError::Halted {
                 op: self.halt_opcode,
             }));
+        }
+
+        if self.state == State::RDY {
+            let last = *self.cpu_ram().borrow().last_addr.borrow();
+            self.ram().borrow().read(last);
+            if let Some(rdy) = self.rdy {
+                if rdy.raised() {
+                    return Ok(());
+                }
+
+                // Set to Tick so this replicates running even though
+                // we did nothing. This way tick_done() is happy.
+                self.state = State::Tick;
+                return Ok(());
+            }
         }
 
         // Handles improper states. Only tick_done() or reset() or wai() can move into these states.
@@ -5291,6 +5400,7 @@ impl<'a> Chip for CPU65C02<'a> {
                 // the opcode now and look it up.
                 self.op_raw = self.ram.borrow().read(self.pc.0);
                 self.op = self.opcode_op(self.op_raw);
+                self.op_addr_fixup = false;
 
                 // Special case the 1 cycle NOP for CMOS. This just burns a cycle and ignores interrupts.
                 if self.op.op == Opcode::NOP && self.op.mode == AddressMode::NOPCmos {
@@ -5385,6 +5495,17 @@ impl<'a> Chip for CPU65C02<'a> {
             }
             self.interrupt_state = InterruptState::None;
         }
+
+        // If RDY is held high and we didn't just process a write we move into
+        // the RDY state. It'll keep rereading this last address but nothing else
+        // until RDY drops.
+        if let Some(rdy) = self.rdy {
+            if rdy.raised() && *self.cpu_ram().borrow().bus_action.borrow() != LastBusAction::Write
+            {
+                self.state = State::RDY;
+            }
+        }
+
         Ok(())
     }
 
@@ -5451,6 +5572,7 @@ macro_rules! cpu_new {
                 halt_opcode: 0x00,
                 halt_pc: 0x0000,
                 disassemble: RefCell::new(String::with_capacity(32)),
+                op_addr_fixup: false,
             }
         }
     };
@@ -5509,6 +5631,7 @@ impl<'a> CPU6510<'a> {
             halt_opcode: 0x00,
             halt_pc: 0x0000,
             disassemble: RefCell::new(String::with_capacity(32)),
+            op_addr_fixup: false,
             io,
         }
     }
@@ -6615,6 +6738,53 @@ struct C6510RAM {
     // to build this requires mutating there by combining our 2 bytes plus
     // the underlying RAM together.
     memory: RefCell<[u8; MAX_SIZE]>,
+}
+
+/// A `RecordRAM` does all of the RAM operations by passing them through to
+/// the underlying RAM but records the address used and the style of operation.
+/// This is used by each of the CPU types to implement RDY correctly as we
+/// can only start RDY once we're on a read cycle.
+pub struct RecordRAM {
+    // The last bus action (read or write)
+    bus_action: RefCell<LastBusAction>,
+
+    // The last address seen on the bus.
+    last_addr: RefCell<u16>,
+
+    // The underlying RAM implementation.
+    ram: Box<dyn Memory>,
+}
+
+impl RecordRAM {
+    fn new(ram: Box<dyn Memory>) -> Self {
+        Self {
+            bus_action: RefCell::new(LastBusAction::Read),
+            last_addr: RefCell::new(0x000),
+            ram,
+        }
+    }
+}
+
+impl Memory for RecordRAM {
+    fn read(&self, addr: u16) -> u8 {
+        *self.bus_action.borrow_mut() = LastBusAction::Read;
+        *self.last_addr.borrow_mut() = addr;
+        self.ram.read(addr)
+    }
+
+    fn write(&mut self, addr: u16, val: u8) {
+        *self.bus_action.borrow_mut() = LastBusAction::Write;
+        *self.last_addr.borrow_mut() = addr;
+        self.ram.write(addr, val);
+    }
+
+    fn power_on(&mut self) {
+        self.ram.power_on();
+    }
+
+    fn ram(&self, dest: &mut [u8; MAX_SIZE]) {
+        self.ram.ram(dest);
+    }
 }
 
 impl C6510RAM {

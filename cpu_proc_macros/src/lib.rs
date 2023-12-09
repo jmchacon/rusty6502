@@ -235,6 +235,14 @@ pub fn cpu_base_struct(args: TokenStream, input: TokenStream) -> TokenStream {
                 })
                 .unwrap(),
         );
+        fields.named.push(
+            syn::Field::parse_named
+                .parse2(quote! {
+                  #[doc = " Whether the current address mode had to use an extra cycle to fix op_addr."]
+                  op_addr_fixup: bool
+                })
+                .unwrap(),
+        );
     }
 
     quote! {

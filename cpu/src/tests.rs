@@ -1,18 +1,19 @@
 use crate::{
     AddressMode, CPUError, CPUInternal, CPUNmosInternal, CPURicoh, CPUState, ChipDef, Flags,
-    FlatRAM, InstructionMode, InterruptState, InterruptStyle, OpState, Opcode, Register, ResetTick,
-    State, Tick, Vectors, CPU, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT,
-    P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
+    FlatRAM, InstructionMode, InterruptState, InterruptStyle, LastBusAction, OpState, Opcode,
+    Register, ResetTick, State, Tick, Vectors, CPU, CPU6502, CPU6510, CPU65C02, P_B, P_CARRY,
+    P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
 use chip::{CPUType, Chip};
 use color_eyre::eyre::{eyre, Result};
 use irq::Sender;
 use memory::{Memory, MAX_SIZE};
+use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{self, Display, Write};
 use std::fs::{read, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::num::Wrapping;
 use std::ops::Deref;
 use std::panic;
@@ -930,7 +931,7 @@ macro_rules! init_test {
                         match err.root_cause().downcast_ref::<CPUError>() {
                             Some(CPUError::Halted{op: _}) => {},
                             _ => {
-                                assert!(false, "Error isn't a CPUError::Halted. Is '{err}'");
+                                panic!("Error isn't a CPUError::Halted. Is '{err}'");
                             }
                         }
                     }
@@ -2399,3 +2400,211 @@ rom_test!(
       expected_instructions: Some(8991),
     }, rom_nes_functional_test, CPURicoh, setup_cpu_ricoh, step_cpu_ricoh,
 );
+
+#[derive(Deserialize, PartialEq)]
+struct ProcRAM(u16, u8);
+
+impl fmt::Display for ProcRAM {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({:04X}, {:02X})", &self.0, &self.1)
+    }
+}
+
+impl fmt::Debug for ProcRAM {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
+#[derive(Deserialize, PartialEq)]
+struct ProcState {
+    pc: u16,
+    s: u8,
+    a: u8,
+    x: u8,
+    y: u8,
+    p: u8,
+    ram: Vec<ProcRAM>,
+}
+
+impl fmt::Display for ProcState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "ProcState {{")?;
+        writeln!(f, "       pc: {:04X}", self.pc)?;
+        writeln!(f, "        a: {:02X}", self.a)?;
+        writeln!(f, "        x: {:02X}", self.x)?;
+        writeln!(f, "        y: {:02X}", self.y)?;
+        writeln!(f, "        s: {:02X}", self.s)?;
+        writeln!(f, "        p: {}", Flags(self.p))?;
+        if self.ram.is_empty() {
+            writeln!(f, "      ram: []")?;
+        } else {
+            writeln!(f, "      ram: [")?;
+            for r in &self.ram {
+                writeln!(f, "             {r}")?;
+            }
+            writeln!(f, "           ]")?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl fmt::Debug for ProcState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{self}")
+    }
+}
+
+#[derive(Deserialize, PartialEq)]
+struct Cycles(u16, u8, LastBusAction);
+
+impl fmt::Display for Cycles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({:04X}, {:02X}, {})", &self.0, &self.1, &self.2)
+    }
+}
+
+impl fmt::Debug for Cycles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{self}")
+    }
+}
+
+#[derive(Deserialize)]
+struct ProcTest {
+    name: String,
+    initial: ProcState,
+    r#final: ProcState,
+    cycles: Vec<Cycles>,
+}
+
+impl fmt::Display for ProcTest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "ProcTest {{")?;
+        writeln!(f, "     name: {}", self.name)?;
+        writeln!(f, "  initial: {}", self.initial)?;
+        writeln!(f, "    final: {}", self.r#final)?;
+        if self.cycles.is_empty() {
+            writeln!(f, "   cycles: []")?;
+        } else {
+            writeln!(f, "   cycles: [")?;
+            for c in &self.cycles {
+                writeln!(f, "             {c}")?;
+            }
+            writeln!(f, "           ]")?;
+        }
+        write!(f, "}}")
+    }
+}
+
+impl fmt::Debug for ProcTest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{self}")
+    }
+}
+
+#[test]
+#[ignore]
+fn coverage_opcodes_test() -> Result<()> {
+    // If this isn't set we just skip this test.
+    let Ok(loc) = std::env::var("TOM_HARTE_PROCESSOR_TESTS") else {
+        println!("Skipping tests because TOM_HARTE_PROCESSOR_TESTS isn't set in the environment");
+        println!("Checkout https://github.com/TomHarte/ProcessorTests.git and set env var to point at root of that tree to run relative to this package");
+        return Ok(());
+    };
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(loc)
+        .join("6502/v1");
+    println!("tests base path: {}", path.display());
+    for i in 0..=255 {
+        let mut file = File::open(path.join(format!("{i:02X}.json")))?;
+        let mut s = String::new();
+        file.read_to_string(&mut s)?;
+        let v: Vec<ProcTest> = serde_json::from_str(&s)?;
+
+        // One CPU for the whole run. Otherwise this is *slow* creating a new
+        // one 256*10000 times...
+        let d = Debug::<CPUState>::new(128, Some(1));
+        let debug = { || d.debug() };
+        let mut cpu = setup_cpu_nmos(0x0000, 0xAA, None, None, None, Some(&debug));
+        cpu.power_on()?;
+
+        for test in &v {
+            // Setup initial RAM
+            for r in &test.initial.ram {
+                cpu.ram.borrow_mut().write(r.0, r.1);
+            }
+            let mut out = String::with_capacity(32);
+            cpu.pc = Wrapping(test.initial.pc);
+            cpu.a = Wrapping(test.initial.a);
+            cpu.x = Wrapping(test.initial.x);
+            cpu.y = Wrapping(test.initial.y);
+            cpu.s = Wrapping(test.initial.s);
+            cpu.p = Flags(test.initial.p);
+            cpu.disassemble(&mut out, cpu.pc.0, &*cpu.ram.borrow());
+
+            let mut bus = vec![];
+            for _ in 0..test.cycles.len() {
+                // Some of these are HLT so account for that.
+                let ret = cpu.tick();
+                if let Err(err) = ret {
+                    match err.root_cause().downcast_ref::<CPUError>() {
+                        Some(CPUError::Halted { op: _ }) => {
+                            // If we halted that's fine. The checks below will
+                            // verify state. But set CPU back to running so the
+                            // next test won't error out.
+                            cpu.state = State::Running;
+                            cpu.op_tick = Tick::Reset;
+                        }
+                        _ => {
+                            panic!("Error isn't a CPUError::Halted. Is '{err}'");
+                        }
+                    }
+                } else {
+                    cpu.tick_done()?;
+                }
+                let cpur = cpu.cpu_ram();
+                let r = cpur.borrow();
+                let last = r.last_action.borrow();
+                bus.push(Cycles(last.1, last.2, last.0.clone()));
+            }
+            let mut final_state = ProcState {
+                pc: cpu.pc.0,
+                a: cpu.a.0,
+                x: cpu.x.0,
+                y: cpu.y.0,
+                s: cpu.s.0,
+                p: cpu.p.0,
+                ram: vec![],
+            };
+            for r in &test.r#final.ram {
+                let pr = ProcRAM(r.0, cpu.ram().borrow().read(r.0));
+                final_state.ram.push(pr);
+            }
+            assert!(
+                cpu.op_tick == Tick::Reset || cpu.state == State::Halted,
+                "{}: Cpu in weird state. Not done with instruction or halted? - {cpu:?} op_tick: {}", test.name,
+                cpu.op_tick
+            );
+            assert!(
+                bus == test.cycles,
+                "{}: Expected cycles\n{:?}\nand got\n{bus:?}\n{test}\n{final_state}\n{out}",
+                test.name,
+                test.cycles
+            );
+            assert!(
+                final_state == test.r#final,
+                "{}: Final states don't match. Expected {} and got {final_state}\n{test}\n{out}",
+                test.name,
+                test.r#final
+            );
+            // Reset all the RAM we touched back to a known value.
+            for r in final_state.ram {
+                cpu.ram().borrow_mut().write(r.0, 0xAA);
+            }
+        }
+    }
+
+    Ok(())
+}

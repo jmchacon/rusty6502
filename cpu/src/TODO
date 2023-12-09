@@ -1,0 +1,3 @@
+op_addr/op_val - Wrapping?
+carry_check - only check 0x0100 bit and fix call sites
+load_register - Wrapping
