@@ -4635,10 +4635,11 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     }
 
     // xaa implements the undocumented opcode for XAA.
-    // We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
-    // for implementation and pick 0xEE as the constant. According to VICE this may break so
-    // we might need to change it to 0xFF.
-    // https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
+    // Per the NoMoreSecrets PDF this does:
+    // A = (A | CONST) & x & op_val
+    //
+    // We use 0xEE as the CONST since TomHarte tests assume it and lots of
+    // common implementations picked that as a result.
     // Always returns Done since this takes one tick and never returns an error.
     fn xaa(&mut self) -> Result<OpState> {
         self.load_register(
