@@ -4517,6 +4517,8 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
 
                 // The actual PC inside the chip doesn't advance so back it up.
                 self.pc_mut(self.pc() - 1);
+
+                self.state_mut(State::Halted);
                 Ok(OpState::Done)
             }
         }
@@ -5184,6 +5186,10 @@ macro_rules! chip_impl_nmos {
                     self.debug();
                 }
 
+                // Whether to actually run an opcode below. Certain cases in Tick1 we
+                // don't but still need to check RDY which is post opcode.
+                let mut run = true;
+
                 match self.op_tick {
                     Tick::Tick1 => {
                         // If we're in Tick1 this means start a new instruction based on the PC value so grab
@@ -5216,7 +5222,7 @@ macro_rules! chip_impl_nmos {
 
                         // Move out of the done state.
                         self.addr_done = OpState::Processing;
-                        return Ok(());
+                        run = false; // There's nothing else to do but check RDY below.
                     }
                     Tick::Tick2 => {
                         // All instructions fetch the value after the opcode (though some like BRK/PHP/etc ignore it).
@@ -5237,47 +5243,49 @@ macro_rules! chip_impl_nmos {
                     _ => {}
                 }
 
-                // Process the opcode or interrupt
-                let ret: Result<OpState>;
-                if self.interrupt_state == InterruptState::Running {
-                    let mut addr = IRQ_VECTOR;
-                    if self.irq_raised == InterruptStyle::NMI {
-                        addr = NMI_VECTOR;
-                    }
-                    ret = self.run_interrupt(addr, true);
-                } else {
-                    ret = self.process_opcode();
-                }
-
-                // We'll treat an error as halted since internal state is unknown at that point.
-                // For halted instructions though we'll return a custom error type so it can
-                // be detected vs internal errors.
-                if self.state == State::Halted || ret.is_err() {
-                    self.state = State::Halted;
-                    self.halt_opcode = self.op_raw;
-                    ret?;
-                    return Err(ErrReport::new(CPUError::Halted {
-                        op: self.halt_opcode,
-                    }));
-                }
-
-                let state;
-                // SAFETY: Err was checked above so just pull this out.
-                unsafe {
-                    state = ret.unwrap_unchecked();
-                }
-
-                if state == OpState::Done {
-                    // Reset so the next tick starts a new instruction
-                    // It'll handle doing start of instruction reset on state.
-                    self.op_tick = Tick::Reset;
-
-                    // If we're already running an IRQ clear state so we don't loop
-                    // trying to start it again.
+                if run {
+                    // Process the opcode or interrupt
+                    let ret: Result<OpState>;
                     if self.interrupt_state == InterruptState::Running {
-                        self.irq_raised = InterruptStyle::None;
+                        let mut addr = IRQ_VECTOR;
+                        if self.irq_raised == InterruptStyle::NMI {
+                            addr = NMI_VECTOR;
+                        }
+                        ret = self.run_interrupt(addr, true);
+                    } else {
+                        ret = self.process_opcode();
                     }
-                    self.interrupt_state = InterruptState::None;
+
+                    // We'll treat an error as halted since internal state is unknown at that point.
+                    // For halted instructions though we'll return a custom error type so it can
+                    // be detected vs internal errors.
+                    if self.state == State::Halted || ret.is_err() {
+                        self.state = State::Halted;
+                        self.halt_opcode = self.op_raw;
+                        ret?;
+                        return Err(ErrReport::new(CPUError::Halted {
+                            op: self.halt_opcode,
+                        }));
+                    }
+
+                    let state;
+                    // SAFETY: Err was checked above so just pull this out.
+                    unsafe {
+                        state = ret.unwrap_unchecked();
+                    }
+
+                    if state == OpState::Done {
+                        // Reset so the next tick starts a new instruction
+                        // It'll handle doing start of instruction reset on state.
+                        self.op_tick = Tick::Reset;
+
+                        // If we're already running an IRQ clear state so we don't loop
+                        // trying to start it again.
+                        if self.interrupt_state == InterruptState::Running {
+                            self.irq_raised = InterruptStyle::None;
+                        }
+                        self.interrupt_state = InterruptState::None;
+                    }
                 }
 
                 // If RDY is held high and we didn't just process a write we move into
@@ -5303,10 +5311,8 @@ macro_rules! chip_impl_nmos {
             /// # Errors
             /// Bad internal state will result in errors.
             fn tick_done(&mut self) -> Result<()> {
-                if let Some(rdy) = self.rdy {
-                    if rdy.raised() {
-                        return Ok(());
-                    }
+                if self.state == State::RDY {
+                    return Ok(());
                 }
 
                 if self.state != State::Tick {
@@ -5366,17 +5372,6 @@ impl<'a> Chip for CPU65C02<'a> {
             ));
         }
 
-        // If RDY is held high we do nothing and just return (time doesn't advance in the CPU).
-        // Ok, this technically only works like this in combination with SYNC being held high as well.
-        // Otherwise it acts like a single step and continues after the next clock.
-        // But, the only use known right now was atari 2600 which tied SYNC high and RDY low at the same
-        // time so "good enough".
-        if let Some(rdy) = self.rdy {
-            if rdy.raised() {
-                return Ok(());
-            }
-        }
-
         // If we get a new interrupt while running one then NMI always wins until it's done.
         let mut irq_raised = false;
         let mut nmi_raised = false;
@@ -5424,6 +5419,10 @@ impl<'a> Chip for CPU65C02<'a> {
             self.debug();
         }
 
+        // Whether to actually run an opcode below. Certain cases in Tick1 we
+        // don't but still need to check RDY which is post opcode.
+        let mut run = true;
+
         match self.op_tick {
             Tick::Tick1 => {
                 // If we're in Tick1 this means start a new instruction based on the PC value so grab
@@ -5436,33 +5435,34 @@ impl<'a> Chip for CPU65C02<'a> {
                 if self.op.op == Opcode::NOP && self.op.mode == AddressMode::NOPCmos {
                     self.pc += 1;
                     self.op_tick = Tick::Reset;
-                    return Ok(());
-                }
-
-                // If one is raised and we're not skipping and interrupts
-                // are enabled or it's an NMI then we move into interrupt mode.
-                // If interrupts are disabled it doesn't change state.
-                if self.irq_raised != InterruptStyle::None
-                    && self.skip_interrupt != SkipInterrupt::Skip
-                {
-                    if self.p & P_INTERRUPT == P_INTERRUPT && self.irq_raised == InterruptStyle::IRQ
+                    run = false; // There's nothing else to do but check RDY below.
+                } else {
+                    // If one is raised and we're not skipping and interrupts
+                    // are enabled or it's an NMI then we move into interrupt mode.
+                    // If interrupts are disabled it doesn't change state.
+                    if self.irq_raised != InterruptStyle::None
+                        && self.skip_interrupt != SkipInterrupt::Skip
                     {
-                        self.irq_raised = InterruptStyle::None;
-                        self.interrupt_state = InterruptState::None;
-                    } else {
-                        self.interrupt_state = InterruptState::Running;
+                        if self.p & P_INTERRUPT == P_INTERRUPT
+                            && self.irq_raised == InterruptStyle::IRQ
+                        {
+                            self.irq_raised = InterruptStyle::None;
+                            self.interrupt_state = InterruptState::None;
+                        } else {
+                            self.interrupt_state = InterruptState::Running;
+                        }
                     }
-                }
 
-                // PC advances always when we start a new opcode except for IRQ/NMI
-                // (unless we're skipping to run one more instruction).
-                if self.interrupt_state != InterruptState::Running {
-                    self.pc += 1;
-                }
+                    // PC advances always when we start a new opcode except for IRQ/NMI
+                    // (unless we're skipping to run one more instruction).
+                    if self.interrupt_state != InterruptState::Running {
+                        self.pc += 1;
+                    }
 
-                // Move out of the done state.
-                self.addr_done = OpState::Processing;
-                return Ok(());
+                    // Move out of the done state.
+                    self.addr_done = OpState::Processing;
+                    run = false; // There's nothing else to do but check RDY below.
+                }
             }
             Tick::Tick2 => {
                 // All instructions fetch the value after the opcode (though some like BRK/PHP/etc ignore it).
@@ -5483,47 +5483,49 @@ impl<'a> Chip for CPU65C02<'a> {
             _ => {}
         }
 
-        // Process the opcode or interrupt
-        let ret: Result<OpState>;
-        if self.interrupt_state == InterruptState::Running {
-            let mut addr = IRQ_VECTOR;
-            if self.irq_raised == InterruptStyle::NMI {
-                addr = NMI_VECTOR;
-            }
-            ret = self.run_interrupt(addr, true);
-        } else {
-            ret = self.process_opcode();
-        }
-
-        // We'll treat an error as halted since internal state is unknown at that point.
-        // For halted instructions though we'll return a custom error type so it can
-        // be detected vs internal errors.
-        if self.state == State::Halted || ret.is_err() {
-            self.state = State::Halted;
-            self.halt_opcode = self.op_raw;
-            ret?;
-            return Err(ErrReport::new(CPUError::Halted {
-                op: self.halt_opcode,
-            }));
-        }
-
-        let state;
-        // SAFETY: Err was checked above so just pull this out.
-        unsafe {
-            state = ret.unwrap_unchecked();
-        }
-
-        if state == OpState::Done {
-            // Reset so the next tick starts a new instruction
-            // It'll handle doing start of instruction reset on state.
-            self.op_tick = Tick::Reset;
-
-            // If we're already running an IRQ clear state so we don't loop
-            // trying to start it again.
+        if run {
+            // Process the opcode or interrupt
+            let ret: Result<OpState>;
             if self.interrupt_state == InterruptState::Running {
-                self.irq_raised = InterruptStyle::None;
+                let mut addr = IRQ_VECTOR;
+                if self.irq_raised == InterruptStyle::NMI {
+                    addr = NMI_VECTOR;
+                }
+                ret = self.run_interrupt(addr, true);
+            } else {
+                ret = self.process_opcode();
             }
-            self.interrupt_state = InterruptState::None;
+
+            // We'll treat an error as halted since internal state is unknown at that point.
+            // For halted instructions though we'll return a custom error type so it can
+            // be detected vs internal errors.
+            if self.state == State::Halted || ret.is_err() {
+                self.state = State::Halted;
+                self.halt_opcode = self.op_raw;
+                ret?;
+                return Err(ErrReport::new(CPUError::Halted {
+                    op: self.halt_opcode,
+                }));
+            }
+
+            let state;
+            // SAFETY: Err was checked above so just pull this out.
+            unsafe {
+                state = ret.unwrap_unchecked();
+            }
+
+            if state == OpState::Done {
+                // Reset so the next tick starts a new instruction
+                // It'll handle doing start of instruction reset on state.
+                self.op_tick = Tick::Reset;
+
+                // If we're already running an IRQ clear state so we don't loop
+                // trying to start it again.
+                if self.interrupt_state == InterruptState::Running {
+                    self.irq_raised = InterruptStyle::None;
+                }
+                self.interrupt_state = InterruptState::None;
+            }
         }
 
         // If RDY is held high and we didn't just process a write we move into
@@ -5549,10 +5551,8 @@ impl<'a> Chip for CPU65C02<'a> {
     /// # Errors
     /// Bad internal state will result in errors.
     fn tick_done(&mut self) -> Result<()> {
-        if let Some(rdy) = self.rdy {
-            if rdy.raised() {
-                return Ok(());
-            }
+        if self.state == State::RDY {
+            return Ok(());
         }
 
         // If we're in WAI just return, no state changes.

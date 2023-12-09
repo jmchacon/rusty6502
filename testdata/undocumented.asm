@@ -1,5 +1,6 @@
 	ORG $C000
   TESTLOC EQU $1300
+  AHXLOC EQU $1100
 
   ;; These aren't comprehensive WRT flags. Mostly checking the flag state that should correspond to final A or documented side effects.
 	PHA
@@ -77,52 +78,48 @@
 	BNE * ; Loop if bad
 	TYA
 	PHA
-	LDY #$FF ; Counter for iterations of OAL
 START	LDA #$B1
 	LDX #$F1
 	OAL #$55
-	CMP #$51 ; We ran XAA
-	BEQ CONT ; Do the DEY
-	CMP #$11 ; Did OAL (A&#) -> A,X
+	CMP #$55 ; Did OAL (A&#) -> A,X
 	BNE *	 ; Loop if neither test matched.
-	CPX #$11
+	CPX #$55
 	BNE *	  ; Loop if neither test matched.
-CONT	DEY
-	BNE START ; Not done
 	LDA #$F0
 	STA $FF
 	LDA #$12
 	STA $00 ; Setup (d),y for FF to point at 12F0
- 	STA TESTLOC ; The final addr + Y. Put 12 there for now.
+ 	STA AHXLOC ; The final addr + Y. Put 12 there for now.
 	LDA #$B5
 	LDX #$D3
 	LDY #$10
 	AHX ($FF),Y
-	LDA TESTLOC
-	CMP #$10
+	LDA AHXLOC
+	CMP #$11
 	BNE *
 	LDA #$FF
-	STA TESTLOC ; Reset for 2nd call using absolute,Y
+	STA AHXLOC ; Reset for 2nd call using absolute,Y
 	LDA #$B5
 	AHX $12F0,Y
-	LDA TESTLOC
-	CMP #$10
+	LDA AHXLOC
+	CMP #$11
 	BNE *
 	TSX ; Need to save S since LAS/TAS will change it, but can't use stack
 	STX $01
 	LDA #$FF
-	STA TESTLOC ; Reset for TAS
+	STA AHXLOC ; Reset for TAS
 	LDX #$D3	 ; Reset X as before
 	LDA #$B5
 	TAS $12F0,Y
-	LDA TESTLOC
-	CMP #$10
+	LDA AHXLOC
+	CMP #$11
 	BNE *
+  STA TESTLOC
 	TSX
 	CPX #$91 ; What S changed to. Can't compare against stashed value, stack might be that?
 	BNE *
 	TXA
-	AND #$10
+	AND #$11
 	STA $02 ; precompute expected value from LAS for all regs since it's S&val (from 1300) and we know S
 	LDA #$FF
 	LDX #$FF
@@ -143,7 +140,7 @@ CONT	DEY
 	LDY #$D3 ; Use same values as before but swap regs
 	SHY $12F0,X
 	LDA TESTLOC
-	CMP #$10
+	CMP #$13
 	BNE *
 	LDA #$FF
 	STA TESTLOC ; Reset for SHX
@@ -152,6 +149,6 @@ CONT	DEY
 	LDY #$10 ; Use same values as before but swap regs
 	SHX $12F0,Y
 	LDA TESTLOC
-	CMP #$10
+	CMP #$13
 	BNE *
 	BEQ * ; We're done

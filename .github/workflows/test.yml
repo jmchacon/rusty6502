@@ -19,6 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: 'TomHarte/ProcessorTests'
+          submodules: true
+      - uses: actions/checkout@v4
+        with:
           submodules: true
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
@@ -30,6 +34,8 @@ jobs:
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
+        env:
+          TOM_HARTE_PROCESSOR_TESTS: "$GITHUB_WORKSPACE/TomHarte/ProcessorTests"
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
