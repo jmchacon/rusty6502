@@ -478,6 +478,9 @@ pub enum State {
     /// WAI will cause this state where processing is paused
     /// until an interrupt happens.
     WaitingForInterrupt,
+
+    /// RDY indicates RDY is held high and we're only advancing time.
+    RDY,
 }
 
 #[derive(Copy, Clone, Default, Debug, Display, PartialEq)]
@@ -956,7 +959,7 @@ pub trait CPU<'a>: Chip {
     fn reset(&mut self) -> Result<OpState>;
 
     /// ram returns a reference to the Memory implementation.
-    fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>>;
+    fn ram(&self) -> Rc<RefCell<dyn Memory>>;
 
     /// pc returns the current PC value.
     fn pc(&self) -> u16;
@@ -1069,9 +1072,11 @@ pub trait CPU<'a>: Chip {
     }
 }
 
-#[derive(Debug, Display, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Display, PartialEq)]
 enum LastBusAction {
+    #[serde(alias = "read")]
     Read,
+    #[serde(alias = "write")]
     Write,
 }
 
@@ -1168,7 +1173,7 @@ macro_rules! common_cpu_funcs {
 
       impl fmt::Display for $cpu<'_> {
           fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-              let _ = self.disassemble(&mut self.disassemble.borrow_mut(), self.pc.0, self.ram.borrow().as_ref());
+              let _ = self.disassemble(&mut self.disassemble.borrow_mut(), self.pc.0, &*self.ram.borrow());
 
               write!(
                   f,
@@ -1265,6 +1270,9 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     fn irq_raised(&self) -> InterruptStyle;
     // irq_raised_mut sets the InterruptStyle state.
     fn irq_raised_mut(&mut self, new: InterruptStyle);
+
+    // The real underlying RAM
+    fn cpu_ram(&self) -> Rc<RefCell<RecordRAM>>;
 
     // op_addr_fixup returns whether this address mode had to fixup op_addr.
     fn op_addr_fixup(&self) -> bool;
@@ -2858,6 +2866,11 @@ macro_rules! cpu_internal {
             self.irq_raised = new;
         }
 
+        // The real underlying RAM
+        fn cpu_ram(&self) -> Rc<RefCell<RecordRAM>> {
+            self.ram.clone()
+        }
+
         // op_addr_fixup returns whether this addressing mode fixed up
         // addresses and took extra cycles
         fn op_addr_fixup(&self) -> bool {
@@ -3552,10 +3565,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
                 self.load_instruction(Self::addr_indirect_x, Self::ora)
             }
             // 0x02 0x12 0x22 0x32 0x42 0x52 0x62 0x72 0x92 0xB2 0xD2 0xF2 - HLT
-            (Opcode::HLT, AddressMode::Implied) => {
-                self.state_mut(State::Halted);
-                Ok(OpState::Done)
-            }
+            (Opcode::HLT, AddressMode::Implied) => self.hlt(),
             // 0x03 - SLO (d,x)
             (Opcode::SLO, AddressMode::IndirectX) => {
                 self.rmw_instruction(Self::addr_indirect_x, Self::slo)
@@ -4353,6 +4363,15 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
         &mut self,
         address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
     ) -> Result<OpState> {
+        self.ahx_shx_shy_common(address_mode, self.a() & self.x())
+    }
+
+    // ahx_shx_shy_common implements the common logic for SHX and SHY.
+    fn ahx_shx_shy_common(
+        &mut self,
+        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
+        v: Wrapping<u8>,
+    ) -> Result<OpState> {
         // This is a store but we can't use store_instruction since it depends on knowing op_addr
         // for the final computed value so we have to do the addressing mode ourselves.
         match self.addr_done() {
@@ -4362,8 +4381,20 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
                 Ok(OpState::Processing)
             }
             OpState::Done => {
-                let val =
-                    (self.a() & self.x() & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
+                // The op_addr we use to calculate val is actually based on what
+                // was on the bus at the start of this cycle (i.e. potentially the
+                // bad one). So that means if we did a fixup subtract a page for
+                // this when computing val.
+                let fixed_op_addr = if self.op_addr_fixup() {
+                    (Wrapping(self.op_addr()) - Wrapping(0x0100)).0
+                } else {
+                    self.op_addr()
+                };
+                let val = (v & (Wrapping((fixed_op_addr >> 8) as u8) + Wrapping(1))).0;
+                if self.op_addr_fixup() {
+                    // If we did a fixup this actually corrupts op_addr by replacing the high byte with val.
+                    self.op_addr_mut((self.op_addr() & 0x00FF) | u16::from(val) << 8);
+                }
                 self.ram().borrow_mut().write(self.op_addr(), val);
                 Ok(OpState::Done)
             }
@@ -4470,6 +4501,27 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
         self.compare_a()
     }
 
+    fn hlt(&mut self) -> Result<OpState> {
+        match self.op_tick() {
+            Tick::Reset
+            | Tick::Tick1
+            | Tick::Tick4
+            | Tick::Tick5
+            | Tick::Tick6
+            | Tick::Tick7
+            | Tick::Tick8 => Err(eyre!("hlt invalid op_tick: {:?}", self.op_tick())),
+            Tick::Tick2 => Ok(OpState::Processing),
+            Tick::Tick3 => {
+                // Read the next location one more time.
+                self.ram().borrow().read(self.pc());
+
+                // The actual PC inside the chip doesn't advance so back it up.
+                self.pc_mut(self.pc() - 1);
+                Ok(OpState::Done)
+            }
+        }
+    }
+
     // isc implements the undocumented opcode for ISC.
     // This increments the value at op_addr and then does an SBC and sets associated flags.
     // Always returns Done since this takes one tick and never returns an error.
@@ -4497,15 +4549,14 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     }
 
     // oal implements the undocumented opcode for OAL.
-    // This one acts a bit randomly. It somtimes does XAA and sometimes
-    // does A=X=A&val.
+    // Per the NoMoreSecrets PDF this does:
+    // A,X = (A | CONST) & op_val
+    //
+    // We use 0xEE as the CONST since TomHarte tests assume it and lots of
+    // common implementations picked that as a result.
     // Always returns Done since this takes one tick and never returns an error.
     fn oal(&mut self) -> Result<OpState> {
-        let mut rng = rand::thread_rng();
-        if rng.gen::<f64>() > 0.5 {
-            return self.xaa();
-        }
-        let val = self.a().0 & self.op_val();
+        let val = (self.a().0 | 0xEE) & self.op_val();
         self.load_register(Register::A, val)?;
         self.load_register(Register::X, val)
     }
@@ -4532,28 +4583,6 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
         self.adc()
     }
 
-    // shx_shy_common implements the common logic for SHX and SHY.
-    fn shx_shy_common(
-        &mut self,
-        address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
-        v: Wrapping<u8>,
-    ) -> Result<OpState> {
-        // This is a store but we can't use store_instruction since it depends on knowing op_addr
-        // for the final computed value so we have to do the addressing mode ourselves.
-        match self.addr_done() {
-            OpState::Processing => {
-                let ret = address_mode(self, &InstructionMode::Store)?;
-                self.addr_done_mut(ret);
-                Ok(OpState::Processing)
-            }
-            OpState::Done => {
-                let val = (v & (Wrapping((self.op_addr() >> 8) as u8) + Wrapping(1))).0;
-                self.ram().borrow_mut().write(self.op_addr(), val);
-                Ok(OpState::Done)
-            }
-        }
-    }
-
     // shx implements the undocumented SHX instruction based on the addressing mode passed in.
     // The value stored is (X & (ADDR_HI + 1))
     // Returns Done and/or errors when complete.
@@ -4561,7 +4590,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
         &mut self,
         address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
     ) -> Result<OpState> {
-        self.shx_shy_common(address_mode, self.x())
+        self.ahx_shx_shy_common(address_mode, self.x())
     }
 
     // shy implements the undocumented SHY instruction based on the addressing mode passed in.
@@ -4571,7 +4600,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
         &mut self,
         address_mode: fn(&mut Self, &InstructionMode) -> Result<OpState>,
     ) -> Result<OpState> {
-        self.shx_shy_common(address_mode, self.y())
+        self.ahx_shx_shy_common(address_mode, self.y())
     }
 
     // slo implements the undocumented opcode for SLO. This does an ASL on the
@@ -4593,7 +4622,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             .borrow_mut()
             .write(self.op_addr(), self.op_val() >> 1);
         // Old bit 0 becomes carry
-        self.carry_check(u16::from(self.op_val()) << 8);
+        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
         self.load_register(Register::A, (self.op_val() >> 1) ^ self.a().0)
     }
 
@@ -4838,7 +4867,7 @@ macro_rules! cpu_impl {
         }
 
         /// ram returns a reference to the Memory implementation.
-        fn ram(&self) -> Rc<RefCell<Box<dyn Memory>>> {
+        fn ram(&self) -> Rc<RefCell<dyn Memory>> {
             self.ram.clone()
         }
 
@@ -5094,7 +5123,7 @@ macro_rules! chip_impl_nmos {
                 }
 
                 if self.state == State::RDY {
-                    let last = *self.cpu_ram().borrow().last_addr.borrow();
+                    let last = self.cpu_ram().borrow().last_action.borrow().1;
                     self.ram().borrow().read(last);
                     if let Some(rdy) = self.rdy {
                         if rdy.raised() {
@@ -5255,7 +5284,7 @@ macro_rules! chip_impl_nmos {
                 // until RDY drops.
                 if let Some(rdy) = self.rdy {
                     if rdy.raised()
-                        && *self.cpu_ram().borrow().bus_action.borrow() != LastBusAction::Write
+                        && self.cpu_ram().borrow().last_action.borrow().0 != LastBusAction::Write
                     {
                         self.state = State::RDY;
                     }
@@ -5314,7 +5343,7 @@ impl<'a> Chip for CPU65C02<'a> {
         }
 
         if self.state == State::RDY {
-            let last = *self.cpu_ram().borrow().last_addr.borrow();
+            let last = self.cpu_ram().borrow().last_action.borrow().1;
             self.ram().borrow().read(last);
             if let Some(rdy) = self.rdy {
                 if rdy.raised() {
@@ -5500,7 +5529,8 @@ impl<'a> Chip for CPU65C02<'a> {
         // the RDY state. It'll keep rereading this last address but nothing else
         // until RDY drops.
         if let Some(rdy) = self.rdy {
-            if rdy.raised() && *self.cpu_ram().borrow().bus_action.borrow() != LastBusAction::Write
+            if rdy.raised()
+                && self.cpu_ram().borrow().last_action.borrow().0 != LastBusAction::Write
             {
                 self.state = State::RDY;
             }
@@ -5545,6 +5575,7 @@ macro_rules! cpu_new {
         /// operation. Anything else will return errors.
         #[must_use]
         pub fn new(def: ChipDef<'a>) -> Self {
+            let r = RecordRAM::new(def.ram);
             Self {
                 a: Wrapping(0x00),
                 x: Wrapping(0x00),
@@ -5561,7 +5592,7 @@ macro_rules! cpu_new {
                 interrupt_state: InterruptState::default(),
                 skip_interrupt: SkipInterrupt::default(),
                 clocks: 0,
-                ram: Rc::new(RefCell::new(def.ram)),
+                ram: Rc::new(RefCell::new(r)),
                 op: Operation::default(),
                 op_raw: 0x00,
                 op_val: 0x00,
@@ -5602,8 +5633,8 @@ impl<'a> CPU6510<'a> {
         let mut r = Box::new(C6510RAM::new(def.ram, input));
         r.power_on();
         let io = r.io_state.clone();
-        let ram: std::rc::Rc<std::cell::RefCell<std::boxed::Box<(dyn memory::Memory + 'static)>>> =
-            Rc::new(RefCell::new(r));
+
+        let ram = Rc::new(RefCell::new(RecordRAM::new(r)));
         Self {
             a: Wrapping(0x00),
             x: Wrapping(0x00),
@@ -6745,21 +6776,16 @@ struct C6510RAM {
 /// This is used by each of the CPU types to implement RDY correctly as we
 /// can only start RDY once we're on a read cycle.
 pub struct RecordRAM {
-    // The last bus action (read or write)
-    bus_action: RefCell<LastBusAction>,
+    // The last bus action (read or write) and value.
+    last_action: RefCell<(LastBusAction, u16, u8)>,
 
-    // The last address seen on the bus.
-    last_addr: RefCell<u16>,
-
-    // The underlying RAM implementation.
     ram: Box<dyn Memory>,
 }
 
 impl RecordRAM {
     fn new(ram: Box<dyn Memory>) -> Self {
         Self {
-            bus_action: RefCell::new(LastBusAction::Read),
-            last_addr: RefCell::new(0x000),
+            last_action: RefCell::new((LastBusAction::Read, 0x0000, 0x00)),
             ram,
         }
     }
@@ -6767,14 +6793,13 @@ impl RecordRAM {
 
 impl Memory for RecordRAM {
     fn read(&self, addr: u16) -> u8 {
-        *self.bus_action.borrow_mut() = LastBusAction::Read;
-        *self.last_addr.borrow_mut() = addr;
+        let v = self.ram.read(addr);
+        *self.last_action.borrow_mut() = (LastBusAction::Read, addr, v);
         self.ram.read(addr)
     }
 
     fn write(&mut self, addr: u16, val: u8) {
-        *self.bus_action.borrow_mut() = LastBusAction::Write;
-        *self.last_addr.borrow_mut() = addr;
+        *self.last_action.borrow_mut() = (LastBusAction::Write, addr, val);
         self.ram.write(addr, val);
     }
 

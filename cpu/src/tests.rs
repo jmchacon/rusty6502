@@ -647,7 +647,7 @@ fn disassemble_test() -> Result<()> {
         };
         write!(out, "{}", t.1)?;
 
-        cpu.disassemble(&mut s, addr.0, cpu.ram.borrow().as_ref());
+        cpu.disassemble(&mut s, addr.0, &*cpu.ram.borrow());
         assert!(s == out, "Expected output\n{out}\n\nDoesn't match\n{s}");
     }
     Ok(())
@@ -2061,8 +2061,8 @@ macro_rules! rom_test {
                             total_cycles += cycles;
                             total_instructions += 1;
 
-                            if (r.end_check)(old_pc, cpu.pc.0, cpu.ram.borrow().as_ref()) {
-                                let res = (r.success_check)(old_pc, cpu.pc.0, cpu.ram.borrow().as_ref());
+                            if (r.end_check)(old_pc, cpu.pc.0, &*cpu.ram.borrow()) {
+                                let res = (r.success_check)(old_pc, cpu.pc.0, &*cpu.ram.borrow());
                                 if let Err(err) = res {
                                     tester!(false, d, &cpu, "{err}");
                                 }
@@ -2525,7 +2525,7 @@ fn coverage_opcodes_test() -> Result<()> {
 
         // One CPU for the whole run. Otherwise this is *slow* creating a new
         // one 256*10000 times...
-        let d = Debug::<CPUState>::new(128, Some(1));
+        let d = Debug::<CPUState>::new(128, 1);
         let debug = { || d.debug() };
         let mut cpu = setup_cpu_nmos(0x0000, 0xAA, None, None, None, Some(&debug));
         cpu.power_on()?;
