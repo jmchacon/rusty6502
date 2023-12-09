@@ -2504,7 +2504,6 @@ impl fmt::Debug for ProcTest {
 }
 
 #[test]
-#[ignore]
 fn coverage_opcodes_test() -> Result<()> {
     // If this isn't set we just skip this test.
     let Ok(loc) = std::env::var("TOM_HARTE_PROCESSOR_TESTS") else {
