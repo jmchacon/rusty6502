@@ -21,6 +21,7 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           submodules: true
+          path: 'TomHarte'
       - uses: actions/checkout@v4
         with:
           submodules: true
@@ -33,7 +34,7 @@ jobs:
         run: cargo generate-lockfile
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
-        run: echo $GIT_WORKSPACE && ls $GIT_WORKSPACE && cargo test --locked --all-features --all-targets
+        run: env && cargo test --locked --all-features --all-targets
         env:
           TOM_HARTE_PROCESSOR_TESTS: "${{ github.workspace }}/TomHarte/ProcessorTests"
       # https://github.com/rust-lang/cargo/issues/6669
