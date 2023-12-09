@@ -33,9 +33,9 @@ jobs:
         run: cargo generate-lockfile
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
-        run: env && ls && cargo test --locked --all-features --all-targets
+        run: ls TomHarte && cargo test --locked --all-features --all-targets
         env:
-          TOM_HARTE_PROCESSOR_TESTS: "${{ github.workspace }}/TomHarte/ProcessorTests"
+          TOM_HARTE_PROCESSOR_TESTS: "${{ github.workspace }}/TomHarte"
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
