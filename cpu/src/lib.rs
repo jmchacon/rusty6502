@@ -1455,10 +1455,16 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     }
 
     // carry_check sets the C flag based on the value.
+    // NOTE: While being passed a 16 bit value this is really checking bit 9
+    //       only as extended 8 bit math would set that on a carry and nothing
+    //       else. This also means callers don't have to mask it off.
     fn carry_check(&mut self, val: u16) {
+        // If we added 2 8 bit numbers and carried this is where
+        // it would get set.
+        const CARRY_BIT: u16 = 0x0100;
         let mut new = self.p();
         new &= !P_CARRY;
-        if val >= 0x0100 {
+        if (val & CARRY_BIT) == CARRY_BIT {
             new |= P_CARRY;
         }
         self.p_mut(new);
@@ -2128,7 +2134,10 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             let seq = Wrapping(self.a().0 & 0xF0) + Wrapping(self.op_val() & 0xF0) + al;
             let bin = self.a() + Wrapping(self.op_val()) + Wrapping(carry);
             self.overflow_check(self.a().0, self.op_val(), seq.0);
-            self.carry_check(sum.0);
+            // Carry for BCD is special. Just any value >= 0x0100 == carry which is
+            // different than normal carry which is just looking at that bit.
+            let c = if sum.0 >= 0x0100 { 0x0100 } else { 0x0000 };
+            self.carry_check(c);
             self.negative_check(seq.0);
             self.zero_check(bin.0);
             self.a_mut(Wrapping(res));
@@ -2445,9 +2454,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     fn lsr(&mut self) -> Result<OpState> {
         let val = self.op_val() >> 1;
         self.ram().borrow_mut().write(self.op_addr(), val);
-        // Get bit 0 from the original but as a 16 bit value so
-        // we can shift it into the carry position.
-        self.carry_check(u16::from(self.op_val() & 0x01) << 8);
+        // Shift bit 0 up into a possible carry position.
+        self.carry_check(u16::from(self.op_val()) << 8);
         self.zero_check(val);
         self.negative_check(val);
         Ok(OpState::Done)
@@ -2456,9 +2464,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // lsr_acc implements the LSR instruction as a logical shift right on A.
     // Always returns Done since this takes one tick and never returns an error.
     fn lsr_acc(&mut self) -> Result<OpState> {
-        // Get bit 0 from A but in a 16 bit value and then shift it up into
-        // the carry position
-        self.carry_check(u16::from(self.a().0 & 0x01) << 8);
+        // Shift bit 0 up into a possible carry position.
+        self.carry_check(u16::from(self.a().0) << 8);
         self.load_register(Register::A, self.a().0 >> 1)
     }
 
@@ -2579,7 +2586,7 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
         let new = (self.op_val() >> 1) | carry;
         self.ram().borrow_mut().write(self.op_addr(), new);
         // Just see if carry is set or not.
-        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
+        self.carry_check(u16::from(self.op_val()) << 8);
         self.zero_check(new);
         self.negative_check(new);
         Ok(OpState::Done)
@@ -2591,7 +2598,7 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     fn ror_acc(&mut self) -> Result<OpState> {
         let carry = (self.p() & P_CARRY).0 << 7;
         // Just see if carry is set or not.
-        self.carry_check((u16::from(self.a().0) << 8) & 0x0100);
+        self.carry_check(u16::from(self.a().0) << 8);
         self.load_register(Register::A, (self.a().0 >> 1) | carry)
     }
 
@@ -3415,7 +3422,10 @@ impl<'a> CPUInternal<'a> for CPU65C02<'a> {
             let res = (sum.0 & 0xFF) as u8;
             let seq = Wrapping(self.a.0 & 0xF0) + Wrapping(self.op_val & 0xF0) + al;
             self.overflow_check(self.a.0, self.op_val, seq.0);
-            self.carry_check(sum.0);
+            // Carry for BCD is special. Just any value >= 0x0100 == carry which is
+            // different than normal carry which is just looking at that bit.
+            let c = if sum.0 >= 0x0100 { 0x0100 } else { 0x0000 };
+            self.carry_check(c);
             // Do the correct checks for CMOS.
             self.negative_check(res);
             self.zero_check(res);
@@ -4454,7 +4464,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
         }
 
         // C is bit 6
-        self.carry_check((u16::from(self.a().0) << 2) & 0x0100);
+        self.carry_check(u16::from(self.a().0) << 2);
         // V is bit 5 ^ bit 6
         if ((self.a().0 & 0x40) >> 6) ^ ((self.a().0 & 0x20) >> 5) == 0x00 {
             self.p_mut(self.p() & !P_OVERFLOW);
@@ -4582,7 +4592,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
         let n = ((self.p() & P_CARRY).0 << 7) | (self.op_val() >> 1);
         self.ram().borrow_mut().write(self.op_addr(), n);
         // Old bit 0 becomes carry
-        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
+        self.carry_check(u16::from(self.op_val()) << 8);
         self.op_val_mut(n);
         self.adc()
     }
@@ -4626,7 +4636,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             .borrow_mut()
             .write(self.op_addr(), self.op_val() >> 1);
         // Old bit 0 becomes carry
-        self.carry_check((u16::from(self.op_val()) << 8) & 0x0100);
+        self.carry_check(u16::from(self.op_val()) << 8);
         self.load_register(Register::A, (self.op_val() >> 1) ^ self.a().0)
     }
 
