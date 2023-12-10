@@ -4440,7 +4440,9 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             let ah = val >> 4;
             let al = val & 0x0F;
             if (al + (al & 0x01)) > 5 {
-                self.a_mut(Wrapping((self.a().0 & 0xF0) | ((self.a().0 + 6) & 0x0F)));
+                self.a_mut(Wrapping(
+                    (self.a().0 & 0xF0) | ((self.a() + Wrapping(6)).0 & 0x0F),
+                ));
             }
             if (ah + (ah & 0x01)) > 5 {
                 self.p_mut(self.p() | P_CARRY);
@@ -4516,7 +4518,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
                 self.ram().borrow().read(self.pc());
 
                 // The actual PC inside the chip doesn't advance so back it up.
-                self.pc_mut(self.pc() - 1);
+                self.pc_mut((Wrapping(self.pc()) - Wrapping(1)).0);
 
                 self.state_mut(State::Halted);
                 Ok(OpState::Done)

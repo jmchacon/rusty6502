@@ -12,7 +12,7 @@ use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::fmt::{self, Display, Write};
-use std::fs::{read, File};
+use std::fs::{self, read, File};
 use std::io::{BufRead, BufReader, Read};
 use std::num::Wrapping;
 use std::ops::Deref;
@@ -2639,6 +2639,9 @@ fn coverage_opcodes_test() -> Result<()> {
         .join(loc)
         .join("6502/v1");
     println!("tests base path: {}", path.display());
+    for e in fs::read_dir(&path)? {
+        println!("{e:?}");
+    }
     for i in 0..=255 {
         let mut file = File::open(path.join(format!("{i:02X}.json")))?;
         let mut s = String::new();

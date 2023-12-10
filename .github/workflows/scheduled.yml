@@ -20,6 +20,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+      - uses: actions/checkout@v4
+        with:
+          repository: 'TomHarte/ProcessorTests'
+          path: 'TomHarte'
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - name: cargo generate-lockfile
@@ -27,6 +31,10 @@ jobs:
         run: cargo generate-lockfile
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
+        env:
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
   # https://twitter.com/alcuadrado/status/1571291687837732873
   update:
     runs-on: ubuntu-latest
@@ -39,6 +47,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+      - uses: actions/checkout@v4
+        with:
+          repository: 'TomHarte/ProcessorTests'
+          path: 'TomHarte'
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta
@@ -50,3 +62,6 @@ jobs:
         run: cargo test --locked --all-features --all-targets
         env:
           RUSTFLAGS: -D deprecated
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"

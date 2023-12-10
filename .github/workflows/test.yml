@@ -33,14 +33,18 @@ jobs:
         run: cargo generate-lockfile
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
-        run: cargo test --locked --all-features --all-targets -p cpu -- coverage
+        run: cargo test -r --locked --all-features --all-targets
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
           TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
-        run: cargo test --locked --all-features --doc
+        run: cargo test -r --locked --all-features --doc
+        env:
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
   minimal:
     runs-on: ubuntu-latest
     name: ubuntu / stable / minimal-versions
@@ -48,6 +52,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+      - uses: actions/checkout@v4
+        with:
+          repository: 'TomHarte/ProcessorTests'
+          path: 'TomHarte'
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install nightly for -Zminimal-versions
@@ -57,7 +65,11 @@ jobs:
       - name: cargo update -Zminimal-versions
         run: cargo +nightly update -Zdirect-minimal-versions
       - name: cargo test
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test -r --locked --all-features --all-targets
+        env:
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
   os-check:
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} / stable
@@ -69,13 +81,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+      - uses: actions/checkout@v4
+        with:
+          repository: 'TomHarte/ProcessorTests'
+          path: 'TomHarte'
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo test
-        run: cargo test --locked --all-features --all-targets
+        run: cargo test -r --locked --all-features --all-targets
+        env:
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
   coverage:
     runs-on: ubuntu-latest
     name: ubuntu / beta / coverage
@@ -83,6 +103,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+      - uses: actions/checkout@v4
+        with:
+          repository: 'TomHarte/ProcessorTests'
+          path: 'TomHarte'
       - name: Install beta
         uses: dtolnay/rust-toolchain@beta
         with:
@@ -95,6 +119,10 @@ jobs:
       - name: cargo llvm-cov
         # Exclude nes_pal_gui package as calloop (*nix requirement) can't handle coverage on the version we inherit.
         run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info --lib --workspace --exclude nes_pal_gui
+        env:
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v3
         with:
