@@ -13,6 +13,9 @@ jobs:
   sanitizers:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v3
@@ -20,9 +23,6 @@ jobs:
           enableCrossOsArchive: true
           path: TomHarte
           key: git-folder
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:

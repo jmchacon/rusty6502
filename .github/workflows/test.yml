@@ -17,6 +17,9 @@ jobs:
       matrix:
         toolchain: [stable, beta]
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v3
@@ -24,9 +27,6 @@ jobs:
           enableCrossOsArchive: true
           path: TomHarte
           key: git-folder2
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
@@ -41,7 +41,7 @@ jobs:
         run: cargo generate-lockfile
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
-        run:  ls && cargo test -r --locked --all-features --all-targets
+        run:  cargo test -r --locked --all-features --all-targets
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
@@ -57,6 +57,9 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / stable / minimal-versions
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v3
@@ -64,9 +67,6 @@ jobs:
           enableCrossOsArchive: true
           path: TomHarte
           key: git-folder
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
@@ -94,6 +94,9 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v3
@@ -101,9 +104,6 @@ jobs:
           enableCrossOsArchive: true
           path: TomHarte
           key: git-folder
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
@@ -124,6 +124,9 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / beta / coverage
     steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v3
@@ -131,9 +134,6 @@ jobs:
           enableCrossOsArchive: true
           path: TomHarte
           key: git-folder
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
