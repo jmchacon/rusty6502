@@ -33,7 +33,7 @@ jobs:
         run: cargo generate-lockfile
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
-        run: cargo test -r --locked --all-features --all-targets
+        run: cargo test -r --locked --all-features --all-targets  -p cpu -- coverage
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
