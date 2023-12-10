@@ -32,8 +32,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
-      - if: steps.cache-git.outputs.cache-hit == 'true'
-        name: git update
+      - name: cache-update
+        if: steps.cache-git.outputs.cache-hit == 'true'
         run: cd TomHarte && git pull
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
@@ -76,8 +76,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
-      - if: steps.cache-git.outputs.cache-hit == 'true'
-        name: git update
+      - name: cache-update
+        if: steps.cache-git.outputs.cache-hit == 'true'
         run: cd TomHarte && git pull
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
@@ -117,8 +117,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
-      - if: steps.cache-git.outputs.cache-hit == 'true'
-        name: git update
+      - name: cache-update
+        if: steps.cache-git.outputs.cache-hit == 'true'
         run: cd TomHarte && git pull
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
@@ -151,8 +151,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
-      - if: steps.cache-git.outputs.cache-hit == 'true'
-        name: git update
+      - name: cache-update
+        if: steps.cache-git.outputs.cache-hit == 'true'
         run: cd TomHarte && git pull
       - name: Install beta
         uses: dtolnay/rust-toolchain@beta
