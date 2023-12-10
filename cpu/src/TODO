@@ -2,3 +2,5 @@ op_addr/op_val - Wrapping?
 carry_check - only check 0x0100 bit and fix call sites
 load_register - Wrapping
 pc/pc_mut - Wrapping
+separate tests for nes and each cmos cpu
+Add separate CMOS impls...Probably as option to new?
