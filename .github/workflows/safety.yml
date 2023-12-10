@@ -28,7 +28,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
-      - if: steps.cache-git.outputs.cache-hit == 'true'
+      - name: cache-update
+        if: steps.cache-git.outputs.cache-hit == 'true'
         run: cd TomHarte && git pull
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -48,6 +49,9 @@ jobs:
             sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
             cat Cargo.toml
         name: Enable debug symbols
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "sanitizer"
       - name: cargo test -Zsanitizer=address
         # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
         run: |
@@ -84,6 +88,9 @@ jobs:
         with:
           toolchain: ${{ env.NIGHTLY }}
           components: miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: "miri"
       - name: cargo miri test c64basic
         run: cargo miri test -p c64basic
         env:
