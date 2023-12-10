@@ -33,9 +33,11 @@ jobs:
         run: cargo generate-lockfile
       # https://twitter.com/jonhoo/status/1571290371124260865
       - name: cargo test --locked
-        run: ls TomHarte && cargo test --locked --all-features --all-targets -p cpu -- coverage
+        run: cargo test --locked --all-features --all-targets -p cpu -- coverage
         env:
-          TOM_HARTE_PROCESSOR_TESTS: "${{ github.workspace }}/TomHarte"
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test --locked --all-features --doc
