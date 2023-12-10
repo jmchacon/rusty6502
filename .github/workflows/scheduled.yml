@@ -26,7 +26,7 @@ jobs:
         with:
           enableCrossOsArchive: true
           path: TomHarte
-          key: git-folder
+          key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
@@ -65,7 +65,7 @@ jobs:
         with:
           enableCrossOsArchive: true
           path: TomHarte
-          key: git-folder
+          key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
