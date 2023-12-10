@@ -27,8 +27,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
-      - uses: actions/checkout@v4
-        if: steps.cache-git.outputs.cache-hit != 'true'
+      - if: steps.cache-git.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
@@ -58,15 +58,17 @@ jobs:
     name: ubuntu / stable / minimal-versions
     steps:
       - name: Cache git folder
+        id: cache-git
         uses: actions/cache@v3
         with:
           enableCrossOsArchive: true
-          path: TomHarte/.git
+          path: TomHarte
           key: git-folder
       - uses: actions/checkout@v4
         with:
           submodules: true
-      - uses: actions/checkout@v4
+      - if: steps.cache-git.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
@@ -93,15 +95,17 @@ jobs:
         os: [macos-latest, windows-latest]
     steps:
       - name: Cache git folder
+        id: cache-git
         uses: actions/cache@v3
         with:
           enableCrossOsArchive: true
-          path: TomHarte/.git
+          path: TomHarte
           key: git-folder
       - uses: actions/checkout@v4
         with:
           submodules: true
-      - uses: actions/checkout@v4
+      - if: steps.cache-git.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
@@ -121,15 +125,17 @@ jobs:
     name: ubuntu / beta / coverage
     steps:
       - name: Cache git folder
+        id: cache-git
         uses: actions/cache@v3
         with:
           enableCrossOsArchive: true
-          path: TomHarte/.git
+          path: TomHarte
           key: git-folder
       - uses: actions/checkout@v4
         with:
           submodules: true
-      - uses: actions/checkout@v4
+      - if: steps.cache-git.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
