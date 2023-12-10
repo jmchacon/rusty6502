@@ -34,6 +34,7 @@ jobs:
           path: 'TomHarte'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
+        name: git update
         run: cd TomHarte && git pull
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
@@ -73,6 +74,7 @@ jobs:
           path: 'TomHarte'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
+        name: git update
         run: cd TomHarte && git pull
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
