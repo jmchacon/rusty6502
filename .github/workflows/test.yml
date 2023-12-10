@@ -32,6 +32,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
+      - if: steps.cache-git.outputs.cache-hit == 'true'
+        run: cd TomHarte && git pull
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -72,6 +74,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
+      - if: steps.cache-git.outputs.cache-hit == 'true'
+        run: cd TomHarte && git pull
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install nightly for -Zminimal-versions
@@ -109,6 +113,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
+      - if: steps.cache-git.outputs.cache-hit == 'true'
+        run: cd TomHarte && git pull
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: cargo generate-lockfile
@@ -139,6 +145,8 @@ jobs:
         with:
           repository: 'TomHarte/ProcessorTests'
           path: 'TomHarte'
+      - if: steps.cache-git.outputs.cache-hit == 'true'
+        run: cd TomHarte && git pull
       - name: Install beta
         uses: dtolnay/rust-toolchain@beta
         with:
