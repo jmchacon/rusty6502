@@ -2643,6 +2643,7 @@ fn coverage_opcodes_test() -> Result<()> {
         println!("{e:?}");
     }
     for i in 0..=255 {
+        println!("Opening: {:?}", path.join(format!("{i:02X}.json")));
         let mut file = File::open(path.join(format!("{i:02X}.json")))?;
         let mut s = String::new();
         file.read_to_string(&mut s)?;
