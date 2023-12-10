@@ -13,6 +13,12 @@ jobs:
   sanitizers:
     runs-on: ubuntu-latest
     steps:
+      - name: Cache git folder
+        uses: actions/cache@v3
+        with:
+          enableCrossOsArchive: true
+          path: TomHarte/.git
+          key: git-folder
       - uses: actions/checkout@v4
         with:
           submodules: true
