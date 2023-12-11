@@ -1353,18 +1353,18 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // for A/X/Y).
     // Always returns OpState::Done as this happens on a single tick.
     #[allow(clippy::unnecessary_wraps)]
-    fn load_register(&mut self, reg: Register, val: u8) -> Result<OpState> {
+    fn load_register(&mut self, reg: Register, val: Wrapping<u8>) -> Result<OpState> {
         match reg {
-            Register::A => self.a_mut(Wrapping(val)),
-            Register::X => self.x_mut(Wrapping(val)),
-            Register::Y => self.y_mut(Wrapping(val)),
+            Register::A => self.a_mut(val),
+            Register::X => self.x_mut(val),
+            Register::Y => self.y_mut(val),
             Register::P => {
-                self.p_mut(Flags(val));
+                self.p_mut(Flags(val.0));
                 return Ok(OpState::Done);
             }
         };
-        self.zero_check(val);
-        self.negative_check(val);
+        self.zero_check(val.0);
+        self.negative_check(val.0);
         Ok(OpState::Done)
     }
 
@@ -1372,21 +1372,21 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // This way it can be used as the op_func argument during load/rmw instructions.
     // Always returns Done since this is a single tick operation.
     fn load_register_a(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.op_val())
+        self.load_register(Register::A, Wrapping(self.op_val()))
     }
 
     // load_register_x is the curried version of load_register that uses op_val and X implicitly.
     // This way it can be used as the op_func argument during load/rmw instructions.
     // Always returns Done since this is a single tick operation.
     fn load_register_x(&mut self) -> Result<OpState> {
-        self.load_register(Register::X, self.op_val())
+        self.load_register(Register::X, Wrapping(self.op_val()))
     }
 
     // load_register_y is the curried version of load_register that uses op_val and Y implicitly.
     // This way it can be used as the op_func argument during load/rmw instructions.
     // Always returns Done since this is a single tick operation.
     fn load_register_y(&mut self) -> Result<OpState> {
-        self.load_register(Register::Y, self.op_val())
+        self.load_register(Register::Y, Wrapping(self.op_val()))
     }
 
     // store_with_flags writes the value to the address given but also updates
@@ -2152,14 +2152,14 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
         // just treating as uint16 math is simpler to code.
         self.carry_check(u16::from(self.a().0) + u16::from(self.op_val()) + u16::from(carry));
         // Now set the accumulator so the other flag checks are against the result.
-        self.load_register(Register::A, sum)
+        self.load_register(Register::A, Wrapping(sum))
     }
 
     // and implements the AND instruction on the given memory location in op_addr.
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since this takes one tick and never returns an error.
     fn and(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 & self.op_val())
+        self.load_register(Register::A, self.a() & Wrapping(self.op_val()))
     }
 
     // asl implements the ASL instruction on the given memory location in op_addr.
@@ -2180,7 +2180,7 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
     fn asl_acc(&mut self) -> Result<OpState> {
         self.carry_check(u16::from(self.a().0) << 1);
-        self.load_register(Register::A, self.a().0 << 1)
+        self.load_register(Register::A, self.a() << 1)
     }
 
     // bcc implements the BCC instruction and branches if C is clear.
@@ -2341,7 +2341,7 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // eor implements the EOR instruction which XORs op_val with A.
     // Always returns true since this takes one tick and never returns an error.
     fn eor(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 ^ self.op_val())
+        self.load_register(Register::A, self.a() ^ Wrapping(self.op_val()))
     }
 
     // inc implements the INC instruction by incrementing the value (op_val) at op_addr.
@@ -2466,13 +2466,13 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     fn lsr_acc(&mut self) -> Result<OpState> {
         // Shift bit 0 up into a possible carry position.
         self.carry_check(u16::from(self.a().0) << 8);
-        self.load_register(Register::A, self.a().0 >> 1)
+        self.load_register(Register::A, self.a() >> 1)
     }
 
     // ora implements the ORA instruction which ORs op_val with A.
     // Always returns Done since this takes one tick and never returns an error.
     fn ora(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 | self.op_val())
+        self.load_register(Register::A, self.a() | Wrapping(self.op_val()))
     }
 
     // push_register is the common logic for pushing A,X,Y onto the stack.
@@ -2529,7 +2529,7 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick4 => {
                 // The real read
-                let val = self.pop_stack();
+                let val = Wrapping(self.pop_stack());
                 self.load_register(reg, val)
             }
         }
@@ -2572,9 +2572,9 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
     fn rol_acc(&mut self) -> Result<OpState> {
-        let carry = (self.p() & P_CARRY).0;
+        let carry = Wrapping((self.p() & P_CARRY).0);
         self.carry_check(u16::from(self.a().0) << 1);
-        self.load_register(Register::A, (self.a().0 << 1) | carry)
+        self.load_register(Register::A, (self.a() << 1) | carry)
     }
 
     // ror implements the ROR instruction for doing a rotate right on the contents
@@ -2596,10 +2596,10 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // It then sets all associated flags and adjust cycles as needed.
     // Always returns Done since accumulator mode is done on tick 2 and never returns an error.
     fn ror_acc(&mut self) -> Result<OpState> {
-        let carry = (self.p() & P_CARRY).0 << 7;
+        let carry = Wrapping((self.p() & P_CARRY).0 << 7);
         // Just see if carry is set or not.
         self.carry_check(u16::from(self.a().0) << 8);
-        self.load_register(Register::A, (self.a().0 >> 1) | carry)
+        self.load_register(Register::A, (self.a() >> 1) | carry)
     }
 
     // rti implements the RTI instruction for returning out of an interrupt handler.
@@ -2916,7 +2916,7 @@ impl<'a> CPUInternal<'a> for CPURicoh<'a> {
         // just treating as uint16 math is simpler to code.
         self.carry_check(u16::from(self.a.0) + u16::from(self.op_val) + u16::from(carry));
         // Now set the accumulator so the other flag checks are against the result.
-        self.load_register(Register::A, sum)
+        self.load_register(Register::A, Wrapping(sum))
     }
 
     // sbc implements the SBC instruction for binary math. This is just an
@@ -3441,7 +3441,7 @@ impl<'a> CPUInternal<'a> for CPU65C02<'a> {
         // just treating as uint16 math is simpler to code.
         self.carry_check(u16::from(self.a.0) + u16::from(self.op_val) + u16::from(carry));
         // Now set the accumulator so the other flag checks are against the result.
-        self.load_register(Register::A, sum)
+        self.load_register(Register::A, Wrapping(sum))
     }
 
     // bit implements the BIT instruction for AND'ing against A
@@ -3970,11 +3970,11 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             }
             // 0x88 - DEY
             (Opcode::DEY, AddressMode::Implied) => {
-                self.load_register(Register::Y, (self.y() - Wrapping(1)).0)
+                self.load_register(Register::Y, self.y() - Wrapping(1))
             }
             // 0x89 - NOP see 0x80
             // 0x8A - TXA
-            (Opcode::TXA, AddressMode::Implied) => self.load_register(Register::A, self.x().0),
+            (Opcode::TXA, AddressMode::Implied) => self.load_register(Register::A, self.x()),
             // 0x8B - XAA #i
             (Opcode::XAA, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::xaa)
@@ -4021,7 +4021,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
                 self.store_instruction(Self::addr_zp_y, self.a().0 & self.x().0)
             }
             // 0x98 - TYA
-            (Opcode::TYA, AddressMode::Implied) => self.load_register(Register::A, self.y().0),
+            (Opcode::TYA, AddressMode::Implied) => self.load_register(Register::A, self.y()),
             // 0x99 - STA a,y
             (Opcode::STA, AddressMode::AbsoluteY) => {
                 self.store_instruction(Self::addr_absolute_y, self.a().0)
@@ -4074,13 +4074,13 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             // 0xA7 - LAX d
             (Opcode::LAX, AddressMode::ZeroPage) => self.load_instruction(Self::addr_zp, Self::lax),
             // 0xA8 - TAY
-            (Opcode::TAY, AddressMode::Implied) => self.load_register(Register::Y, self.a().0),
+            (Opcode::TAY, AddressMode::Implied) => self.load_register(Register::Y, self.a()),
             // 0xA9 - LDA #i
             (Opcode::LDA, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::load_register_a)
             }
             // 0xAA - TAX
-            (Opcode::TAX, AddressMode::Implied) => self.load_register(Register::X, self.a().0),
+            (Opcode::TAX, AddressMode::Implied) => self.load_register(Register::X, self.a()),
             // 0xAB - OAL #i
             (Opcode::OAL, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::oal)
@@ -4135,7 +4135,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
                 self.load_instruction(Self::addr_absolute_y, Self::load_register_a)
             }
             // 0xBA - TSX
-            (Opcode::TSX, AddressMode::Implied) => self.load_register(Register::X, self.s().0),
+            (Opcode::TSX, AddressMode::Implied) => self.load_register(Register::X, self.s()),
             // 0xBB - LAS a,y
             (Opcode::LAS, AddressMode::AbsoluteY) => {
                 self.load_instruction(Self::addr_absolute_y, Self::las)
@@ -4183,7 +4183,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             (Opcode::DCP, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::dcp),
             // 0xC8 - INY
             (Opcode::INY, AddressMode::Implied) => {
-                self.load_register(Register::Y, (self.y() + Wrapping(1)).0)
+                self.load_register(Register::Y, self.y() + Wrapping(1))
             }
             // 0xC9 - CMP #i
             (Opcode::CMP, AddressMode::Immediate) => {
@@ -4191,7 +4191,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             }
             // 0xCA - DEX
             (Opcode::DEX, AddressMode::Implied) => {
-                self.load_register(Register::X, (self.x() - Wrapping(1)).0)
+                self.load_register(Register::X, self.x() - Wrapping(1))
             }
             // 0xCB - AXS #i
             (Opcode::AXS, AddressMode::Immediate) => {
@@ -4286,7 +4286,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             (Opcode::ISC, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::isc),
             // 0xE8 - INX
             (Opcode::INX, AddressMode::Implied) => {
-                self.load_register(Register::X, (self.x() + Wrapping(1)).0)
+                self.load_register(Register::X, self.x() + Wrapping(1))
             }
             // 0xE9 0xEB - SBC #i
             (Opcode::SBC, AddressMode::Immediate) => {
@@ -4415,7 +4415,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     // This does AND #i (op_val) and then LSR on A setting all associated flags.
     // Always returns Done since this takes one tick and never returns an error.
     fn alr(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 & self.op_val())?;
+        self.load_register(Register::A, self.a() & Wrapping(self.op_val()))?;
         self.lsr_acc()
     }
 
@@ -4423,7 +4423,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     // sets carry based on bit 7 (sign extend).
     // Always returns Done since this takes one tick and never returns an error.
     fn anc(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.a().0 & self.op_val())?;
+        self.load_register(Register::A, self.a() & Wrapping(self.op_val()))?;
         self.carry_check(u16::from(self.a().0) << 1);
         Ok(OpState::Done)
     }
@@ -4433,8 +4433,8 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     // Implemented as described in http://nesdev.com/6502_cpu.txt
     // Always returns Done since this takes one tick and never returns an error.
     fn arr(&mut self) -> Result<OpState> {
-        let val = self.a().0 & self.op_val();
-        self.load_register(Register::A, val)?;
+        let val = (self.a() & Wrapping(self.op_val())).0;
+        self.load_register(Register::A, Wrapping(val))?;
         self.ror_acc()?;
 
         // Flags are different based on BCD or not (since the ALU acts different).
@@ -4479,8 +4479,8 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     fn axs(&mut self) -> Result<OpState> {
         // Save A off to restore later
-        let a = self.a().0;
-        self.load_register(Register::A, self.a().0 & self.x().0)?;
+        let a = self.a();
+        self.load_register(Register::A, self.a() & self.x())?;
         // Carry is always set
         self.p_mut(self.p() | P_CARRY);
 
@@ -4495,7 +4495,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
         self.p_mut(self.p() & !P_OVERFLOW);
 
         // Save A in a temp so we can load registers in the right order to set flags (based on X, not old A)
-        let x = self.a().0;
+        let x = self.a();
         self.load_register(Register::A, a)?;
         self.load_register(Register::X, x)?;
 
@@ -4550,16 +4550,16 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     // Always returns Done since this takes one tick and never returns an error.
     fn las(&mut self) -> Result<OpState> {
         self.s_mut(Wrapping(self.s().0 & self.op_val()));
-        self.load_register(Register::X, self.s().0)?;
-        self.load_register(Register::A, self.s().0)
+        self.load_register(Register::X, self.s())?;
+        self.load_register(Register::A, self.s())
     }
 
     // lax implements the undocumented opcode for LAX.
     // This loads A and X with the same value and sets all associated flags.
     // Always returns Done since this takes one tick and never returns an error.
     fn lax(&mut self) -> Result<OpState> {
-        self.load_register(Register::A, self.op_val())?;
-        self.load_register(Register::X, self.op_val())
+        self.load_register(Register::A, Wrapping(self.op_val()))?;
+        self.load_register(Register::X, Wrapping(self.op_val()))
     }
 
     // oal implements the undocumented opcode for OAL.
@@ -4570,7 +4570,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     // common implementations picked that as a result.
     // Always returns Done since this takes one tick and never returns an error.
     fn oal(&mut self) -> Result<OpState> {
-        let val = (self.a().0 | 0xEE) & self.op_val();
+        let val = (self.a() | Wrapping(0xEE)) & Wrapping(self.op_val());
         self.load_register(Register::A, val)?;
         self.load_register(Register::X, val)
     }
@@ -4579,10 +4579,10 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     // the contents of op_addr and then AND's it against A. Sets flags and carry.
     // Always returns Done since this takes one tick and never returns an error.
     fn rla(&mut self) -> Result<OpState> {
-        let val = (self.op_val() << 1) | (self.p() & P_CARRY).0;
-        self.ram().borrow_mut().write(self.op_addr(), val);
+        let val = Wrapping((self.op_val() << 1) | (self.p() & P_CARRY).0);
+        self.ram().borrow_mut().write(self.op_addr(), val.0);
         self.carry_check(u16::from(self.op_val()) << 1);
-        self.load_register(Register::A, self.a().0 & val)
+        self.load_register(Register::A, self.a() & val)
     }
 
     // rra implements the undocumented opcode for RRA. This does a ROR on op_addr
@@ -4625,7 +4625,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             .borrow_mut()
             .write(self.op_addr(), self.op_val() << 1);
         self.carry_check(u16::from(self.op_val()) << 1);
-        self.load_register(Register::A, (self.op_val() << 1) | self.a().0)
+        self.load_register(Register::A, (Wrapping(self.op_val()) << 1) | self.a())
     }
 
     // sre implements the undocumented opcode for SRE. This does a LSR on
@@ -4637,7 +4637,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
             .write(self.op_addr(), self.op_val() >> 1);
         // Old bit 0 becomes carry
         self.carry_check(u16::from(self.op_val()) << 8);
-        self.load_register(Register::A, (self.op_val() >> 1) ^ self.a().0)
+        self.load_register(Register::A, (Wrapping(self.op_val()) >> 1) ^ self.a())
     }
 
     // tas implements the undocumented opcode for TAS which only has one addressing mode.
@@ -4658,7 +4658,7 @@ trait CPUNmosInternal<'a>: CPUInternal<'a> + CPU<'a> {
     fn xaa(&mut self) -> Result<OpState> {
         self.load_register(
             Register::A,
-            (self.a().0 | 0xEE) & self.x().0 & self.op_val(),
+            (self.a() | Wrapping(0xEE)) & self.x() & Wrapping(self.op_val()),
         )
     }
 }
@@ -5778,7 +5778,7 @@ impl<'a> CPU65C02<'a> {
             }
             // 0x1A - INC
             (Opcode::INC, AddressMode::Implied) => {
-                self.load_register(Register::A, (self.a + Wrapping(1)).0)
+                self.load_register(Register::A, self.a + Wrapping(1))
             }
             // 0x1B - NOP see 0x03
             // 0x1C - TRB a
@@ -5863,7 +5863,7 @@ impl<'a> CPU65C02<'a> {
             }
             // 0x3A - DEC
             (Opcode::DEC, AddressMode::Implied) => {
-                self.load_register(Register::A, (self.a - Wrapping(1)).0)
+                self.load_register(Register::A, self.a - Wrapping(1))
             }
             // 0x3B - NOP see 0x03
             // 0x3C - BIT a,x
@@ -6051,14 +6051,14 @@ impl<'a> CPU65C02<'a> {
             (Opcode::SMB, AddressMode::ZeroPage) => self.rmw_instruction(Self::addr_zp, Self::smb),
             // 0x88 - DEY
             (Opcode::DEY, AddressMode::Implied) => {
-                self.load_register(Register::Y, (self.y - Wrapping(1)).0)
+                self.load_register(Register::Y, self.y - Wrapping(1))
             }
             // 0x89 - BIT #i
             (Opcode::BIT, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::bit)
             }
             // 0x8A - TXA
-            (Opcode::TXA, AddressMode::Implied) => self.load_register(Register::A, self.x.0),
+            (Opcode::TXA, AddressMode::Implied) => self.load_register(Register::A, self.x),
             // 0x8B - NOP see 0x03
             // 0x8C - STY a
             (Opcode::STY, AddressMode::Absolute) => {
@@ -6103,7 +6103,7 @@ impl<'a> CPU65C02<'a> {
             }
             // 0x97 - SMB 1,d see 0x87
             // 0x98 - TYA
-            (Opcode::TYA, AddressMode::Implied) => self.load_register(Register::A, self.y.0),
+            (Opcode::TYA, AddressMode::Implied) => self.load_register(Register::A, self.y),
             // 0x99 - STA a,y
             (Opcode::STA, AddressMode::AbsoluteY) => {
                 self.store_instruction(Self::addr_absolute_y, self.a.0)
@@ -6152,13 +6152,13 @@ impl<'a> CPU65C02<'a> {
             }
             // 0xA7 - SMB 2,d see 0x87
             // 0xA8 - TAY
-            (Opcode::TAY, AddressMode::Implied) => self.load_register(Register::Y, self.a.0),
+            (Opcode::TAY, AddressMode::Implied) => self.load_register(Register::Y, self.a),
             // 0xA9 - LDA #i
             (Opcode::LDA, AddressMode::Immediate) => {
                 self.load_instruction(Self::addr_immediate, Self::load_register_a)
             }
             // 0xAA - TAX
-            (Opcode::TAX, AddressMode::Implied) => self.load_register(Register::X, self.a.0),
+            (Opcode::TAX, AddressMode::Implied) => self.load_register(Register::X, self.a),
             // 0xAB - NOP see 0x03
             // 0xAC - LDY a
             (Opcode::LDY, AddressMode::Absolute) => {
@@ -6204,7 +6204,7 @@ impl<'a> CPU65C02<'a> {
                 self.load_instruction(Self::addr_absolute_y, Self::load_register_a)
             }
             // 0xBA - TSX
-            (Opcode::TSX, AddressMode::Implied) => self.load_register(Register::X, self.s.0),
+            (Opcode::TSX, AddressMode::Implied) => self.load_register(Register::X, self.s),
             // 0xBB - NOP see 0x03
             // 0xBC - LDY a,x
             (Opcode::LDY, AddressMode::AbsoluteX) => {
@@ -6242,7 +6242,7 @@ impl<'a> CPU65C02<'a> {
             // 0xC7 - SMB 4,d see 0x87
             // 0xC8 - INY
             (Opcode::INY, AddressMode::Implied) => {
-                self.load_register(Register::Y, (self.y + Wrapping(1)).0)
+                self.load_register(Register::Y, self.y + Wrapping(1))
             }
             // 0xC9 - CMP #i
             (Opcode::CMP, AddressMode::Immediate) => {
@@ -6250,7 +6250,7 @@ impl<'a> CPU65C02<'a> {
             }
             // 0xCA - DEX
             (Opcode::DEX, AddressMode::Implied) => {
-                self.load_register(Register::X, (self.x - Wrapping(1)).0)
+                self.load_register(Register::X, self.x - Wrapping(1))
             }
             // 0xCB - WAI
             (Opcode::WAI, AddressMode::Implied) => self.wai(),
@@ -6333,7 +6333,7 @@ impl<'a> CPU65C02<'a> {
             // 0xE7 - SMB 6,d see 0x87
             // 0xE8 - INX
             (Opcode::INX, AddressMode::Implied) => {
-                self.load_register(Register::X, (self.x + Wrapping(1)).0)
+                self.load_register(Register::X, self.x + Wrapping(1))
             }
             // 0xE9 0xEB - SBC #i
             (Opcode::SBC, AddressMode::Immediate) => {

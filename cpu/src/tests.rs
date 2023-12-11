@@ -2708,7 +2708,7 @@ fn coverage_opcodes_test() -> Result<()> {
             }
             assert!(
                 cpu.op_tick == Tick::Reset || cpu.state == State::Halted,
-                "{}: Cpu in weird state. Not done with instruction or halted? - {cpu:?} op_tick: {}", test.name,
+                "{}: Cpu in weird state. Not done with instruction or halted? - {cpu:?} op_tick: {}\n{test}\n{out}\n{bus:?}", test.name,
                 cpu.op_tick
             );
             assert!(
