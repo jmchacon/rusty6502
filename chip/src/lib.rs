@@ -46,4 +46,14 @@ pub enum CPUType {
     /// This is an implementation of the later WDC spec so will include support
     /// for WAI, STP, SMB/RMB and BBR/BBS instructions.
     CMOS,
+
+    /// 65C02 CMOS Rockwell version which is identical to WDC version above except for missing
+    /// WAI and STP instructions.
+    #[strum(to_string = "CMOS_ROCKWELL")]
+    CMOSRockwell,
+
+    /// 65C02 CMOS Synertek version which is identical to WDC version above except for missing
+    /// all WDC extensions - WAI, STP, SMB/RMB and BBR/BBS instructions.
+    #[strum(to_string = "CMOS_65SC02")]
+    CMOS65SC02,
 }

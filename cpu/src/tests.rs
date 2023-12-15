@@ -328,12 +328,24 @@ fn invalid_states() -> Result<()> {
     cpu.reset_tick = ResetTick::Tick3;
     cpu.op_tick = Tick::Tick8;
     let ret = cpu.reset();
-    assert!(ret.is_err(), "didn't get op_tick reset error?");
-    #[allow(clippy::unwrap_used)]
-    let errs = ret.err().unwrap().to_string();
+    let Err(errs) = ret else {
+        panic!("CMOS: didn't get op_tick reset error?");
+    };
     assert!(
-        errs.contains("invalid op_tick"),
-        "wrong error for invalid op_tick: {errs}"
+        errs.to_string().contains("invalid op_tick in reset"),
+        "CMOS: wrong error for invalid op_tick: {errs}"
+    );
+
+    nmos.reset()?;
+    nmos.reset_tick = ResetTick::Tick3;
+    nmos.op_tick = Tick::Tick8;
+    let ret = nmos.reset();
+    let Err(errs) = ret else {
+        panic!("NMOS: didn't get op_tick reset error?");
+    };
+    assert!(
+        errs.to_string().contains("invalid op_tick in reset"),
+        "NMOS: wrong error for invalid op_tick: {errs}"
     );
 
     // Make sure invalid combos aren't somehow present in our processing.
@@ -424,6 +436,8 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for NMOS addr mode func addr_zp_x"
     );
+    let ret = nmos.hlt();
+    assert!(ret.is_err(), "didn't get an error for NMOS HLT");
 
     let ret = cpu.perform_branch();
     assert!(ret.is_err(), "didn't get an error for perform_branch");
