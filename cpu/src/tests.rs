@@ -611,54 +611,86 @@ fn wai_test() -> Result<()> {
 
 #[test]
 fn disassemble_test() -> Result<()> {
-    let mut cpu = setup_cpu_cmos(0x1212, 0xEA, None, None, None, None);
-    cpu.power_on()?;
-
-    // All of our tests use CMOS since it's the superset of all modes
-    let tests = [
-        (vec![0xA9, 0x69], "LDA #$69"),                    // Immediate
-        (vec![0xA5, 0x69], "LDA $69"),                     // ZP
-        (vec![0xB5, 0x69], "LDA $69,X"),                   // ZPX
-        (vec![0xB6, 0x69], "LDX $69,Y"),                   // ZPY
-        (vec![0xB2, 0x69], "LDA ($69)"),                   // Indirect
-        (vec![0xA1, 0x69], "LDA ($69,X)"),                 // Indirect X
-        (vec![0xB1, 0x69], "LDA ($69),Y"),                 // Indirect Y
-        (vec![0xAD, 0x69, 0x55], "LDA $5569"),             // Absolute
-        (vec![0xBD, 0x69, 0x55], "LDA $5569,X"),           // Absolute X
-        (vec![0xB9, 0x69, 0x55], "LDA $5569,Y"),           // Absolute Y
-        (vec![0x6C, 0x69, 0x55], "JMP ($5569)"),           // Absolute Indirect
-        (vec![0x7C, 0x69, 0x55], "JMP ($5569,X)"),         // Absolute Indirect
-        (vec![0x1A], "INC"),                               // Implied
-        (vec![0x03], "NOP"),                               // NOPCmos
-        (vec![0x5C, 0x34, 0x12], "NOP $1234"),             // AbsoluteNOP
-        (vec![0x80, 0x69], "BRA $69 ($006A)"),             // Relative,
-        (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
+    let cpus = vec![
+        (
+            "CMOS",
+            Box::new(setup_cpu_cmos(0x1212, 0xEA, None, None, None, None)) as Box<dyn CPU>,
+            // The main tests use CMOS since it's the superset of all modes
+            vec![
+                (vec![0xA9, 0x69], "LDA #$69"),                    // Immediate
+                (vec![0xA5, 0x69], "LDA $69"),                     // ZP
+                (vec![0xB5, 0x69], "LDA $69,X"),                   // ZPX
+                (vec![0xB6, 0x69], "LDX $69,Y"),                   // ZPY
+                (vec![0xB2, 0x69], "LDA ($69)"),                   // Indirect
+                (vec![0xA1, 0x69], "LDA ($69,X)"),                 // Indirect X
+                (vec![0xB1, 0x69], "LDA ($69),Y"),                 // Indirect Y
+                (vec![0xAD, 0x69, 0x55], "LDA $5569"),             // Absolute
+                (vec![0xBD, 0x69, 0x55], "LDA $5569,X"),           // Absolute X
+                (vec![0xB9, 0x69, 0x55], "LDA $5569,Y"),           // Absolute Y
+                (vec![0x6C, 0x69, 0x55], "JMP ($5569)"),           // Absolute Indirect
+                (vec![0x7C, 0x69, 0x55], "JMP ($5569,X)"),         // Absolute Indirect
+                (vec![0x1A], "INC"),                               // Implied
+                (vec![0x03], "NOP"),                               // NOPCmos
+                (vec![0x5C, 0x34, 0x12], "NOP $1234"),             // Absolute NOP
+                (vec![0x80, 0x69], "BRA $69 ($006A)"),             // Relative,
+                (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
+                (vec![0xCB], "WAI"), // Implied but needed for WDC specific testing.
+                (vec![0xDB], "STP"), // Implied but needed for WDC specific testing.
+            ],
+        ),
+        (
+            "Rockwell",
+            Box::new(setup_cpu_cmos_rockwell(
+                0x1212, 0xEA, None, None, None, None,
+            )) as Box<dyn CPU>,
+            vec![
+                (vec![0xCB], "NOP"),                               // Implied
+                (vec![0xDB, 0xFA], "NOP $FA,X"),                   // ZPX
+                (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
+            ],
+        ),
+        (
+            "C65SC02",
+            Box::new(setup_cpu_cmos_C65SC02(0x1212, 0xEA, None, None, None, None)) as Box<dyn CPU>,
+            vec![
+                (vec![0xCB], "NOP"),                   // Implied
+                (vec![0xDB, 0xFA], "NOP $FA,X"),       // ZPX
+                (vec![0x1F, 0x55, 0x69], "NOP $6955"), // Absolute NOP
+            ],
+        ),
     ];
-    let mut s = String::with_capacity(32);
 
-    // Set addr at end of RAM to test wrapping.
-    let addr = Wrapping(0xFFFF);
-    for t in &tests {
-        #[allow(clippy::unwrap_used)]
-        let num = u16::try_from(t.0.len()).unwrap();
-        let mut out = format!("{addr:04X} ");
-        for l in 0..num {
-            // Assemble test bytes.
-            let b = t.0[usize::from(l)];
-            cpu.ram.borrow_mut().write((addr + Wrapping(l)).0, b);
-            write!(out, "{b:02X} ")?;
+    for (name, cpu, tests) in cpus {
+        let mut s = String::with_capacity(32);
+
+        // Set addr at end of RAM to test wrapping.
+        let addr = Wrapping(0xFFFF);
+        for t in &tests {
+            #[allow(clippy::unwrap_used)]
+            let num = u16::try_from(t.0.len()).unwrap();
+            let mut out = format!("{addr:04X} ");
+            for l in 0..num {
+                // Assemble test bytes.
+                let b = t.0[usize::from(l)];
+                cpu.ram().borrow_mut().write((addr + Wrapping(l)).0, b);
+                write!(out, "{b:02X} ")?;
+            }
+            match num {
+                1 => write!(out, "        ")?,
+                2 => write!(out, "     ")?,
+                3 => write!(out, "  ")?,
+                _ => panic!("odd vec?"),
+            };
+            write!(out, "{}", t.1)?;
+
+            cpu.disassemble(&mut s, addr.0, &*cpu.ram().borrow());
+            assert!(
+                s == out,
+                "{name}: Expected output\n{out}\n\nDoesn't match\n{s}"
+            );
         }
-        match num {
-            1 => write!(out, "        ")?,
-            2 => write!(out, "     ")?,
-            3 => write!(out, "  ")?,
-            _ => panic!("odd vec?"),
-        };
-        write!(out, "{}", t.1)?;
-
-        cpu.disassemble(&mut s, addr.0, &*cpu.ram.borrow());
-        assert!(s == out, "Expected output\n{out}\n\nDoesn't match\n{s}");
     }
+
     Ok(())
 }
 

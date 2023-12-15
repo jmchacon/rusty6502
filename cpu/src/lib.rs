@@ -1121,13 +1121,19 @@ enum LastBusAction {
 //               These accessors (pc() for instance) are generated via a macro (cpu_internal)
 //               while all the other implementation for this trait is done as default
 //               member functions.
-// CPUNmosInternal - Private trait for the undocumented NMOS opcodes. Again done
+// CPUNMOSInternal - Private trait for the undocumented NMOS opcodes. Again done
 //                   as default functions so all 3 NMOS chips can just use as-is.
+// CPUCMOSInternal - Private trait for the common impl for CMOS which has CMOS specific opcodes.
+//                   Done as default functions so all 3 CMOS chips can just use as-is.
 //
 // Finally its own impl block provides a new() function which is done as a macro
 // on all but the 6510 (cpu_new) since it needs to implement the I/O ports.
 // The CMOS version implements process_opcode here as well as any of the CMOS specific
-// implementations.
+// implementations. In the CMOS case we can use one process_opcode as the actual
+// mappings from byte -> opcode/mode comes from the cmos_opcodes module which
+// means that wai() for instance only would trigger on the WDC version. For the
+// other 2 CMOS chips these functions exist but panic!() if somehow called (which
+// did come up during testing).
 
 // NOTE: All of the 65xx implementations below generate their base struct from
 // the attribute attached to them. Use cargo-expand or read the proc macro for
@@ -4788,6 +4794,9 @@ macro_rules! cpu_nmos_power_reset {
         /// # Errors
         /// If reset has any issues an error will be returned.
         fn power_on(&mut self) -> Result<()> {
+            // This is our RecordRAM which needs initializing.
+            self.ram().borrow_mut().power_on();
+
             if self.state != State::Off {
                 return Err(eyre!("cannot power on except from an off state"));
             }
@@ -5036,6 +5045,9 @@ macro_rules! cpu_cmos_ricoh_power_reset {
         /// # Errors
         /// If reset has any issues an error will be returned.
         fn power_on(&mut self) -> Result<()> {
+            // This is our RecordRAM which needs initializing.
+            self.ram().borrow_mut().power_on();
+
             if self.state != State::Off {
                 return Err(eyre!("cannot power on except from an off state"));
             }
@@ -6919,6 +6931,8 @@ impl<'a> CPUCMOSInternal<'a> for CPU65C02Rockwell<'a> {
     // This doesn't WAI but to allow one process_opcode for all CMOS just need
     // a stub function which panics if we somehow get here.
     #[allow(clippy::unused_self)]
+    #[cfg(not(coverage))]
+
     fn wai(&mut self) -> Result<OpState> {
         panic!("WAI not implemented for Rockwell!");
     }
@@ -6928,6 +6942,7 @@ impl<'a> CPUCMOSInternal<'a> for CPU65SC02<'a> {
     // This doesn't RMB but to allow one process_opcode for all CMOS just need
     // a stub function which panics if we somehow get here.
     #[allow(clippy::unused_self)]
+    #[cfg(not(coverage))]
     fn rmb(&mut self) -> Result<OpState> {
         println!("{:?} {:02X}", self.op, self.op_raw);
         panic!("RMB not implemented for C65SC02");
@@ -6936,6 +6951,7 @@ impl<'a> CPUCMOSInternal<'a> for CPU65SC02<'a> {
     // This doesn't SMB but to allow one process_opcode for all CMOS just need
     // a stub function which panics if we somehow get here.
     #[allow(clippy::unused_self)]
+    #[cfg(not(coverage))]
     fn smb(&mut self) -> Result<OpState> {
         panic!("SMB not implemented for C65SC02");
     }
@@ -6943,6 +6959,7 @@ impl<'a> CPUCMOSInternal<'a> for CPU65SC02<'a> {
     // This doesn't WAI but to allow one process_opcode for all CMOS just need
     // a stub function which panics if we somehow get here.
     #[allow(clippy::unused_self)]
+    #[cfg(not(coverage))]
     fn wai(&mut self) -> Result<OpState> {
         panic!("WAI not implemented for C65SC02");
     }
