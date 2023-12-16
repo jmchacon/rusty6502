@@ -89,6 +89,8 @@ ppu = { path = "./nes/ppu", version = "~0.1" }
 rand = "0.8.5"
 regex = "1.10.2"
 rusty6502 = { path = "./", version = "~0.1" }
+serde = "1.0.193"
+serde_json = "1.0.108"
 strum_macros = "0.24.1"
 strum = "0.24.1"
 tempfile = "3.8.1"
