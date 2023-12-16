@@ -154,7 +154,7 @@ pub fn cpu_base_struct(args: TokenStream, input: TokenStream) -> TokenStream {
             syn::Field::parse_named
                 .parse2(quote! {
                   #[doc = " Memory implementation used for all RAM access."]
-                  ram: Rc<RefCell<Box<dyn Memory>>>
+                  ram: Rc<RefCell<RecordRAM>>
                 })
                 .unwrap(),
         );
@@ -232,6 +232,14 @@ pub fn cpu_base_struct(args: TokenStream, input: TokenStream) -> TokenStream {
                 .parse2(quote! {
                   #[doc = " Preallocated dissassembly buffer for debugging."]
                   disassemble: RefCell<String>
+                })
+                .unwrap(),
+        );
+        fields.named.push(
+            syn::Field::parse_named
+                .parse2(quote! {
+                  #[doc = " Whether the current address mode had to use an extra cycle to fix op_addr."]
+                  op_addr_fixup: bool
                 })
                 .unwrap(),
         );
