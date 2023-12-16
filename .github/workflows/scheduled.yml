@@ -20,13 +20,33 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+      - name: Cache git folder
+        id: cache-git
+        uses: actions/cache@v3
+        with:
+          enableCrossOsArchive: true
+          path: TomHarte
+          key: git-folder2
+      - if: steps.cache-git.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: 'TomHarte/ProcessorTests'
+          path: 'TomHarte'
+      - name: cache-update
+        if: steps.cache-git.outputs.cache-hit == 'true'
+        run: cd TomHarte && git pull
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo test --locked
         run: cargo test --locked --all-features --all-targets
+        env:
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
   # https://twitter.com/alcuadrado/status/1571291687837732873
   update:
     runs-on: ubuntu-latest
@@ -39,9 +59,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
+      - name: Cache git folder
+        id: cache-git
+        uses: actions/cache@v3
+        with:
+          enableCrossOsArchive: true
+          path: TomHarte
+          key: git-folder2
+      - if: steps.cache-git.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: 'TomHarte/ProcessorTests'
+          path: 'TomHarte'
+      - name: cache-update
+        if: steps.cache-git.outputs.cache-hit == 'true'
+        run: cd TomHarte && git pull
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta
+      - uses: Swatinem/rust-cache@v2
       - name: cargo update
         if: hashFiles('Cargo.lock') != ''
         run: cargo update
@@ -50,3 +86,6 @@ jobs:
         run: cargo test --locked --all-features --all-targets
         env:
           RUSTFLAGS: -D deprecated
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"

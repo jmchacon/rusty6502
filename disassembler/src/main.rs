@@ -126,12 +126,18 @@ fn main() -> Result<()> {
     let ricoh = CPURicoh::new(ChipDef::default());
     let c6510 = CPU6510::new(ChipDef::default(), None);
     let cmos = CPU65C02::new(ChipDef::default());
+    let rockwell = CPU65C02Rockwell::new(ChipDef::default());
+    let c65sc02 = CPU65SC02::new(ChipDef::default());
+
     let cpu: &dyn CPU = match args.cpu_type {
         CPUType::NMOS => &nmos,
         CPUType::RICOH => &ricoh,
         CPUType::NMOS6510 => &c6510,
         CPUType::CMOS => &cmos,
+        CPUType::CMOSRockwell => &rockwell,
+        CPUType::CMOS65SC02 => &c65sc02,
     };
+
     let mut dis = String::with_capacity(32);
     loop {
         newpc = cpu.disassemble(&mut dis, pc, &ram);

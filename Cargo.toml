@@ -117,4 +117,3 @@ memory = { path = "./memory", version = "~0.1" }
 cpu = { path = "./cpu", version = "~0.1" }
 chip = { path = "./chip", version = "~0.1" }
 
-serde_derive = "~1.0.75" # minimal versions pin

@@ -1085,11 +1085,16 @@ pub fn cpu_loop(
     let mut ricoh = CPURicoh::new(ChipDef::default());
     let mut c6510 = CPU6510::new(ChipDef::default(), None);
     let mut cmos = CPU65C02::new(ChipDef::default());
+    let mut rockwell = CPU65C02Rockwell::new(ChipDef::default());
+    let mut c65sc02 = CPU65SC02::new(ChipDef::default());
+
     let cpu: &mut dyn CPU = match ty {
         CPUType::NMOS => &mut nmos,
         CPUType::RICOH => &mut ricoh,
         CPUType::NMOS6510 => &mut c6510,
         CPUType::CMOS => &mut cmos,
+        CPUType::CMOSRockwell => &mut rockwell,
+        CPUType::CMOS65SC02 => &mut c65sc02,
     };
 
     let mut is_running = false;

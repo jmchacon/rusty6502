@@ -2298,7 +2298,6 @@ dependencies = [
  "chip",
  "cpu",
  "memory",
- "serde_derive",
 ]
 
 [[package]]

@@ -42,11 +42,16 @@ macro_rules! assemble_test {
                       let ricoh = CPURicoh::new(ChipDef::default());
                       let c6510 = CPU6510::new(ChipDef::default(), None);
                       let cmos = CPU65C02::new(ChipDef::default());
+                      let rockwell = CPU65C02Rockwell::new(ChipDef::default());
+                      let c65sc02 = CPU65SC02::new(ChipDef::default());
+
                       let cpu: &dyn CPU = match t {
                           CPUType::NMOS => &nmos,
                           CPUType::RICOH => &ricoh,
                           CPUType::NMOS6510 => &c6510,
                           CPUType::CMOS => &cmos,
+                          CPUType::CMOSRockwell => &rockwell,
+                          CPUType::CMOS65SC02 => &c65sc02,
                       };
 
                       let asm = parse(cpu, lines, true)?;
@@ -121,12 +126,16 @@ macro_rules! bad_assemble_test {
                       let ricoh = CPURicoh::new(ChipDef::default());
                       let c6510 = CPU6510::new(ChipDef::default(), None);
                       let cmos = CPU65C02::new(ChipDef::default());
+                      let rockwell = CPU65C02Rockwell::new(ChipDef::default());
+                      let c65sc02 = CPU65SC02::new(ChipDef::default());
 
                       let cpu: &dyn CPU = match $cpu {
                           CPUType::NMOS => &nmos,
                           CPUType::RICOH => &ricoh,
                           CPUType::NMOS6510 => &c6510,
                           CPUType::CMOS => &cmos,
+                          CPUType::CMOSRockwell => &rockwell,
+                          CPUType::CMOS65SC02 => &c65sc02,
                       };
 
                     let asm = parse(cpu, lines, true);
@@ -163,6 +172,16 @@ bad_assemble_test!(
       error: "invalid opcode",
   },
   CPUType::NMOS
+  invalid_opcode_ricoh: BadAssembleTest{
+      asm: "invalid_opcode.asm",
+      error: "invalid opcode",
+  },
+  CPUType::RICOH
+  invalid_opcode_6510: BadAssembleTest{
+      asm: "invalid_opcode.asm",
+      error: "invalid opcode",
+  },
+  CPUType::NMOS6510
   invalid_org: BadAssembleTest{
       asm: "invalid_org.asm",
       error: "invalid ORG",
@@ -233,6 +252,31 @@ bad_assemble_test!(
       error: "either not 8 bit or out of range",
   },
   CPUType::NMOS
+  bad_branch_ricoh: BadAssembleTest{
+      asm: "bad_branch.asm",
+      error: "either not 8 bit or out of range",
+  },
+  CPUType::RICOH
+  bad_branch_6510: BadAssembleTest{
+      asm: "bad_branch.asm",
+      error: "either not 8 bit or out of range",
+  },
+  CPUType::NMOS6510
+  bad_branch_cmos: BadAssembleTest{
+      asm: "bad_branch.asm",
+      error: "either not 8 bit or out of range",
+  },
+  CPUType::CMOS
+  bad_branch_rockwell: BadAssembleTest{
+      asm: "bad_branch.asm",
+      error: "either not 8 bit or out of range",
+  },
+  CPUType::CMOSRockwell
+  bad_branch_65sc02: BadAssembleTest{
+      asm: "bad_branch.asm",
+      error: "either not 8 bit or out of range",
+  },
+  CPUType::CMOS65SC02
   bad_bbr: BadAssembleTest{
     asm: "cmos-bbr.asm",
     error: "too many parts"
