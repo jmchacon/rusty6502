@@ -83,7 +83,30 @@ impl NESMemory {
 
 impl Memory for NESMemory {
     fn read(&self, addr: u16) -> u8 {
-        self.mapper.read(addr)
+        let mut ret = 0x00;
+        if addr < 0x2000 {
+            ret = self.ram[usize::from(addr & 0x07FF)];
+        }
+        if (0x2000..0x3FFF).contains(&addr) {
+            ret = self.ppu.read(addr & 0x7);
+        }
+        if (0x4000..0x4018).contains(&addr) {
+            ret = self.apu.read(addr & 0x1F);
+        }
+        if (0x4018..0x4020).contains(&addr) {
+            // TODO - hardcode for now
+            ret = 0x00;
+        }
+        // The mapper sees everything except 0x4015
+        if addr == 0x4015 {
+            return ret;
+        }
+        if addr >= 0x4020 {
+            ret = self.mapper.read(addr);
+        } else {
+            self.mapper.read(addr);
+        }
+        ret
     }
 
     fn write(&mut self, addr: u16, val: u8) {
