@@ -1,2 +1,0 @@
-separate tests for nes and each cmos cpu
-Add separate CMOS impls...Probably as option to new?
