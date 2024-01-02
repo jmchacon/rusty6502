@@ -85,7 +85,7 @@ serde = "1.0.193"
 serde_json = "1.0.108"
 strum_macros = "0.24.1"
 strum = "0.24.1"
-tempfile = "3.8.1"
+tempfile = "3.9.0"
 thiserror = "1.0.51"
 
 proc-macro2 = "1.0.71"
