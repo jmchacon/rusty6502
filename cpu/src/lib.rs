@@ -2744,7 +2744,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 sum -= 0x60;
             }
 
-
             // NOTE: We don't lose the sign here BCD doesn't care.
             #[allow(clippy::cast_sign_loss)]
             let res = (sum.0 & 0xFF) as u8;
@@ -5257,7 +5256,6 @@ impl<'a> CPU<'a> for CPU65C02Rockwell<'a> {
         let hm: &AHashMap<AddressMode, Vec<u8>>;
         // SAFETY: When we built opcodes we validated all Opcodes were present
         unsafe {
-
             hm = cmos_rockwell_opcodes().get(op).unwrap_unchecked();
         }
         let Some(v) = hm.get(mode) else {
