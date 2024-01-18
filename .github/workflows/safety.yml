@@ -18,7 +18,7 @@ jobs:
           submodules: true
       - name: Cache git folder
         id: cache-git
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           enableCrossOsArchive: true
           path: TomHarte
