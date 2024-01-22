@@ -64,7 +64,7 @@ assemble = { path = "./assemble", version = "~0.1" }
 c64basic = { path = "./c64basic", version = "~0.1" }
 chip = { path = "./chip", version = "~0.1" }
 clap = { version = "~4.0", features = ["derive", "wrap_help"] }
-clap-num = "1.0.2"
+clap-num = "1.1.1"
 color-eyre = { version = "0.6.2", default-features = false }
 cpu_proc_macros = { path = "./cpu_proc_macros", version = "~0.1" }
 eframe = "0.23.0"
