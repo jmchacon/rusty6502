@@ -15,4 +15,4 @@ egui = { workspace = true }
 monitor = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-env_logger = "0.10"
+env_logger = "0.11"
