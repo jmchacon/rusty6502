@@ -2550,7 +2550,7 @@ rom_test!(
 
         let mut ret = Vec::new();
 
-        for line in lines.flatten() {
+        for line in lines.map_while(Result::ok) {
             // Each line is 81 characters and each field is a specific offset.
             ret.push(Verify {
                 pc: u16::from_str_radix(&line[0..4], 16)?,
