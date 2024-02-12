@@ -59,7 +59,7 @@ debug = true
 debug = true
 
 [workspace.dependencies]
-ahash = "0.8.7"
+ahash = "0.8.8"
 assemble = { path = "./assemble", version = "~0.1" }
 c64basic = { path = "./c64basic", version = "~0.1" }
 chip = { path = "./chip", version = "~0.1" }
