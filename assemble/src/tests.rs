@@ -94,6 +94,11 @@ assemble_test!(
         bin: "testasm.bin",
         cpus: vec![CPUType::NMOS, CPUType::NMOS6510, CPUType::RICOH],
     }
+    romasm_test: AssembleTest{
+        asm: "rom.asm",
+        bin: "rom.bin",
+        cpus: vec![CPUType::NMOS, CPUType::NMOS6510, CPUType::RICOH],
+    }
     testasm_cmos_test: AssembleTest{
         asm: "testasm-cmos.asm",
         bin: "testasm-cmos.bin",

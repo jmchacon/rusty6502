@@ -23,6 +23,7 @@ mod tests;
 // Begin -> Label -> Equ -> Remainder -> Begin|Comment
 //      |        |-> Op -> Remainder -> Begin|Comment
 //      |-> Org -> Remainder -> Begin|Comment
+//      |-> Word -> Remainder -> Begin|Comment
 //      |-> Op -> Remainder -> Begin|Comment
 //      |-> Comment -> Begin
 #[derive(PartialEq, Debug)]
@@ -31,6 +32,7 @@ enum State {
     Label(String),
     Equ(String),
     Org,
+    Word,
     Op(Opcode),
     Comment(String),
     Remainder,
@@ -44,6 +46,7 @@ enum State {
 enum Token {
     Label(String),
     Org(u16),
+    Word(u16, u16),
     Op(Operation),
     Comment(String),
     Equ(String),
@@ -143,6 +146,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 State::Begin => match upper.as_bytes() {
                     // We can match an ORG or comment here directly.
                     [b'O', b'R', b'G', ..] => State::Org,
+                    [b'W', b'O', b'R', b'D', ..] => State::Word,
                     [b';', ..] => State::Comment(token[1..].into()),
                     // Anything else is either an opcode or a label to be fleshed
                     // out in a later state.
@@ -220,6 +224,17 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             ));
                     };
                     l.push(Token::Org(pc));
+                    State::Remainder
+                }
+                // A WORD statement must be followed by a u16 value.
+                State::Word => {
+                    let Some(TokenVal::Val16(pc)) = parse_val(token, true) else {
+                        return Err(eyre!(
+                                "Error parsing line {}: invalid WORD value not 16 bit - {token} - {line}",
+                                line_num + 1,
+                            ));
+                    };
+                    l.push(Token::Word(0x0000, pc));
                     State::Remainder
                 }
                 // Remainder is an intermediate state after we've processed something.
@@ -414,7 +429,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
             // These are valid states to exit so we can ignore them.
             State::Begin | State::Remainder => {}
             // Label and Org can happen if they define and then end the line
-            State::Label(_) | State::Org => {
+            State::Label(_) | State::Org | State::Word => {
                 return Err(eyre!(
                     "Error parsing line {}: missing data for {state:?} - {line}",
                     line_num + 1,
@@ -451,6 +466,9 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                 }
                 Token::Org(npc) => {
                     pc = *npc;
+                }
+                Token::Word(wpc, _) => {
+                    *wpc = pc;
                 }
                 Token::Equ(_) | Token::Comment(_) => {}
                 Token::Op(o) => {
@@ -621,6 +639,14 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                 }
                 Token::Org(pc) => {
                     write!(output, "ORG           {pc:04X}").unwrap();
+                }
+                Token::Word(pc, val) => {
+                    let low = *val & 0x00FF;
+                    let high = (*val & 0xFF00) >> 8;
+
+                    write!(output, "{pc:04X}: {low:02X} {high:02X}").unwrap();
+                    res.bin[usize::from(*pc)] = low as u8;
+                    res.bin[usize::from(*pc + 1)] = high as u8;
                 }
                 Token::Equ(td) => {
                     let val: TokenVal;
