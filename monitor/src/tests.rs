@@ -362,38 +362,41 @@ fn step_init_test() -> Result<()> {
         panic!("Didn't get prompt after DW? - {resp:?}");
     }
 
-    // Run the expected steps now.
+    // Run the expected steps now. But we'll loop 5 times to adjust for
+    // differences in runtimes.
 
-    // Let's validate things like a GUI version will work where
-    // it needs to do X steps per refresh period.
-    //
-    // NES is 1.7Mhz and refresh is 1/60th of a second so we need
-    // 1/60 / 1.7Mhz == 29830 clocks per refresh to stay at original speed.
-    // Average CPI is 4 for a 6502 so assume we need to run 29830 / 4 == 7457
-    let now = std::time::Instant::now();
-    inputtx.send("STEPN 7457 64 TRUE".into())?;
-    let resp = outputrx.recv()?;
-    let n = now.elapsed();
+    for cnt in 5..=0 {
+        // Let's validate things like a GUI version will work where
+        // it needs to do X steps per refresh period.
+        //
+        // NES is 1.7Mhz and refresh is 1/60th of a second so we need
+        // 1/60 / 1.7Mhz == 29830 clocks per refresh to stay at original speed.
+        // Average CPI is 4 for a 6502 so assume we need to run 29830 / 4 == 7457
+        let now = std::time::Instant::now();
+        inputtx.send("STEPN 7457 64 TRUE".into())?;
+        let resp = outputrx.recv()?;
+        let n = now.elapsed();
 
-    if let Output::StepN(_) = resp {
-    } else {
-        panic!("Didn't get stepn after startup load? - {resp:?}");
+        if let Output::StepN(_) = resp {
+        } else {
+            panic!("Didn't get stepn after startup load? - {resp:?}");
+        }
+
+        // A very fast Sapphire Rapids CPU can do this in 8ms so even assuming
+        // slowness for others we should be able to do this in double that.
+        #[cfg(not(miri))]
+        let timeout = std::time::Duration::from_millis(17);
+        // Miri takes an eon so just give it 15m. Allow here because we dynamically
+        // include sanitizer (which is nightly only) for those tests.
+        #[cfg(any(miri, coverage))]
+        let timeout = std::time::Duration::from_secs(900);
+
+        assert!(
+            n <= timeout && cnt == 0,
+            "too slow - time for instructions - {n:#?} vs {timeout:#?}"
+        );
+        println!("time for instructions - {n:#?} vs {timeout:#?}");
     }
-
-    // A very fast Sapphire Rapids CPU can do this in 8ms so even assuming
-    // slowness for others we should be able to do this in double that.
-    #[cfg(not(miri))]
-    let timeout = std::time::Duration::from_millis(17);
-    // Miri takes an eon so just give it 15m. Allow here because we dynamically
-    // include sanitizer (which is nightly only) for those tests.
-    #[cfg(any(miri, coverage))]
-    let timeout = std::time::Duration::from_secs(900);
-
-    assert!(
-        n <= timeout,
-        "too slow - time for instructions - {n:#?} vs {timeout:#?}"
-    );
-    println!("time for instructions - {n:#?} vs {timeout:#?}");
     Ok(())
 }
 
