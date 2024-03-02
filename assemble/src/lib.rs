@@ -129,7 +129,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
         labels: HashMap::new(),
     };
 
-    for (line_num, line) in lines.flatten().enumerate() {
+    for (line_num, line) in lines.map_while(Result::ok).enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
 
         let mut l = Vec::<Token>::new();

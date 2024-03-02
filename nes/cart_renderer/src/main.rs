@@ -799,7 +799,7 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // If a color picker button has been selected display the dialog.
         if let Some(bidx) = self.button {
             egui::Window::new("Color picker").show(ctx, |ui| self.color_picker(bidx, ui));
@@ -809,6 +809,7 @@ impl eframe::App for MyApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::GRAY))
             .show(ctx, |ui| self.main_ui(ui));
-        frame.set_window_size(ctx.used_size());
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(ctx.used_size()));
+        ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(ctx.used_size()));
     }
 }

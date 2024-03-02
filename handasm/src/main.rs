@@ -54,7 +54,7 @@ fn main() -> Result<()> {
     let mut block: [u8; 1 << 16] = [0; 1 << 16];
 
     // Consumes the iterator, return Strings
-    for (line_num, line) in lines.flatten().enumerate() {
+    for (line_num, line) in lines.map_while(Result::ok).enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
 
         // If there aren't 2 fields don't even try.

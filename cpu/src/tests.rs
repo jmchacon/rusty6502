@@ -2550,7 +2550,7 @@ rom_test!(
 
         let mut ret = Vec::new();
 
-        for line in lines.flatten() {
+        for line in lines.map_while(Result::ok) {
             // Each line is 81 characters and each field is a specific offset.
             ret.push(Verify {
                 pc: u16::from_str_radix(&line[0..4], 16)?,
@@ -2702,6 +2702,8 @@ macro_rules! coverage_opcodes_test {
                         let Ok(loc) = std::env::var("TOM_HARTE_PROCESSOR_TESTS") else {
                             println!("Skipping tests because TOM_HARTE_PROCESSOR_TESTS isn't set in the environment");
                             println!("Checkout https://github.com/TomHarte/ProcessorTests.git and set env var to point at root of that tree to run relative to this package");
+                            println!("Window example: Set-Item -Path \"Env:TOM_HARTE_PROCESSOR_TESTS\" -Value \"../../../TomHarte\"");
+                            println!("Unix example: export TOM_HARTE_PROCESSOR_TESTS=../../../TomHarte");
                             panic!("Skipping tests?");
                         };
 
