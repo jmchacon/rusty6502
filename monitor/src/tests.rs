@@ -365,7 +365,7 @@ fn step_init_test() -> Result<()> {
     // Run the expected steps now. But we'll loop 5 times to adjust for
     // differences in runtimes.
 
-    for cnt in 5..=0 {
+    for cnt in (0..=5).rev() {
         // Let's validate things like a GUI version will work where
         // it needs to do X steps per refresh period.
         //
