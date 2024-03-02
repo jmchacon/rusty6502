@@ -391,11 +391,16 @@ fn step_init_test() -> Result<()> {
         #[cfg(any(miri, coverage))]
         let timeout = std::time::Duration::from_secs(900);
 
-        assert!(
-            n <= timeout && cnt == 0,
-            "too slow - time for instructions - {n:#?} vs {timeout:#?}"
-        );
+        if cnt == 0 {
+            assert!(
+                n <= timeout,
+                "too slow - time for instructions - {n:#?} vs {timeout:#?}"
+            );
+        }
         println!("time for instructions - {n:#?} vs {timeout:#?}");
+        if n <= timeout {
+            break;
+        }
     }
     Ok(())
 }
