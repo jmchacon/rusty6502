@@ -5502,7 +5502,7 @@ macro_rules! chip_impl_nmos {
             /// `tick_done` moves the CPU back to a state where the next tick can run.
             /// For the 6502 there are no internal latches so generally there is no shadow
             /// state to account but all Chip implementations need this function.
-            /// NOTE: Calling `tick` with rdy() high and `tick_done` with it low will
+            /// NOTE: Calling `tick` with `rdy()` high and `tick_done` with it low will
             ///       result in an error as `tick`+`tick_done` is assumed to be otherwise atomic.
             ///
             /// # Errors
@@ -5746,7 +5746,7 @@ macro_rules! chip_impl_cmos {
             /// `tick_done` moves the CPU back to a state where the next tick can run.
             /// For the 6502 there are no internal latches so generally there is no shadow
             /// state to account but all Chip implementations need this function.
-            /// NOTE: Calling `tick` with rdy() high and `tick_done` with it low will
+            /// NOTE: Calling `tick` with `rdy()` high and `tick_done` with it low will
             ///       result in an error as `tick`+`tick_done` is assumed to be otherwise atomic.
             ///
             /// # Errors

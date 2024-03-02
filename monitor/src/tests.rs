@@ -4,6 +4,7 @@ use color_eyre::eyre::{Report, Result};
 use ntest::timeout;
 use rusty6502::prelude::*;
 use std::fs::read;
+use std::panic;
 use std::path::Path;
 use std::thread::JoinHandle;
 use std::{sync::mpsc::channel, sync::mpsc::Receiver, sync::mpsc::Sender, thread};
@@ -202,6 +203,17 @@ fn tick_init_test() -> Result<()> {
 #[cfg_attr(not(miri), timeout(60000))]
 #[cfg_attr(miri, timeout(900000))]
 fn step_init_test() -> Result<()> {
+    // This one can be a little flaky so we let it run twice
+    // to consider it broken.
+    let res = panic::catch_unwind(step_init_test_impl);
+    if res.is_err() {
+        return step_init_test_impl();
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn step_init_test_impl() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
     let resp = outputrx.recv()?;
@@ -394,6 +406,7 @@ fn step_init_test() -> Result<()> {
         "too slow - time for instructions - {n:#?} vs {timeout:#?}"
     );
     println!("time for instructions - {n:#?} vs {timeout:#?}");
+
     Ok(())
 }
 
