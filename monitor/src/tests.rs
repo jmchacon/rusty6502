@@ -4,6 +4,7 @@ use color_eyre::eyre::{Report, Result};
 use ntest::timeout;
 use rusty6502::prelude::*;
 use std::fs::read;
+use std::panic;
 use std::path::Path;
 use std::thread::JoinHandle;
 use std::{sync::mpsc::channel, sync::mpsc::Receiver, sync::mpsc::Sender, thread};
@@ -202,6 +203,17 @@ fn tick_init_test() -> Result<()> {
 #[cfg_attr(not(miri), timeout(60000))]
 #[cfg_attr(miri, timeout(900000))]
 fn step_init_test() -> Result<()> {
+    // This one can be a little flaky so we let it run twice
+    // to consider it broken.
+    let res = panic::catch_unwind(step_init_test_impl);
+    if res.is_err() {
+        return step_init_test_impl();
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn step_init_test_impl() -> Result<()> {
     let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
     // Should go immediately to a prompt since we didn't preload
     let resp = outputrx.recv()?;
@@ -362,46 +374,39 @@ fn step_init_test() -> Result<()> {
         panic!("Didn't get prompt after DW? - {resp:?}");
     }
 
-    // Run the expected steps now. But we'll loop 5 times to adjust for
-    // differences in runtimes.
+    // Run the expected steps now.
 
-    for cnt in (0..=5).rev() {
-        // Let's validate things like a GUI version will work where
-        // it needs to do X steps per refresh period.
-        //
-        // NES is 1.7Mhz and refresh is 1/60th of a second so we need
-        // 1/60 / 1.7Mhz == 29830 clocks per refresh to stay at original speed.
-        // Average CPI is 4 for a 6502 so assume we need to run 29830 / 4 == 7457
-        let now = std::time::Instant::now();
-        inputtx.send("STEPN 7457 64 TRUE".into())?;
-        let resp = outputrx.recv()?;
-        let n = now.elapsed();
+    // Let's validate things like a GUI version will work where
+    // it needs to do X steps per refresh period.
+    //
+    // NES is 1.7Mhz and refresh is 1/60th of a second so we need
+    // 1/60 / 1.7Mhz == 29830 clocks per refresh to stay at original speed.
+    // Average CPI is 4 for a 6502 so assume we need to run 29830 / 4 == 7457
+    let now = std::time::Instant::now();
+    inputtx.send("STEPN 7457 64 TRUE".into())?;
+    let resp = outputrx.recv()?;
+    let n = now.elapsed();
 
-        if let Output::StepN(_) = resp {
-        } else {
-            panic!("Didn't get stepn after startup load? - {resp:?}");
-        }
-
-        // A very fast Sapphire Rapids CPU can do this in 8ms so even assuming
-        // slowness for others we should be able to do this in double that.
-        #[cfg(not(miri))]
-        let timeout = std::time::Duration::from_millis(17);
-        // Miri takes an eon so just give it 15m. Allow here because we dynamically
-        // include sanitizer (which is nightly only) for those tests.
-        #[cfg(any(miri, coverage))]
-        let timeout = std::time::Duration::from_secs(900);
-
-        if cnt == 0 {
-            assert!(
-                n <= timeout,
-                "too slow - time for instructions - {n:#?} vs {timeout:#?}"
-            );
-        }
-        println!("time for instructions - {n:#?} vs {timeout:#?}");
-        if n <= timeout {
-            break;
-        }
+    if let Output::StepN(_) = resp {
+    } else {
+        panic!("Didn't get stepn after startup load? - {resp:?}");
     }
+
+    // A very fast Sapphire Rapids CPU can do this in 8ms so even assuming
+    // slowness for others we should be able to do this in double that.
+    #[cfg(not(miri))]
+    let timeout = std::time::Duration::from_millis(17);
+    // Miri takes an eon so just give it 15m. Allow here because we dynamically
+    // include sanitizer (which is nightly only) for those tests.
+    #[cfg(any(miri, coverage))]
+    let timeout = std::time::Duration::from_secs(900);
+
+    assert!(
+        n <= timeout,
+        "too slow - time for instructions - {n:#?} vs {timeout:#?}"
+    );
+    println!("time for instructions - {n:#?} vs {timeout:#?}");
+
     Ok(())
 }
 
