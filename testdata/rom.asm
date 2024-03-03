@@ -1,0 +1,7 @@
+ORG $FF00
+
+START LDA #80
+      BMI START
+
+ORG $FFFC ; Reset vector
+WORD $FF00

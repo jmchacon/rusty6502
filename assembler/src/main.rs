@@ -3,6 +3,7 @@
 
 use assemble::parse;
 use clap::Parser;
+use clap_num::maybe_hex;
 use color_eyre::eyre::Result;
 use rusty6502::prelude::*;
 use std::{
@@ -19,6 +20,20 @@ struct Args {
     cpu_type: CPUType,
     filename: String,
     output: String,
+
+    #[arg(
+        long,
+        default_value_t = 0x0000, value_parser=maybe_hex::<usize>,
+        help = "The memory location to start emitting"
+    )]
+    start_loc: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0x10000, value_parser=maybe_hex::<usize>,
+        help = "Number of bytes to emit"
+    )]
+    bytes: usize,
 }
 
 #[allow(clippy::similar_names)]
@@ -44,10 +59,20 @@ fn main() -> Result<()> {
         CPUType::CMOS65SC02 => &c65sc02,
     };
 
+    let end = args.start_loc + args.bytes;
+    assert!(
+        end <= 0x10000,
+        "Starting at {} + {} bytes is > 64k",
+        args.start_loc,
+        args.bytes
+    );
     match parse(cpu, lines, false) {
         Err(e) => Err(e),
         Ok(res) => {
-            write(Path::new(args.output.as_str()), res.bin)?;
+            write(
+                Path::new(args.output.as_str()),
+                &res.bin[args.start_loc..end],
+            )?;
             print!("{}", res.listing);
             Ok(())
         }
