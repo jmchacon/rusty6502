@@ -292,4 +292,9 @@ bad_assemble_test!(
     error: "index too large"
   },
   CPUType::CMOS
+  bad_word: BadAssembleTest{
+    asm: "bad_word.asm",
+    error: "invalid WORD value not 16 bit",
+  },
+  CPUType::NMOS
 );
