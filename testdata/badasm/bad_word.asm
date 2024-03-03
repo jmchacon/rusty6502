@@ -1,0 +1,2 @@
+ORG $C000
+WORD $1FFFF

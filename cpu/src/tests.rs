@@ -2702,6 +2702,8 @@ macro_rules! coverage_opcodes_test {
                         let Ok(loc) = std::env::var("TOM_HARTE_PROCESSOR_TESTS") else {
                             println!("Skipping tests because TOM_HARTE_PROCESSOR_TESTS isn't set in the environment");
                             println!("Checkout https://github.com/TomHarte/ProcessorTests.git and set env var to point at root of that tree to run relative to this package");
+                            println!("Window example: Set-Item -Path \"Env:TOM_HARTE_PROCESSOR_TESTS\" -Value \"../../../TomHarte\"");
+                            println!("Unix example: export TOM_HARTE_PROCESSOR_TESTS=../../../TomHarte");
                             panic!("Skipping tests?");
                         };
 
