@@ -65,7 +65,7 @@ debug = true
 debug = true
 
 [workspace.dependencies]
-ahash = "0.8.10"
+ahash = "0.8.11"
 apu = { path = "./nes/apu", version = "~0.1" }
 assemble = { path = "./assemble", version = "~0.1" }
 c64basic = { path = "./c64basic", version = "~0.1" }
@@ -89,8 +89,8 @@ ppu = { path = "./nes/ppu", version = "~0.1" }
 rand = "0.8.5"
 regex = "1.10.3"
 rusty6502 = { path = "./", version = "~0.1" }
-serde = "1.0.196"
-serde_json = "1.0.113"
+serde = "1.0.197"
+serde_json = "1.0.114"
 strum_macros = "0.24.1"
 strum = "0.24.1"
 tempfile = "3.10.1"
