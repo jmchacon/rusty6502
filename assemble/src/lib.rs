@@ -1016,7 +1016,7 @@ fn parse_label(label: &str) -> Result<String> {
     }
 }
 
-const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-]+$";
+const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9+-_]+$";
 
 fn re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
