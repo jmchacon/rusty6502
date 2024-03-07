@@ -1,1 +1,1 @@
-LDA #bad_label
+LDA #bad%label
