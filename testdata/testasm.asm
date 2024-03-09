@@ -36,7 +36,7 @@ BYTE "H" 0x55 %00000001 ZP
 
 BLABEL .byte "A" END "B"  BLABEL ; Comments
 ALABEL ASciiZ   "This is a string" "Another""one"
-CL .asciiz "More" ; Some comments
+CL .asciiz "More\n" ; Some comments
 
 LDA ALABEL
 

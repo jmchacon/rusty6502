@@ -352,7 +352,12 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                 ));
                             }
 
-                            let lstr = line.as_str();
+                            // Un-escape the special 3 chars.
+                            let st = line
+                                .replace("\\n", "\n")
+                                .replace("\\r", "\r")
+                                .replace("\\t", "\t");
+                            let lstr = st.as_str();
                             // SAFETY: We know this contains ASCIIZ or else we
                             //         can't get to this state. And it must have
                             //         a whitespace char after that due to the initial match from Begin.
@@ -400,17 +405,16 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                         // SAFETY: We never changed this so it's a valid utf8 string still from
                                         // here forward.
                                         comment = unsafe {
-                                            String::from_utf8_unchecked(bytes[idx..].to_vec())
+                                            String::from_utf8_unchecked(bytes[idx - 1..].to_vec())
                                         };
                                     }
                                 }
                             }
                             l.push(Token::AsciiZ(md));
-                            if comment.is_empty() {
-                                State::Remainder(true)
-                            } else {
-                                State::Comment(comment)
+                            if !comment.is_empty() {
+                                l.push(Token::Comment(comment));
                             }
+                            State::Remainder(true)
                         } else {
                             match token_to_val_or_label(
                                 token, &mut op, &mut ret, is_word, line_num, &line,
@@ -899,7 +903,15 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                             val.push('"');
                             continue;
                         }
-                        val.push(char::from(v));
+                        if v == b'\n' {
+                            val.write_str("\\n")?;
+                        } else if v == b'\r' {
+                            val.write_str("\\r")?;
+                        } else if v == b'\t' {
+                            val.write_str("\\t")?;
+                        } else {
+                            val.push(char::from(v));
+                        }
 
                         write!(byte_dump, " {v:02X}").unwrap();
                     }
