@@ -209,7 +209,7 @@ bad_assemble_test!(
   CPUType::NMOS
   bad_opcode_label: BadAssembleTest{
       asm: "bad_opcode_label.asm",
-      error: "invalid reference label",
+      error: "invalid label or value",
   },
   CPUType::NMOS
   bad_org: BadAssembleTest{
