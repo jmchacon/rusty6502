@@ -227,6 +227,11 @@ bad_assemble_test!(
       error: "Label START was never defined",
   },
   CPUType::NMOS
+  bad_label3: BadAssembleTest{
+      asm: "bad_label3.asm",
+      error: " only comment after parsed tokens allowed",
+  },
+  CPUType::NMOS
   bad_opcode: BadAssembleTest{
       asm: "bad_opcode.asm",
       error: "opcode LDA doesn't support mode",
@@ -295,6 +300,21 @@ bad_assemble_test!(
   bad_word: BadAssembleTest{
     asm: "bad_word.asm",
     error: "invalid label or value",
+  },
+  CPUType::NMOS
+  bad_word2: BadAssembleTest{
+    asm: "bad_word2.asm",
+    error: " WORD, BYTE or ASCIIZ without value",
+  },
+  CPUType::NMOS
+  bad_word3: BadAssembleTest{
+    asm: "bad_byte.asm",
+    error: "invalid BYTE value not 8 bit",
+  },
+  CPUType::NMOS
+  bad_asciiz: BadAssembleTest{
+    asm: "bad_asciiz.asm",
+    error: "ASCIIZ must be of the form",
   },
   CPUType::NMOS
 );

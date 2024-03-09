@@ -141,7 +141,7 @@ impl fmt::Display for OpVal8 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             OpVal8::Label(s) => write!(f, "{s}"),
-            OpVal8::Val(tok) => write!(f, "{tok:#04X}"),
+            OpVal8::Val(tok) => write!(f, "{tok:#02X}"),
         }
     }
 }
@@ -306,7 +306,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                     State::Remainder(false)
                 }
                 State::Word(mut md) | State::Byte(mut md) | State::AsciiZ(mut md) => {
-                    let (is_word, is_byte, is_asciiz) = match cur_state {
+                    let (is_word, _is_byte, is_asciiz) = match cur_state {
                         State::Word(_) => (true, false, false),
                         State::Byte(_) => (false, true, false),
                         State::AsciiZ(_) => (false, false, true),
@@ -323,12 +323,11 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                 line_num + 1
                             ));
                         }
+                        // ASCIIZ handles comments directly.
                         let tok = if is_word {
                             Token::Word(md)
-                        } else if is_byte {
-                            Token::Byte(md)
                         } else {
-                            Token::AsciiZ(md)
+                            Token::Byte(md)
                         };
                         l.push(tok);
                         // SAFETY: We know it has a prefix..
@@ -368,13 +367,9 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                 }
                                 idx += 1;
                             }
-                            if bytes[idx] != b'"' {
-                                return Err(eyre!(
-                                    "Error parsing line {}: ASCIIZ1 must be of the form \"XXX\" bad token '{:?}' - {line}", bytes[idx],
-                                    line_num + 1
-                                ));
-                            }
-                            // Now we're at the beginning of the 1st string.
+                            // We know the first thing after ASCIIZ was a proper string
+                            // begin (see the beginning of this block) so just move
+                            // idx over to account (no need to check).
                             let mut in_str = true;
                             idx += 1;
                             let mut comment = String::new();
@@ -433,9 +428,6 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                 }
                                 OpVal::Val(v) => match v {
                                     TokenVal::Val8(v) => {
-                                        if is_word {
-                                            return Err(eyre!("Error parsing line {}: invalid WORD value not 16 bit - {token} - {line}", line_num + 1));
-                                        }
                                         md.push(MemDef {
                                             pc: 0x0000,
                                             val: OpVal8::Val(v),
@@ -671,9 +663,6 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
             State::Byte(md) => {
                 l.push(Token::Byte(md));
             }
-            State::AsciiZ(md) => {
-                l.push(Token::AsciiZ(md));
-            }
             // Label and Org can happen if they define and then end the line
             // Label in particular would have to do this without the : form
             // as that's the only valid single label form.
@@ -684,7 +673,8 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 ));
             }
             // Anything else is an internal error which shouldn't be possible.
-            State::Equ(_) => {
+            // i.e. EQU and ASCIIZ handle all their parsing and can't fall off.
+            State::Equ(_) | State::AsciiZ(_) => {
                 panic!(
                     "Internal error parsing line {}: invalid state {state:?} - {line}",
                     line_num + 1
@@ -938,17 +928,12 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                             OpVal8::Val(v) => {
                                 let low = *v;
                                 let low_pc = m.pc;
-                                let Some(m) = it.next() else {
-                                    panic!(
-                                        "Impossible state. One byte followed by nothing for WORD"
-                                    );
+                                // SAFETY: Impossible state to have a word def with no values.
+                                let m = unsafe { it.next().unwrap_unchecked() };
+                                let OpVal8::Val(high) = m.val else {
+                                    panic!("Impossible state. One byte followed by label for WORD");
                                 };
-                                let high = match m.val {
-                                    OpVal8::Label(_) => panic!(
-                                        "Impossible state. One byte followed by label for WORD"
-                                    ),
-                                    OpVal8::Val(v) => v,
-                                };
+
                                 (low, high, low_pc, String::new())
                             }
                         };
@@ -1354,7 +1339,7 @@ fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
         [b'"', b'\\', b'n', b'"'] => ("\n", 10, true),
         [b'"', b'\\', b'r', b'"'] => ("\r", 10, true),
         [b'"', b'\\', b't', b'"'] => ("\t", 10, true),
-        [b'"', .., b'"'] => (&val[1..2], 10, true),
+        [b'"', _, b'"'] => (&val[1..2], 10, true),
         _ => (val, 10, false),
     };
 
