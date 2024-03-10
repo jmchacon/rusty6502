@@ -34,6 +34,13 @@ struct Args {
         help = "Number of bytes to emit"
     )]
     bytes: usize,
+
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Set to true to emit AST debugging"
+    )]
+    debug: bool,
 }
 
 #[allow(clippy::similar_names)]
@@ -66,7 +73,7 @@ fn main() -> Result<()> {
         args.start_loc,
         args.bytes
     );
-    match parse(cpu, lines, false) {
+    match parse(cpu, lines, args.debug) {
         Err(e) => Err(e),
         Ok(res) => {
             write(

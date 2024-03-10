@@ -146,7 +146,7 @@ macro_rules! bad_assemble_test {
                     let asm = parse(cpu, lines, true);
                     assert!(asm.is_err(), "Didn't get error for {}", a.asm);
                     let e = asm.err().unwrap();
-                    assert!(e.to_string().contains(a.error), "Missing error string {} for {e:?}", a.error);
+                    assert!(e.to_string().contains(a.error), "Missing error string '{}' for {e:?}", a.error);
                     println!("{e:?}");
                     Ok(())
                 }
@@ -204,12 +204,12 @@ bad_assemble_test!(
   CPUType::NMOS
   double_equ_ref: BadAssembleTest{
       asm: "double_equ_ref.asm",
-      error: "can't redefine EQU label",
+      error: "can't redefine location label",
   },
   CPUType::NMOS
   bad_opcode_label: BadAssembleTest{
       asm: "bad_opcode_label.asm",
-      error: "invalid opcode label",
+      error: "invalid label or value",
   },
   CPUType::NMOS
   bad_org: BadAssembleTest{
@@ -225,6 +225,11 @@ bad_assemble_test!(
   bad_label2: BadAssembleTest{
       asm: "bad_label2.asm",
       error: "Label START was never defined",
+  },
+  CPUType::NMOS
+  bad_label3: BadAssembleTest{
+      asm: "bad_label3.asm",
+      error: " only comment after parsed tokens allowed",
   },
   CPUType::NMOS
   bad_opcode: BadAssembleTest{
@@ -294,7 +299,22 @@ bad_assemble_test!(
   CPUType::CMOS
   bad_word: BadAssembleTest{
     asm: "bad_word.asm",
-    error: "invalid WORD value not 16 bit",
+    error: "invalid label or value",
+  },
+  CPUType::NMOS
+  bad_word2: BadAssembleTest{
+    asm: "bad_word2.asm",
+    error: " WORD, BYTE or ASCIIZ without value",
+  },
+  CPUType::NMOS
+  bad_word3: BadAssembleTest{
+    asm: "bad_byte.asm",
+    error: "invalid BYTE value not 8 bit",
+  },
+  CPUType::NMOS
+  bad_asciiz: BadAssembleTest{
+    asm: "bad_asciiz.asm",
+    error: "ASCIIZ must be of the form",
   },
   CPUType::NMOS
 );

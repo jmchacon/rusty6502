@@ -14,8 +14,8 @@ AR    equ 0x0C
 CF    equ 0x0D
 VF    equ 0x0E
 NF    equ 0x0F
-ZF    equ 0x10
-	
+ZF    = 0x10 ; Make sure both EQU forms work.
+
 ORG $C000
 	TEST    LDY #1    		; initialize Y (used to loop through carry flag values)
 	        STY ERROR 	; store 1 in ERROR until the test passes
@@ -29,7 +29,7 @@ ORG $C000
 	        AND #$F0  	; [2] see text
 	        STA N2H
 	        ORA #$0F  	; N2H+1 = (N2 & $F0) + $0F
-	        STA N2H+1	
+	        STA N2H+1
 	LOOP2   LDA N1    	; N1L = N1 & $0F
 	        AND #$0F  	; [3] see text
 	        STA N1L
