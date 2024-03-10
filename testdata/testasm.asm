@@ -19,4 +19,26 @@ END NOP
 BEQ *
 LABEL EQU 0x40
 BEQ LABEL
-BEQ $41
+FOO BEQ $41
+
+LBL:
+LBL2: ; Some comments
+  JMP LBL
+LBL3 JMP LBL3
+LDA #"H"
+LDA #"\n"
+LDA #"\r"
+LDA #"\t"
+
+WORD "I" "A" "M" ZP
+WORD 0xAA55 ;Some comments
+BYTE "H" 0x55 %00000001 ZP
+
+BLABEL .byte "A" END "B"  BLABEL ; Comments
+ALABEL ASciiZ   "This is a string" "Another""one"
+CL .asciiz "More\n" ; Some comments
+
+LDA ALABEL
+
+.org $FFFC
+RESET .word END

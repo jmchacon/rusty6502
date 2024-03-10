@@ -13,6 +13,37 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 use std::{fs::File, io::Lines};
 
+// Basic grammer:
+//
+// <u8> - 0-255 expressed as decimal (default), hex ($ or 0x), binary (%), or a single char as "X".
+//        NOTE: Characters can be expressed as \X for newline (\n), CR (\r) and Tab (\t). Anything else
+//              just set the direct 8 bit value...
+// <u16> - 0-65534 expressed as decimal (default), hex ($ or 0x), or binary (%).
+// <Val16> - <LABEL>|u16 - A label ref or a u16 value.
+// <Val8> - <LABEL>|u8 - A label ref (which must be u8) or a u8 value.
+// <Val> - <LABEL>|u8|u16 - A label ref, a u8, or a u16 value.
+// STRING - An ASCII string surrounded by quotes - "STRING".
+// <LABEL> - A string of the form /^[a-zA-Z][a-zA-Z0-9+-_]+$/ or '*' which always
+//           refers to the current PC location.
+//           TODO(jchacon) - Remove + and implement real addition, subtraction, or/and/etc support.
+//
+// All entries below implicitly take comments after though as defined comments can also be standalone.
+//
+// ORG|.ORG <u16> - Reset the PC location to the u16 value
+// LABEL <EQU|=> <u8|u16> - A label followed by equality setting the label to the indicated value.
+// [<LABEL>]: - A single line label defining a location with no other data.
+// [<LABEL>] WORD|.WORD <Val16> [<Val16> ...] - One or more u16 values with an optional
+//                                        label defining the location.
+// [<LABEL>] BYTE|.BYTE <Val8>|STRING [<Val8>|STRING ...] - One or more u8/string values
+//                                                    with an optional label defining the location.
+//                                                    Strings are automatically expanded but not NUL
+//                                                    terminated (use ASCIIZ for that).
+// [<LABEL>] ASCIIZ|.ASCIIZ STRING - An ASCII string that automatically appends a NUL on expansion.
+// [<LABEL>] OPCODE [<Val>|] - A valid 6502 opcode with an optional label defining
+//                             the location. Val validity for size depends on opcode.
+//                             i.e. JMP must be a u16 while branch/immediate modes are u8.
+// ; <ascii>... - A comment.
+
 #[cfg(test)]
 mod tests;
 
@@ -26,16 +57,24 @@ mod tests;
 //      |-> Word -> Remainder -> Begin|Comment
 //      |-> Op -> Remainder -> Begin|Comment
 //      |-> Comment -> Begin
-#[derive(PartialEq, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum State {
     Begin,
-    Label(String),
+    Label(String, bool),
     Equ(String),
     Org,
-    Word,
+    Word(Vec<MemDef>),
+    Byte(Vec<MemDef>),
+    AsciiZ(Vec<MemDef>),
     Op(Opcode),
     Comment(String),
-    Remainder,
+    Remainder(bool),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct MemDef {
+    val: OpVal8,
+    pc: u16,
 }
 
 // Token defines an entry on a given line post tokenizing.
@@ -46,7 +85,9 @@ enum State {
 enum Token {
     Label(String),
     Org(u16),
-    Word(u16, u16),
+    Word(Vec<MemDef>),
+    Byte(Vec<MemDef>),
+    AsciiZ(Vec<MemDef>),
     Op(Operation),
     Comment(String),
     Equ(String),
@@ -84,6 +125,23 @@ impl fmt::Display for OpVal {
                 TokenVal::Val8(v) => write!(f, "{v:#04X}"),
                 TokenVal::Val16(v) => write!(f, "{v:#06X}"),
             },
+        }
+    }
+}
+
+// OpVal8 is similar to an OpVal but is constrained to an 8 bit value only.
+// Mostly used with WORD/BYTE to emit a series of values or label values.
+#[derive(Clone, Debug, PartialEq)]
+enum OpVal8 {
+    Label(String),
+    Val(u8),
+}
+
+impl fmt::Display for OpVal8 {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            OpVal8::Label(s) => write!(f, "{s}"),
+            OpVal8::Val(tok) => write!(f, "{tok:#02X}"),
         }
     }
 }
@@ -142,20 +200,29 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
         for (index, token) in fields.iter().enumerate() {
             let upper = token.to_uppercase();
 
+            let cur_state = state.clone();
             state = match state {
-                State::Begin => match upper.as_bytes() {
-                    // We can match an ORG or comment here directly.
-                    [b'O', b'R', b'G', ..] => State::Org,
-                    [b'W', b'O', b'R', b'D', ..] => State::Word,
-                    [b';', ..] => State::Comment(token[1..].into()),
-                    // Anything else is either an opcode or a label to be fleshed
+                State::Begin => match upper.as_str() {
+                    // We can match an ORG, WORD or comment here directly.
+                    "ORG" | ".ORG" => State::Org,
+                    "WORD" | ".WORD" => State::Word(vec![]),
+                    "BYTE" | ".BYTE" => State::Byte(vec![]),
+                    "ASCIIZ" | ".ASCIIZ" => State::AsciiZ(vec![]),
+                    // Anything else is either a comment, opcode or a label to be fleshed
                     // out in a later state.
                     _ => {
-                        if let Ok(op) = Opcode::from_str(token) {
+                        if upper.starts_with(';') {
+                            State::Comment(token[1..].into())
+                        } else if let Ok(op) = Opcode::from_str(token) {
                             State::Op(op)
                         } else {
+                            let (token, single) = if token.ends_with(':') {
+                                (&token[0..token.len() - 1], true)
+                            } else {
+                                (*token, false)
+                            };
                             match parse_label(token) {
-                                Ok(label) => State::Label(label),
+                                Ok(label) => State::Label(label, single),
                                 Err(err) => {
                                     return Err(eyre!(
                                         "Error parsing line {}: invalid label {err} - {line}",
@@ -166,53 +233,65 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         }
                     }
                 },
-                State::Label(label) => {
-                    match upper.as_str() {
-                        // Labels can be EQU style in which case we need one more state to get
-                        // the value.
-                        "EQU" => {
-                            if fields.len() < 3 {
-                                return Err(eyre!(
-                                    "Error parsing line {}: invalid EQU - {line}",
-                                    line_num + 1
-                                ));
-                            }
-                            // Don't have to validate label since State::Begin did it above before
-                            // progressing here.
-                            State::Equ(label)
+                State::Label(label, single) => {
+                    if single {
+                        // The only way we get here is if there are more tokens
+                        // which pretty much can only be a comment. So add the label
+                        // token and move to that state.
+                        if !token.starts_with(';') {
+                            return Err(eyre!("Error parsing line {}: only comment after parsed tokens allowed - remainder {token} - {line}", line_num + 1));
                         }
-                        // Otherwise this should be an opcode and we can push a label
-                        // into tokens. Phase 2 will figure out its value.
-                        _ => match Opcode::from_str(upper.as_str()) {
-                            Ok(op) => {
-                                if let Some(ld) = ret.labels.get_mut(&label) {
-                                    // Could be a reference created this so there's no line number. If there is one this is a duplicate.
-                                    if ld.line != 0 {
-                                        return Err(eyre!("Error parsing line {}: can't redefine location label {label}. Already defined at line {} - {line}", line_num+1, ld.line));
-                                    }
-                                    ld.line = line_num + 1;
-                                } else {
-                                    // Don't have to validate label since State::Begin did it above before
-                                    // progressing here.
-                                    ret.labels.insert(
-                                        label.clone(),
-                                        LabelDef {
-                                            val: None,
-                                            line: line_num + 1,
-                                            refs: Vec::new(),
-                                        },
-                                    );
+
+                        add_label(true, &mut ret, &label, None, &line, line_num)?;
+                        l.push(Token::Label(label));
+                        State::Comment(token[1..].into())
+                    } else {
+                        match upper.as_str() {
+                            // Labels can be EQU style in which case we need one more state to get
+                            // the value.
+                            "EQU" | "=" => {
+                                if fields.len() < 3 {
+                                    return Err(eyre!(
+                                        "Error parsing line {}: invalid EQU - {line}",
+                                        line_num + 1
+                                    ));
                                 }
+                                // Don't have to validate label since State::Begin did it above before
+                                // progressing here.
+                                State::Equ(label)
+                            }
+                            "WORD" | ".WORD" => {
+                                add_label(true, &mut ret, &label, None, &line, line_num)?;
                                 l.push(Token::Label(label));
-                                State::Op(op)
+                                State::Word(vec![])
                             }
-                            Err(_) => {
-                                return Err(eyre!(
-                                    "Error parsing line {}: invalid opcode - {line}",
-                                    line_num + 1
-                                ));
+                            "BYTE" | ".BYTE" => {
+                                add_label(true, &mut ret, &label, None, &line, line_num)?;
+                                l.push(Token::Label(label));
+                                State::Byte(vec![])
                             }
-                        },
+                            "ASCIIZ" | ".ASCIIZ" => {
+                                add_label(true, &mut ret, &label, None, &line, line_num)?;
+                                l.push(Token::Label(label));
+                                State::AsciiZ(vec![])
+                            }
+
+                            // Otherwise this should be an opcode and we can push a label
+                            // into tokens. Phase 2 will figure out its value.
+                            _ => match Opcode::from_str(upper.as_str()) {
+                                Ok(op) => {
+                                    add_label(true, &mut ret, &label, None, &line, line_num)?;
+                                    l.push(Token::Label(label));
+                                    State::Op(op)
+                                }
+                                Err(_) => {
+                                    return Err(eyre!(
+                                        "Error parsing line {}: invalid opcode - {line}",
+                                        line_num + 1
+                                    ));
+                                }
+                            },
+                        }
                     }
                 }
                 // An ORG statement must be followed by a u16 value.
@@ -224,32 +303,184 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             ));
                     };
                     l.push(Token::Org(pc));
-                    State::Remainder
+                    State::Remainder(false)
                 }
-                // A WORD statement must be followed by a u16 value.
-                State::Word => {
-                    let Some(TokenVal::Val16(pc)) = parse_val(token, true) else {
-                        return Err(eyre!(
-                                "Error parsing line {}: invalid WORD value not 16 bit - {token} - {line}",
-                                line_num + 1,
-                            ));
+                State::Word(mut md) | State::Byte(mut md) | State::AsciiZ(mut md) => {
+                    let (is_word, _is_byte, is_asciiz) = match cur_state {
+                        State::Word(_) => (true, false, false),
+                        State::Byte(_) => (false, true, false),
+                        State::AsciiZ(_) => (false, false, true),
+                        _ => panic!("impossible"),
                     };
-                    l.push(Token::Word(0x0000, pc));
-                    State::Remainder
+                    // This is a tiny bit more complicated because we handle both sets of logic (word vs byte) but 90%+ of that
+                    // is the same so this avoids duplicating a bunch of code.
+                    // We may have tokens left which is a comment so check for that and move to that phase.
+                    if token.starts_with(';') {
+                        if md.is_empty() {
+                            // Account for '<WORD|BYTE|ASCIIZ> ; some comments'
+                            return Err(eyre!(
+                                "Error parsing line {}: WORD, BYTE or ASCIIZ without value - {line}",
+                                line_num + 1
+                            ));
+                        }
+                        // ASCIIZ handles comments directly.
+                        let tok = if is_word {
+                            Token::Word(md)
+                        } else {
+                            Token::Byte(md)
+                        };
+                        l.push(tok);
+                        // SAFETY: We know it has a prefix..
+                        let c = unsafe { token.strip_prefix(';').unwrap_unchecked() };
+                        State::Comment(c.into())
+                    } else {
+                        // Just something not implied so it doesn't care about the rest.
+                        // TODO(jchacon): Do this better. This is so leaky...
+                        let mut op = Operation {
+                            mode: AddressMode::Immediate,
+                            ..Default::default()
+                        };
+
+                        if is_asciiz {
+                            // This gets a little harder. We'll start with a token that has
+                            // to start with a quote. But...it could have whitespace inside
+                            // of it so we really have to parse the rest of the line here.
+                            if !token.starts_with('"') {
+                                return Err(eyre!(
+                                    "Error parsing line {}: ASCIIZ must be of the form \"XXX\" bad token '{token}' - {line}",
+                                    line_num + 1
+                                ));
+                            }
+
+                            // Un-escape the special 3 chars.
+                            let st = line
+                                .replace("\\n", "\n")
+                                .replace("\\r", "\r")
+                                .replace("\\t", "\t");
+                            let lstr = st.as_str();
+                            // SAFETY: We know this contains ASCIIZ or else we
+                            //         can't get to this state. And it must have
+                            //         a whitespace char after that due to the initial match from Begin.
+                            let mut idx =
+                                unsafe { lstr.to_uppercase().find("ASCIIZ").unwrap_unchecked() }
+                                    + "ASCIIZ".len();
+                            let start = idx;
+                            let bytes = lstr.as_bytes();
+                            for i in bytes.iter().skip(start) {
+                                if !i.is_ascii_whitespace() {
+                                    break;
+                                }
+                                idx += 1;
+                            }
+                            // We know the first thing after ASCIIZ was a proper string
+                            // begin (see the beginning of this block) so just move
+                            // idx over to account (no need to check).
+                            let mut in_str = true;
+                            idx += 1;
+                            let mut comment = String::new();
+
+                            for i in bytes.iter().skip(idx) {
+                                idx += 1;
+                                if in_str {
+                                    if *i == b'"' {
+                                        in_str = false;
+                                        // Add the automatic trailing NUL
+                                        md.push(MemDef {
+                                            pc: 0x0000,
+                                            val: OpVal8::Val(0x00),
+                                        });
+                                    } else {
+                                        md.push(MemDef {
+                                            pc: 0x0000,
+                                            val: OpVal8::Val(*i),
+                                        });
+                                    }
+                                } else {
+                                    if *i == b'"' {
+                                        in_str = true;
+                                    }
+                                    if *i == b';' {
+                                        // Comment so we're done.
+
+                                        // SAFETY: We never changed this so it's a valid utf8 string still from
+                                        // here forward.
+                                        comment = unsafe {
+                                            String::from_utf8_unchecked(bytes[idx - 1..].to_vec())
+                                        };
+                                    }
+                                }
+                            }
+                            l.push(Token::AsciiZ(md));
+                            if !comment.is_empty() {
+                                l.push(Token::Comment(comment));
+                            }
+                            State::Remainder(true)
+                        } else {
+                            match token_to_val_or_label(
+                                token, &mut op, &mut ret, is_word, line_num, &line,
+                            )? {
+                                OpVal::Label(l) => {
+                                    md.push(MemDef {
+                                        pc: 0x0000,
+                                        val: OpVal8::Label(l),
+                                    });
+                                    if is_word {
+                                        State::Word(md)
+                                    } else {
+                                        State::Byte(md)
+                                    }
+                                }
+                                OpVal::Val(v) => match v {
+                                    TokenVal::Val8(v) => {
+                                        md.push(MemDef {
+                                            pc: 0x0000,
+                                            val: OpVal8::Val(v),
+                                        });
+                                        State::Byte(md)
+                                    }
+                                    TokenVal::Val16(v) => {
+                                        if !is_word {
+                                            return Err(eyre!("Error parsing line {}: invalid BYTE value not 8 bit - {token} - {line}", line_num + 1));
+                                        }
+                                        // Even though we must parse as a u16 we store this in little endian
+                                        // form so we can emit straight into memory. Plus we don't need
+                                        // a separate form for Byte.
+                                        let high = ((v & 0xFF00) >> 8) as u8;
+                                        let low = (v & 0x00FF) as u8;
+                                        md.push(MemDef {
+                                            pc: 0x0000,
+                                            val: OpVal8::Val(low),
+                                        });
+                                        md.push(MemDef {
+                                            pc: 0x0000,
+                                            val: OpVal8::Val(high),
+                                        });
+                                        State::Word(md)
+                                    }
+                                },
+                            }
+                        }
+                    }
                 }
                 // Remainder is an intermediate state after we've processed something.
                 // At this point we can only define a comment and move to that stage.
                 // If instead this ran out of tokens in fields the loop would end and the
                 // next line starts at Begin automatically.
-                State::Remainder => match token.as_bytes() {
-                    [b';', ..] => State::Comment(token[1..].into()),
-                    _ => {
-                        return Err(eyre!(
+                State::Remainder(line_done) => {
+                    if line_done {
+                        State::Remainder(line_done)
+                    } else {
+                        match token.as_bytes() {
+                            [b';', ..] => State::Comment(token[1..].into()),
+                            _ => {
+                                return Err(eyre!(
                             "Error parsing line {}: only comment after parsed tokens allowed - remainder {token} - {line}",
                             line_num + 1,
                         ));
+                            }
+                        }
                     }
-                },
+                }
                 // For comments take everything left, construct a comment and then abort the loop now.
                 State::Comment(c) => {
                     let mut comment: String = ";".into();
@@ -272,27 +503,9 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             ));
                         }
                     };
-                    if let Some(ld) = ret.labels.get_mut(&label) {
-                        // Could be a reference created this so there's no line number. If there is one this is a duplicate.
-                        if ld.line != 0 {
-                            return Err(eyre!("Error parsing line {}: can't redefine EQU label {label}. Already defined at line {} - {line}", line_num+1, ld.line));
-                        }
-                        ld.val = Some(val);
-                        ld.line = line_num + 1;
-                    } else {
-                        // Don't have to validate label since State::Begin did it above before
-                        // progressing here.
-                        ret.labels.insert(
-                            label.clone(),
-                            LabelDef {
-                                val: Some(val),
-                                line: line_num + 1,
-                                refs: Vec::new(),
-                            },
-                        );
-                    }
+                    add_label(true, &mut ret, &label, Some(val), &line, line_num)?;
                     l.push(Token::Equ(label));
-                    State::Remainder
+                    State::Remainder(false)
                 }
                 State::Op(op) => {
                     // Start all address modes with implied. If we can figure
@@ -334,6 +547,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             parts[1],
                             &mut operation,
                             &mut ret,
+                            false,
                             line_num,
                             &line,
                         )?;
@@ -341,13 +555,14 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             parts[2],
                             &mut operation,
                             &mut ret,
+                            false,
                             line_num,
                             &line,
                         )?;
                         operation.op_val =
                             Some(vec![OpVal::Val(TokenVal::Val8(pre)), zpaddr, dest]);
                         l.push(Token::Op(operation));
-                        State::Remainder
+                        State::Remainder(false)
                     } else {
                         if cpu
                             .resolve_opcode(&operation.op, &AddressMode::Relative)
@@ -403,15 +618,20 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                             op_val,
                             &mut operation,
                             &mut ret,
+                            false,
                             line_num,
                             &line,
                         )?]);
                         l.push(Token::Op(operation));
-                        State::Remainder
+                        State::Remainder(false)
                     }
                 }
             };
         }
+
+        // At this point we've run out of tokens and are in some final state.
+        // Some are valid and some are not:
+        //
         // Handle the case of a line of ";". i.e. nothing trailing the ; so we don't loop around
         // to process the Comment state. Properly processing would have left us in Begin instead.
         // It may also be a single token opcode such as SEI which has no operand value/label.
@@ -426,17 +646,39 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 mode: AddressMode::Implied,
                 ..Default::default()
             })),
+            State::Label(label, true) => {
+                // Handle
+                //
+                // LABEL:
+                //
+                // Correctly by directly adding the label now. The loop above
+                // can only handle
+                //
+                // LABEL: ; Some comments
+                add_label(true, &mut ret, &label, None, &line, line_num)?;
+                l.push(Token::Label(label));
+            }
             // These are valid states to exit so we can ignore them.
-            State::Begin | State::Remainder => {}
+            State::Begin | State::Remainder(_) => {}
+            // Word gets here if we processed and then ended without a comment
+            State::Word(md) => {
+                l.push(Token::Word(md));
+            }
+            State::Byte(md) => {
+                l.push(Token::Byte(md));
+            }
             // Label and Org can happen if they define and then end the line
-            State::Label(_) | State::Org | State::Word => {
+            // Label in particular would have to do this without the : form
+            // as that's the only valid single label form.
+            State::Label(_, false) | State::Org => {
                 return Err(eyre!(
                     "Error parsing line {}: missing data for {state:?} - {line}",
                     line_num + 1,
                 ));
             }
             // Anything else is an internal error which shouldn't be possible.
-            State::Equ(_) => {
+            // i.e. EQU and ASCIIZ handle all their parsing and can't fall off.
+            State::Equ(_) | State::AsciiZ(_) => {
                 panic!(
                     "Internal error parsing line {}: invalid state {state:?} - {line}",
                     line_num + 1
@@ -457,7 +699,6 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
 fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
     let mut pc: u16 = 0;
     for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
-        #[allow(clippy::explicit_iter_loop)] // false negative
         for t in line.iter_mut() {
             match t {
                 Token::Label(s) => {
@@ -467,8 +708,11 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                 Token::Org(npc) => {
                     pc = *npc;
                 }
-                Token::Word(wpc, _) => {
-                    *wpc = pc;
+                Token::Word(md) | Token::Byte(md) | Token::AsciiZ(md) => {
+                    for m in md.iter_mut() {
+                        m.pc = pc;
+                        pc += 1;
+                    }
                 }
                 Token::Equ(_) | Token::Comment(_) => {}
                 Token::Op(o) => {
@@ -640,19 +884,122 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                 Token::Org(pc) => {
                     write!(output, "ORG           {pc:04X}").unwrap();
                 }
-                Token::Word(pc, val) => {
-                    let low = *val & 0x00FF;
-                    let high = (*val & 0xFF00) >> 8;
+                Token::AsciiZ(md) => {
+                    let mut post_bytes = format!("{label_out:<8}ASCIIZ ");
+                    let mut byte_dump = format!("{:04X}", md[0].pc);
+                    // Starts with a "
+                    let mut val = String::from("\"");
+                    for m in md {
+                        let OpVal8::Val(v) = m.val else {
+                            panic!("Impossible ASCIIZ state!");
+                        };
+                        res.bin[usize::from(m.pc)] = v;
 
-                    write!(output, "{pc:04X}: {low:02X} {high:02X}").unwrap();
-                    res.bin[usize::from(*pc)] = low as u8;
-                    res.bin[usize::from(*pc + 1)] = high as u8;
+                        // End of string so process it.
+                        if v == 0x00 {
+                            write!(byte_dump, " 00").unwrap();
+                            write!(post_bytes, " {val}\"").unwrap();
+                            val.clear();
+                            val.push('"');
+                            continue;
+                        }
+                        if v == b'\n' {
+                            val.write_str("\\n")?;
+                        } else if v == b'\r' {
+                            val.write_str("\\r")?;
+                        } else if v == b'\t' {
+                            val.write_str("\\t")?;
+                        } else {
+                            val.push(char::from(v));
+                        }
+
+                        write!(byte_dump, " {v:02X}").unwrap();
+                    }
+                    write!(output, "{byte_dump} {post_bytes}").unwrap();
+                    label_out.clear();
+                }
+                Token::Word(md) => {
+                    let mut post_bytes = format!("{label_out:<8}WORD   ");
+                    let mut byte_dump = format!("{:04X}", md[0].pc);
+                    let mut it = md.iter();
+                    while let Some(m) = it.next() {
+                        let (low, high, pc, lbl) = match &m.val {
+                            OpVal8::Label(l) => {
+                                // SAFETY: WORD is defined always per above parsing.
+                                match unsafe {
+                                    get_label(&ast_output.labels, l).val.unwrap_unchecked()
+                                } {
+                                    TokenVal::Val8(v) => (v, 0x00, m.pc, l.clone()),
+                                    TokenVal::Val16(v) => {
+                                        let low = (v & 0x00FF) as u8;
+                                        let high = ((v & 0xFF00) >> 8) as u8;
+                                        (low, high, m.pc, l.clone())
+                                    }
+                                }
+                            }
+                            OpVal8::Val(v) => {
+                                let low = *v;
+                                let low_pc = m.pc;
+                                // SAFETY: Impossible state to have a word def with no values.
+                                let m = unsafe { it.next().unwrap_unchecked() };
+                                let OpVal8::Val(high) = m.val else {
+                                    panic!("Impossible state. One byte followed by label for WORD");
+                                };
+
+                                (low, high, low_pc, String::new())
+                            }
+                        };
+                        if lbl.is_empty() {
+                            let val = u16::from(high) << 8 | u16::from(low);
+                            write!(post_bytes, " {val:04X}").unwrap();
+                        } else {
+                            write!(post_bytes, " {lbl}").unwrap();
+                        }
+                        write!(byte_dump, " {low:02X} {high:02X}").unwrap();
+                        res.bin[usize::from(pc)] = low;
+                        res.bin[usize::from(pc + 1)] = high;
+                    }
+                    write!(output, "{byte_dump} {post_bytes}").unwrap();
+                    label_out.clear();
+                }
+                Token::Byte(md) => {
+                    let mut post_bytes = format!("{label_out:<8}BYTE   ");
+                    let mut byte_dump = format!("{:04X}", md[0].pc);
+                    for m in md {
+                        let (val, lbl) = match &m.val {
+                            OpVal8::Label(l) => {
+                                // SAFETY: BYTTE is defined always per above parsing.
+                                match unsafe {
+                                    get_label(&ast_output.labels, l).val.unwrap_unchecked()
+                                } {
+                                    TokenVal::Val8(v) => (vec![v], l.clone()),
+                                    TokenVal::Val16(v) => {
+                                        let low = (v & 0x00FF) as u8;
+                                        let high = ((v & 0xFF00) >> 8) as u8;
+                                        (vec![low, high], l.clone())
+                                    }
+                                }
+                            }
+                            OpVal8::Val(v) => (vec![*v], String::new()),
+                        };
+                        if lbl.is_empty() {
+                            write!(post_bytes, " {:02X}", val[0]).unwrap();
+                            write!(byte_dump, " {:02X}", val[0]).unwrap();
+                            res.bin[usize::from(m.pc)] = val[0];
+                        } else {
+                            write!(post_bytes, " {lbl}").unwrap();
+                            for (p, v) in val.iter().enumerate() {
+                                write!(byte_dump, " {v:02X}").unwrap();
+                                res.bin[usize::from(m.pc) + p] = *v;
+                            }
+                        }
+                    }
+                    write!(output, "{byte_dump} {post_bytes}").unwrap();
+                    label_out.clear();
                 }
                 Token::Equ(td) => {
-                    let val: TokenVal;
                     // SAFETY: EQU is defined always per above parsing.
-                    unsafe { val = get_label(&ast_output.labels, td).val.unwrap_unchecked() }
-                    match val {
+                    match unsafe { get_label(&ast_output.labels, td).val.unwrap_unchecked() } {
                         TokenVal::Val8(v) => {
                             write!(output, "{td:<13} EQU      {v:02X}").unwrap();
                         }
@@ -662,6 +1009,20 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                     };
                 }
                 Token::Comment(c) => {
+                    // If we get here with a non-empty label_out it means this
+                    // was a single entry so print it.
+                    if !label_out.is_empty() {
+                        let lbl = String::from(label_out.as_str().trim_end());
+                        // SAFETY: We just checked labels above has everything referenced and filled in.
+                        let ld =
+                            unsafe { get_label(&ast_output.labels, &lbl).val.unwrap_unchecked() };
+
+                        let TokenVal::Val16(v) = ld else {
+                            panic!("Single line label must be a PC value!");
+                        };
+                        write!(output, "{v:04X}          {label_out}").unwrap();
+                        label_out.clear();
+                    }
                     if index != 0 {
                         write!(output, " ").unwrap();
                     }
@@ -871,6 +1232,7 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                                 }
                             }
                         };
+                        label_out.clear();
                     } else {
                         write!(
                             output,
@@ -878,9 +1240,22 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                             o.pc, modes[0], o.op
                         )
                         .unwrap();
+                        label_out.clear();
                     }
                 }
             }
+        }
+
+        if !label_out.is_empty() {
+            let lbl = String::from(label_out.as_str().trim_end());
+            // SAFETY: We just checked labels above has everything referenced and filled in.
+            let ld = unsafe { get_label(&ast_output.labels, &lbl).val.unwrap_unchecked() };
+
+            let TokenVal::Val16(v) = ld else {
+                panic!("Single line label must be a PC value!");
+            };
+            write!(output, "{v:04X}          {label_out}").unwrap();
+            label_out.clear();
         }
         // If this was a blank line that also auto-parses for output purposes.
         writeln!(res.listing, "{output}").unwrap();
@@ -911,6 +1286,7 @@ pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Resul
     // Verify all the labels defined got values (EQU and location definitions/references line up)
     let mut errors = String::new();
     for (l, ld) in &ast_output.labels {
+        //        println!("{l} -> {ld:?}");
         let locs = ld
             .refs
             .iter()
@@ -962,20 +1338,35 @@ fn get_label_mut<'a>(hm: &'a mut HashMap<String, LabelDef>, label: &String) -> &
 
 // parse_val returns a parsed TokenVal8/16 or nothing. Set is_u16 to force returning a Val16 always
 // if a value would parse.
+// Also handles the case of "X" (i.e. explicit string surrounding a char).
+// This will handle \n, \r and \t but any other escapes should just use direct values.
 fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
-    let (trimmed, base) = match val.as_bytes() {
+    let (trimmed, base, string_val) = match val.as_bytes() {
         // Remove any possibly leading 0x or $. If we did this is also base 16
         // Can index back into val without worry about utf8 since we only matched
         // ascii chars here.
-        [b'0', b'x', ..] => (&val[2..], 16),
-        [b'$', ..] => (&val[1..], 16),
-        [b'%', ..] => (&val[1..], 2),
-        _ => (val, 10),
+        [b'0', b'x', ..] => (&val[2..], 16, false),
+        [b'$', ..] => (&val[1..], 16, false),
+        [b'%', ..] => (&val[1..], 2, false),
+        [b'"', b'\\', b'n', b'"'] => ("\n", 10, true),
+        [b'"', b'\\', b'r', b'"'] => ("\r", 10, true),
+        [b'"', b'\\', b't', b'"'] => ("\t", 10, true),
+        [b'"', _, b'"'] => (&val[1..2], 10, true),
+        _ => (val, 10, false),
     };
 
     // If nothing was left we're done with no value.
     if trimmed.is_empty() {
         return None;
+    }
+
+    if string_val {
+        let v = trimmed.as_bytes()[0];
+        if is_u16 {
+            #[allow(clippy::cast_lossless)]
+            return Some(TokenVal::Val16(v as u16));
+        }
+        return Some(TokenVal::Val8(v));
     }
 
     if let Ok(v) = usize::from_str_radix(trimmed, base) {
@@ -1053,10 +1444,11 @@ fn token_to_val_or_label(
     val: &str,
     operation: &mut Operation,
     ret: &mut ASTOutput,
+    is_16: bool,
     line_num: usize,
     line: &str,
 ) -> Result<OpVal> {
-    let x = match parse_val(val, false) {
+    let x = match parse_val(val, is_16) {
         Some(v) => {
             if operation.mode == AddressMode::Implied {
                 operation.mode = find_mode(v, operation);
@@ -1065,29 +1457,70 @@ fn token_to_val_or_label(
         }
         None => match parse_label(val) {
             Ok(label) => {
-                if let Some(ld) = ret.labels.get_mut(&label) {
-                    ld.refs.push(line_num + 1);
-                } else {
-                    // If this is the first mention of this label we'll have to create a placeholder
-                    // definition.
-                    ret.labels.insert(
-                        label.clone(),
-                        LabelDef {
-                            val: None,
-                            line: 0,
-                            refs: vec![line_num + 1],
-                        },
-                    );
-                }
+                add_label(false, ret, &label, None, line, line_num)?;
                 OpVal::Label(label)
             }
             Err(err) => {
                 return Err(eyre!(
-                    "Error parsing line {}: invalid opcode label for zpaddr {err} - {line}",
+                    "Error parsing line {}: invalid label or value {err} - {line}",
                     line_num + 1,
                 ));
             }
         },
     };
     Ok(x)
+}
+
+// add_label does all the heavy lifting for either updating a label ref or
+// defining a brand new one. As we can get labels in a few forms:
+//
+// LABEL OP .. - definition
+// LABEL EQU X - definition
+// OP LABEL - reference
+//
+// Handling all of these needs a few options. Opcode parsing (references) should
+// set label_def to false. Always pass a value in if known.
+fn add_label(
+    label_def: bool,
+    ret: &mut ASTOutput,
+    label: &String,
+    val: Option<TokenVal>,
+    line: &str,
+    line_num: usize,
+) -> Result<()> {
+    if let Some(ld) = ret.labels.get_mut(label) {
+        // Could be a reference created this so there's no line number. If there is one this is a duplicate.
+        if label_def {
+            if ld.line != 0 {
+                return Err(eyre!("Error parsing line {}: can't redefine location label {label}. Already defined at line {} - {line}", line_num+1, ld.line));
+            }
+            ld.val = val;
+            ld.line = line_num + 1;
+        } else {
+            ld.refs.push(line_num + 1);
+        }
+    } else {
+        // Defining a new label means no references yet. Anything else is ref
+        // placeholder so include this line as a starting ref.
+        let refs = if label_def {
+            Vec::new()
+        } else {
+            vec![line_num + 1]
+        };
+        // Same for line number. If this is a definition this is the line we
+        // record. References leave this blank for later updates (above).
+        let l = if label_def {
+            line_num + 1
+        } else {
+            //  If this is the first mention of this label we'll have to create a placeholder
+            // definition.
+            0
+        };
+
+        // Don't have to validate label since already did it above before
+        // progressing here.
+        ret.labels
+            .insert(label.clone(), LabelDef { val, line: l, refs });
+    }
+    Ok(())
 }
