@@ -709,10 +709,17 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                     pc = *npc;
                 }
                 Token::Word(md) | Token::Byte(md) | Token::AsciiZ(md) => {
+                    println!("Start pc for {md:?}");
                     for m in md.iter_mut() {
                         m.pc = pc;
-                        pc += 1;
+                        // If this is a label ref this is always a 2 byte jump.
+                        if let OpVal8::Label(_) = m.val {
+                            pc += 2;
+                        } else {
+                            pc += 1;
+                        }
                     }
+                    println!("End pc for {md:?}");
                 }
                 Token::Equ(_) | Token::Comment(_) => {}
                 Token::Op(o) => {
