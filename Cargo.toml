@@ -72,7 +72,7 @@ c64basic = { path = "./c64basic", version = "~0.1" }
 chip = { path = "./chip", version = "~0.1" }
 clap = { version = "~4.0", features = ["derive", "wrap_help"] }
 clap-num = "1.1.1"
-color-eyre = { version = "0.6.2", default-features = false }
+color-eyre = { version = "0.6.3", default-features = false }
 cpu_proc_macros = { path = "./cpu_proc_macros", version = "~0.1" }
 eframe = "0.26.0"
 egui = "0.26.0"
@@ -94,9 +94,9 @@ serde_json = "1.0.114"
 strum_macros = "0.24.1"
 strum = "0.24.1"
 tempfile = "3.10.1"
-thiserror = "1.0.57"
+thiserror = "1.0.58"
 
-proc-macro2 = "1.0.78"
+proc-macro2 = "1.0.79"
 quote = "1.0.35"
 syn = { version = "2.0.52", features = ["extra-traits", "full"] }
 
