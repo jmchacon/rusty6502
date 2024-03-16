@@ -249,7 +249,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         match upper.as_str() {
                             // Labels can be EQU style in which case we need one more state to get
                             // the value.
-                            "EQU" | "=" => {
+                            "EQU" | ".EQU" | "=" => {
                                 if fields.len() < 3 {
                                     return Err(eyre!(
                                         "Error parsing line {}: invalid EQU - {line}",
@@ -709,10 +709,17 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                     pc = *npc;
                 }
                 Token::Word(md) | Token::Byte(md) | Token::AsciiZ(md) => {
+                    println!("Start pc for {md:?}");
                     for m in md.iter_mut() {
                         m.pc = pc;
-                        pc += 1;
+                        // If this is a label ref this is always a 2 byte jump.
+                        if let OpVal8::Label(_) = m.val {
+                            pc += 2;
+                        } else {
+                            pc += 1;
+                        }
                     }
+                    println!("End pc for {md:?}");
                 }
                 Token::Equ(_) | Token::Comment(_) => {}
                 Token::Op(o) => {
@@ -1340,7 +1347,7 @@ fn get_label_mut<'a>(hm: &'a mut HashMap<String, LabelDef>, label: &String) -> &
 // if a value would parse.
 // Also handles the case of "X" (i.e. explicit string surrounding a char).
 // This will handle \n, \r and \t but any other escapes should just use direct values.
-fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
+fn parse_val(val: &str, mut is_u16: bool) -> Option<TokenVal> {
     let (trimmed, base, string_val) = match val.as_bytes() {
         // Remove any possibly leading 0x or $. If we did this is also base 16
         // Can index back into val without worry about utf8 since we only matched
@@ -1358,6 +1365,15 @@ fn parse_val(val: &str, is_u16: bool) -> Option<TokenVal> {
     // If nothing was left we're done with no value.
     if trimmed.is_empty() {
         return None;
+    }
+
+    // For non decimal we can know that someone setting
+    // 0x0004 means they want a 16 bit value. Same with large binary strings.
+    if base == 16 && trimmed.len() > 2 {
+        is_u16 = true;
+    }
+    if base == 2 && trimmed.len() > 8 {
+        is_u16 = true;
     }
 
     if string_val {
