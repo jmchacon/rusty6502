@@ -289,7 +289,7 @@ bad_assemble_test!(
   CPUType::CMOS
   bad_bbr2: BadAssembleTest{
     asm: "cmos-bbr2.asm",
-    error: "index too large"
+    error: "Invalid zero page relative (index 10 too large - greater than 7)",
   },
   CPUType::CMOS
   bad_word: BadAssembleTest{

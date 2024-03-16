@@ -83,6 +83,7 @@ struct MemDef {
 // rounds occur.
 #[derive(Debug)]
 enum Token {
+    Line(String),
     Label(String),
     Org(u16),
     Word(Vec<MemDef>),
@@ -193,7 +194,15 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
     for (line_num, line) in lines.map_while(Result::ok).enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
 
-        let mut l = Vec::<Token>::new();
+        // Always record a copy of the line unless it was a blank line
+        // This way generate output can emit this so we can see the original
+        // constants used ("a" for instance) which is otherwise hard to retain
+        // post processing.
+        let mut l = if fields.is_empty() {
+            Vec::<Token>::new()
+        } else {
+            Vec::<Token>::from([Token::Line(line.clone())])
+        };
 
         let mut state = State::Begin;
 
@@ -541,7 +550,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         let pre = parts[0].parse::<u8>().unwrap_or(10);
                         if pre > 7 {
                             return Err(eyre!(
-                                "Invalid zero page relative (index too large) on line {} - {token}",
+                                "Invalid zero page relative (index {pre} too large - greater than 7) on line {} - {token}",
                                 line_num + 1
                             ));
                         }
@@ -709,7 +718,6 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                     pc = *npc;
                 }
                 Token::Word(md) | Token::Byte(md) | Token::AsciiZ(md) => {
-                    println!("Start pc for {md:?}");
                     for m in md.iter_mut() {
                         m.pc = pc;
                         // If this is a label ref this is always a 2 byte jump.
@@ -719,9 +727,8 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                             pc += 1;
                         }
                     }
-                    println!("End pc for {md:?}");
                 }
-                Token::Equ(_) | Token::Comment(_) => {}
+                Token::Equ(_) | Token::Comment(_) | Token::Line(_) => {}
                 Token::Op(o) => {
                     let op = &o.op;
                     let width: u16;
@@ -885,6 +892,9 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
         let mut label_out = String::new();
         for (index, t) in line.iter_mut().enumerate() {
             match t {
+                Token::Line(line) => {
+                    writeln!(output, "; {line}").unwrap();
+                }
                 Token::Label(td) => {
                     write!(label_out, "{td:<8}").unwrap();
                 }
