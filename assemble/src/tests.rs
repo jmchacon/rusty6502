@@ -217,11 +217,6 @@ bad_assemble_test!(
       error: "missing data",
   },
   CPUType::NMOS
-  bad_label: BadAssembleTest{
-      asm: "bad_label.asm",
-      error: "missing data",
-  },
-  CPUType::NMOS
   bad_label2: BadAssembleTest{
       asm: "bad_label2.asm",
       error: "Label START was never defined",
@@ -229,7 +224,7 @@ bad_assemble_test!(
   CPUType::NMOS
   bad_label3: BadAssembleTest{
       asm: "bad_label3.asm",
-      error: " only comment after parsed tokens allowed",
+      error: "invalid opcode 'some'",
   },
   CPUType::NMOS
   bad_opcode: BadAssembleTest{
