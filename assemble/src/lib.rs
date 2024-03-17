@@ -30,16 +30,16 @@ use std::{fs::File, io::Lines};
 // All entries below implicitly take comments after though as defined comments can also be standalone.
 //
 // ORG|.ORG <u16> - Reset the PC location to the u16 value
-// LABEL <EQU|=> <u8|u16> - A label followed by equality setting the label to the indicated value.
+// LABEL[:] <EQU|.EQU|=> <u8|u16> - A label followed by equality setting the label to the indicated value.
 // [<LABEL>]: - A single line label defining a location with no other data.
-// [<LABEL>] WORD|.WORD <Val16> [<Val16> ...] - One or more u16 values with an optional
+// [<LABEL>][:] WORD|.WORD <Val16> [<Val16> ...] - One or more u16 values with an optional
 //                                        label defining the location.
-// [<LABEL>] BYTE|.BYTE <Val8>|STRING [<Val8>|STRING ...] - One or more u8/string values
+// [<LABEL>][:] BYTE|.BYTE <Val8>|STRING [<Val8>|STRING ...] - One or more u8/string values
 //                                                    with an optional label defining the location.
 //                                                    Strings are automatically expanded but not NUL
 //                                                    terminated (use ASCIIZ for that).
-// [<LABEL>] ASCIIZ|.ASCIIZ STRING - An ASCII string that automatically appends a NUL on expansion.
-// [<LABEL>] OPCODE [<Val>|] - A valid 6502 opcode with an optional label defining
+// [<LABEL>][:] ASCIIZ|.ASCIIZ STRING - An ASCII string that automatically appends a NUL on expansion.
+// [<LABEL>][:] OPCODE [<Val>|] - A valid 6502 opcode with an optional label defining
 //                             the location. Val validity for size depends on opcode.
 //                             i.e. JMP must be a u16 while branch/immediate modes are u8.
 // ; <ascii>... - A comment.
@@ -60,7 +60,7 @@ mod tests;
 #[derive(Clone, Debug, PartialEq)]
 enum State {
     Begin,
-    Label(String, bool),
+    Label(String),
     Equ(String),
     Org,
     Word(Vec<MemDef>),
@@ -83,6 +83,7 @@ struct MemDef {
 // rounds occur.
 #[derive(Debug)]
 enum Token {
+    Line(String),
     Label(String),
     Org(u16),
     Word(Vec<MemDef>),
@@ -193,7 +194,15 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
     for (line_num, line) in lines.map_while(Result::ok).enumerate() {
         let fields: Vec<&str> = line.split_whitespace().collect();
 
-        let mut l = Vec::<Token>::new();
+        // Always record a copy of the line unless it was a blank line
+        // This way generate output can emit this so we can see the original
+        // constants used ("a" for instance) which is otherwise hard to retain
+        // post processing.
+        let mut l = if fields.is_empty() {
+            Vec::<Token>::new()
+        } else {
+            Vec::<Token>::from([Token::Line(line.clone())])
+        };
 
         let mut state = State::Begin;
 
@@ -216,13 +225,13 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         } else if let Ok(op) = Opcode::from_str(token) {
                             State::Op(op)
                         } else {
-                            let (token, single) = if token.ends_with(':') {
-                                (&token[0..token.len() - 1], true)
+                            let token = if token.ends_with(':') {
+                                &token[0..token.len() - 1]
                             } else {
-                                (*token, false)
+                                *token
                             };
                             match parse_label(token) {
-                                Ok(label) => State::Label(label, single),
+                                Ok(label) => State::Label(label),
                                 Err(err) => {
                                     return Err(eyre!(
                                         "Error parsing line {}: invalid label {err} - {line}",
@@ -233,18 +242,20 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         }
                     }
                 },
-                State::Label(label, single) => {
-                    if single {
-                        // The only way we get here is if there are more tokens
-                        // which pretty much can only be a comment. So add the label
-                        // token and move to that state.
-                        if !token.starts_with(';') {
-                            return Err(eyre!("Error parsing line {}: only comment after parsed tokens allowed - remainder {token} - {line}", line_num + 1));
-                        }
+                State::Label(label) => {
+                    // We may get here a few ways
+                    //
+                    // Single line label w. comments:
+                    //   LABEL[:] ; comments
+                    // Label with an opcode:
+                    //   LABEL[:] OP OPVAL [; [comments]]
+                    // Label with a definition
+                    //   LABEL[:] <WORD|BYTE|EQU|ASCIIZ> <val>
 
+                    if let Some(tok) = token.strip_prefix(';') {
                         add_label(true, &mut ret, &label, None, &line, line_num)?;
                         l.push(Token::Label(label));
-                        State::Comment(token[1..].into())
+                        State::Comment(tok.into())
                     } else {
                         match upper.as_str() {
                             // Labels can be EQU style in which case we need one more state to get
@@ -286,7 +297,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                                 }
                                 Err(_) => {
                                     return Err(eyre!(
-                                        "Error parsing line {}: invalid opcode - {line}",
+                                        "Error parsing line {}: invalid opcode '{token}' - {line}",
                                         line_num + 1
                                     ));
                                 }
@@ -539,7 +550,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                         let pre = parts[0].parse::<u8>().unwrap_or(10);
                         if pre > 7 {
                             return Err(eyre!(
-                                "Invalid zero page relative (index too large) on line {} - {token}",
+                                "Invalid zero page relative (index {pre} too large - greater than 7) on line {} - {token}",
                                 line_num + 1
                             ));
                         }
@@ -646,7 +657,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 mode: AddressMode::Implied,
                 ..Default::default()
             })),
-            State::Label(label, true) => {
+            State::Label(label) => {
                 // Handle
                 //
                 // LABEL:
@@ -667,10 +678,8 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
             State::Byte(md) => {
                 l.push(Token::Byte(md));
             }
-            // Label and Org can happen if they define and then end the line
-            // Label in particular would have to do this without the : form
-            // as that's the only valid single label form.
-            State::Label(_, false) | State::Org => {
+            // Org can happen if they start and then end the line.
+            State::Org => {
                 return Err(eyre!(
                     "Error parsing line {}: missing data for {state:?} - {line}",
                     line_num + 1,
@@ -709,7 +718,6 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                     pc = *npc;
                 }
                 Token::Word(md) | Token::Byte(md) | Token::AsciiZ(md) => {
-                    println!("Start pc for {md:?}");
                     for m in md.iter_mut() {
                         m.pc = pc;
                         // If this is a label ref this is always a 2 byte jump.
@@ -719,9 +727,8 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                             pc += 1;
                         }
                     }
-                    println!("End pc for {md:?}");
                 }
-                Token::Equ(_) | Token::Comment(_) => {}
+                Token::Equ(_) | Token::Comment(_) | Token::Line(_) => {}
                 Token::Op(o) => {
                     let op = &o.op;
                     let width: u16;
@@ -885,6 +892,9 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
         let mut label_out = String::new();
         for (index, t) in line.iter_mut().enumerate() {
             match t {
+                Token::Line(line) => {
+                    writeln!(output, "; {line}").unwrap();
+                }
                 Token::Label(td) => {
                     write!(label_out, "{td:<8}").unwrap();
                 }

@@ -21,10 +21,10 @@ LABEL EQU 0x40
 BEQ LABEL
 FOO BEQ $41
 
-LBL:
+LBL
 LBL2: ; Some comments
   JMP LBL
-LBL3 JMP LBL3
+LBL3: JMP LBL3
 LDA #"H"
 LDA #"\n"
 LDA #"\r"
