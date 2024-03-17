@@ -299,7 +299,7 @@ bad_assemble_test!(
   CPUType::NMOS
   bad_word2: BadAssembleTest{
     asm: "bad_word2.asm",
-    error: " WORD, BYTE or ASCIIZ without value",
+    error: " WORD or BYTE without value",
   },
   CPUType::NMOS
   bad_word3: BadAssembleTest{
@@ -310,6 +310,16 @@ bad_assemble_test!(
   bad_asciiz: BadAssembleTest{
     asm: "bad_asciiz.asm",
     error: "ASCIIZ must be of the form",
+  },
+  CPUType::NMOS
+  bad_asciiz2: BadAssembleTest{
+    asm: "bad_asciiz2.asm",
+    error: "ASCIIZ without value",
+  },
+  CPUType::NMOS
+  not_ascii: BadAssembleTest{
+    asm: "not_ascii.asm",
+    error: "Input line has non ASCII characters",
   },
   CPUType::NMOS
 );
