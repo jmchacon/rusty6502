@@ -981,81 +981,111 @@ pub trait CPU<'a>: Chip {
     /// As a real 6502 will wrap around if it's asked to step off the end
     /// this will do the same. i.e. disassembling 0xFFFF with a multi-byte opcode will result
     /// in reading 0x0000 and 0x0001 and returning a pc from that area as well.
-    fn disassemble(&self, out: &mut String, pc: u16, r: &dyn Memory) -> u16 {
+    ///
+    /// If `opcode_only` is true then the disassembly is only the opcode + values
+    /// and not the PC plus bytes repr.
+    ///
+    /// Normal for 4C 02 04 at pc 0x0200:
+    ///
+    /// 0200 4C 02 04 JMP 0402
+    ///
+    /// And with `opcode_only`:
+    ///
+    /// JMP 0402
+    fn disassemble(&self, out: &mut String, pc: u16, r: &dyn Memory, opcode_only: bool) -> u16 {
         out.clear();
-        let pc1 = r.read((Wrapping(pc) + Wrapping(1)).0);
-        let pc2 = r.read((Wrapping(pc) + Wrapping(2)).0);
+
+        let op = r.read(pc);
+        let ov1 = r.read((Wrapping(pc) + Wrapping(1)).0);
+        let ov2 = r.read((Wrapping(pc) + Wrapping(2)).0);
 
         // Sign extend a 16 bit value so it can be added to PC for branch offsets
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-        let pc116 = Wrapping(i16::from(pc1 as i8) as u16);
+        let pc116 = Wrapping(i16::from(ov1 as i8) as u16);
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
-        let pc216 = Wrapping(i16::from(pc2 as i8) as u16);
-
-        let op = r.read(pc);
+        let pc216 = Wrapping(i16::from(ov2 as i8) as u16);
 
         let (opcode, mode) = {
             let operation = self.opcode_op(op);
             (operation.op.to_string(), operation.mode)
         };
 
-        write!(out, "{pc:04X} {op:02X} ").unwrap();
+        if !opcode_only {
+            write!(out, "{pc:04X} {op:02X} ").unwrap();
+        }
         let mut count = Wrapping(pc) + Wrapping(2);
 
+        // A full dissasembly prints the PC and some number of op bytes.
+        // The default (most modes) is one but a few cases are 2 or none.
+        if !opcode_only {
+            match mode {
+                AddressMode::Absolute
+                | AddressMode::AbsoluteX
+                | AddressMode::AbsoluteY
+                | AddressMode::AbsoluteIndirect
+                | AddressMode::AbsoluteIndirectX
+                | AddressMode::AbsoluteNOP
+                | AddressMode::ZeroPageRelative => {
+                    write!(out, "{ov1:02X} {ov2:02X}   ").unwrap();
+                }
+                AddressMode::Implied | AddressMode::NOPCmos => {
+                    write!(out, "        ").unwrap();
+                }
+                _ => {
+                    write!(out, "{ov1:02X}      ").unwrap();
+                }
+            }
+        }
         match mode {
             AddressMode::Immediate => {
-                write!(out, "{pc1:02X}      {opcode} #${pc1:02X}").unwrap();
+                write!(out, "{opcode} #${ov1:02X}").unwrap();
             }
             AddressMode::ZeroPage => {
-                write!(out, "{pc1:02X}      {opcode} ${pc1:02X}").unwrap();
+                write!(out, "{opcode} ${ov1:02X}").unwrap();
             }
             AddressMode::ZeroPageX => {
-                write!(out, "{pc1:02X}      {opcode} ${pc1:02X},X").unwrap();
+                write!(out, "{opcode} ${ov1:02X},X").unwrap();
             }
             AddressMode::ZeroPageY => {
-                write!(out, "{pc1:02X}      {opcode} ${pc1:02X},Y").unwrap();
+                write!(out, "{opcode} ${ov1:02X},Y").unwrap();
             }
             AddressMode::Indirect => {
-                write!(out, "{pc1:02X}      {opcode} (${pc1:02X})").unwrap();
+                write!(out, "{opcode} (${ov1:02X})").unwrap();
             }
             AddressMode::IndirectX => {
-                write!(out, "{pc1:02X}      {opcode} (${pc1:02X},X)").unwrap();
+                write!(out, "{opcode} (${ov1:02X},X)").unwrap();
             }
             AddressMode::IndirectY => {
-                write!(out, "{pc1:02X}      {opcode} (${pc1:02X}),Y").unwrap();
+                write!(out, "{opcode} (${ov1:02X}),Y").unwrap();
             }
             AddressMode::Absolute | AddressMode::AbsoluteNOP => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X}").unwrap();
+                write!(out, "{opcode} ${ov2:02X}{ov1:02X}").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteX => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X},X").unwrap();
+                write!(out, "{opcode} ${ov2:02X}{ov1:02X},X").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteY => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} ${pc2:02X}{pc1:02X},Y").unwrap();
+                write!(out, "{opcode} ${ov2:02X}{ov1:02X},Y").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteIndirect => {
-                write!(out, "{pc1:02X} {pc2:02X}   {opcode} (${pc2:02X}{pc1:02X})").unwrap();
+                write!(out, "{opcode} (${ov2:02X}{ov1:02X})").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteIndirectX => {
-                write!(
-                    out,
-                    "{pc1:02X} {pc2:02X}   {opcode} (${pc2:02X}{pc1:02X},X)",
-                )
-                .unwrap();
+                write!(out, "{opcode} (${ov2:02X}{ov1:02X},X)",).unwrap();
                 count += 1;
             }
             AddressMode::Implied | AddressMode::NOPCmos => {
-                write!(out, "        {opcode}").unwrap();
+                write!(out, "{opcode}").unwrap();
                 count -= 1;
             }
             AddressMode::Relative => {
                 write!(
                     out,
-                    "{pc1:02X}      {opcode} ${pc1:02X} (${:04X})",
+                    "{opcode} ${ov1:02X} (${:04X})",
                     Wrapping(pc) + pc116 + Wrapping(2u16)
                 )
                 .unwrap();
@@ -1063,7 +1093,7 @@ pub trait CPU<'a>: Chip {
             AddressMode::ZeroPageRelative => {
                 write!(
                     out,
-                    "{pc1:02X} {pc2:02X}   {opcode} {},${pc1:02X},${pc2:02X} (${:04X})",
+                    "{opcode} {},${ov1:02X},${ov2:02X} (${:04X})",
                     (op & 0xF0) >> 4,
                     Wrapping(pc) + pc216 + Wrapping(2u16)
                 )
@@ -1196,7 +1226,7 @@ macro_rules! common_cpu_funcs {
 
       impl fmt::Display for $cpu<'_> {
           fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-              let _ = self.disassemble(&mut self.disassemble.borrow_mut(), self.pc.0, &*self.ram.borrow());
+              let _ = self.disassemble(&mut self.disassemble.borrow_mut(), self.pc.0, &*self.ram.borrow(), false);
 
               write!(
                   f,

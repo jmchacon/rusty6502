@@ -79,7 +79,7 @@ impl Debug<CPUState> {
                     // generate the String. So only do it on actual dumps.
                     let pc = self.state[i].borrow().pc;
                     let r = &self.state[i].borrow().ram;
-                    _ = cpu.disassemble(&mut s, pc, r);
+                    _ = cpu.disassemble(&mut s, pc, r, false);
                 }
                 self.state[i].borrow_mut().dis = s;
                 writeln!(out, "{}", self.state[i].borrow()).unwrap();
@@ -92,7 +92,7 @@ impl Debug<CPUState> {
                 // generate the String. So only do it on actual dumps.
                 let pc = self.state[i].borrow().pc;
                 let r = &self.state[i].borrow().ram;
-                _ = cpu.disassemble(&mut s, pc, r);
+                _ = cpu.disassemble(&mut s, pc, r, false);
             }
             self.state[i].borrow_mut().dis = s;
             writeln!(out, "{}", self.state[i].borrow()).unwrap();
@@ -697,10 +697,15 @@ fn disassemble_test() -> Result<()> {
             };
             write!(out, "{}", t.1)?;
 
-            cpu.disassemble(&mut s, addr.0, &*cpu.ram().borrow());
+            cpu.disassemble(&mut s, addr.0, &*cpu.ram().borrow(), false);
             assert!(
                 s == out,
                 "{name}: Expected output\n{out}\n\nDoesn't match\n{s}"
+            );
+            cpu.disassemble(&mut s, addr.0, &*cpu.ram().borrow(), true);
+            assert!(
+                s == t.1,
+                "{name}: Expected output (op only)\n{out}\n\nDoesn't match\n{s}"
             );
         }
     }
@@ -2790,7 +2795,7 @@ macro_rules! coverage_opcodes_test {
                                 cpu.y = Wrapping(test.initial.y);
                                 cpu.s = Wrapping(test.initial.s);
                                 cpu.p = Flags(test.initial.p);
-                                cpu.disassemble(&mut out, cpu.pc.0, &*cpu.ram.borrow());
+                                cpu.disassemble(&mut out, cpu.pc.0, &*cpu.ram.borrow(), false);
 
                                 let mut bus = vec![];
                                 loop {

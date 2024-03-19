@@ -1054,7 +1054,7 @@ fn advance(
         for w in watchpoints {
             if cr.read(w.addr) != ram[usize::from(w.addr)] {
                 let mut pre = String::with_capacity(32);
-                let _ = cpu.disassemble(&mut pre, *tick_pc, &*cpu.ram().borrow());
+                let _ = cpu.disassemble(&mut pre, *tick_pc, &*cpu.ram().borrow(), false);
                 reason = StopReason::Watch(PC { addr: *tick_pc }, Location { addr: w.addr }, pre);
                 break;
             }
@@ -1137,6 +1137,7 @@ pub fn cpu_loop(
                 &mut d.state.borrow_mut().dis,
                 cpu.pc(),
                 &*cpu.ram().borrow(),
+                false,
             );
             if let StopReason::Break(_) = reason {
                 // Progress one tick into the next instruction. This moves PC
@@ -1205,6 +1206,7 @@ pub fn cpu_loop(
                     &mut d.state.borrow_mut().dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
+                    false,
                 );
                 let st = Box::new(Stop {
                     state: Box::new(d.state.borrow().clone()),
@@ -1221,6 +1223,7 @@ pub fn cpu_loop(
                     &mut d.state.borrow_mut().dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
+                    false,
                 );
                 let st = Box::new(Stop {
                     state: Box::new(d.state.borrow().clone()),
@@ -1284,6 +1287,7 @@ pub fn cpu_loop(
                     &mut d.state.borrow_mut().dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
+                    false,
                 );
                 if let StopReason::Break(_) = reason {
                     // Progress one tick into the next instruction. This moves PC
@@ -1329,6 +1333,7 @@ pub fn cpu_loop(
                             &mut d.state.borrow_mut().dis,
                             cpu.pc(),
                             &*cpu.ram().borrow(),
+                            false,
                         );
                         *d.full.borrow_mut() = false;
                         cpu.set_debug(None);
@@ -1359,6 +1364,7 @@ pub fn cpu_loop(
                             &mut d.state.borrow_mut().dis,
                             cpu.pc(),
                             &*cpu.ram().borrow(),
+                            false,
                         );
                         let idx = i + out.len() - stepn.reps;
                         if stepn.ram {
@@ -1416,6 +1422,7 @@ pub fn cpu_loop(
                     &mut d.state.borrow_mut().dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
+                    false,
                 );
                 let st = Box::new(Stop {
                     state: Box::new(d.state.borrow().clone()),
@@ -1458,6 +1465,7 @@ pub fn cpu_loop(
                     &mut d.state.borrow_mut().dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
+                    false,
                 );
                 cpucommandresptx
                     .send(Ok(CommandResponse::Cpu(Box::new(d.state.borrow().clone()))))?;
@@ -1469,7 +1477,7 @@ pub fn cpu_loop(
             }
             Command::Disassemble(addr) => {
                 let mut s = String::with_capacity(32);
-                let _ = cpu.disassemble(&mut s, addr.addr, &*cpu.ram().borrow());
+                let _ = cpu.disassemble(&mut s, addr.addr, &*cpu.ram().borrow(), false);
                 cpucommandresptx.send(Ok(CommandResponse::Disassemble(s)))?;
             }
             Command::DisassembleRange(range) => {
@@ -1478,7 +1486,7 @@ pub fn cpu_loop(
                     let mut pc = range.addr;
                     let mut s = String::with_capacity(32);
                     while pc < range.addr + len {
-                        let newpc = cpu.disassemble(&mut s, pc, &*cpu.ram().borrow());
+                        let newpc = cpu.disassemble(&mut s, pc, &*cpu.ram().borrow(), false);
                         r.push(s.clone());
                         pc = newpc;
                     }
@@ -1550,6 +1558,7 @@ pub fn cpu_loop(
                             &mut d.state.borrow_mut().dis,
                             cpu.pc(),
                             &*cpu.ram().borrow(),
+                            false,
                         );
                         cpucommandresptx.send(Ok(CommandResponse::Load(Box::new(
                             d.state.borrow().clone(),
@@ -1582,6 +1591,7 @@ pub fn cpu_loop(
                     &mut d.state.borrow_mut().dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
+                    false,
                 );
                 cpucommandresptx
                     .send(Ok(CommandResponse::PC(Box::new(d.state.borrow().clone()))))?;
@@ -1598,6 +1608,7 @@ pub fn cpu_loop(
                         &mut d.state.borrow_mut().dis,
                         cpu.pc(),
                         &*cpu.ram().borrow(),
+                        false,
                     );
                     cpucommandresptx.send(Ok(CommandResponse::Reset(Box::new(
                         d.state.borrow().clone(),
@@ -1612,6 +1623,7 @@ pub fn cpu_loop(
                     &mut d.state.borrow_mut().dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
+                    false,
                 );
                 cpucommandresptx.send(Ok(CommandResponse::Reset(Box::new(
                     d.state.borrow().clone(),

@@ -31,7 +31,6 @@ struct Args {
     start_pc: u16,
 }
 
-#[allow(clippy::similar_names)]
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args: Args = Args::parse();
@@ -122,25 +121,24 @@ fn main() -> Result<()> {
     let limit = Wrapping((usize::from(start.0) + bytes.len() - 1) as u16).0;
     println!("limit {limit:04X}");
 
-    let nmos = CPU6502::new(ChipDef::default());
-    let ricoh = CPURicoh::new(ChipDef::default());
-    let c6510 = CPU6510::new(ChipDef::default(), None);
-    let cmos = CPU65C02::new(ChipDef::default());
-    let rockwell = CPU65C02Rockwell::new(ChipDef::default());
-    let c65sc02 = CPU65SC02::new(ChipDef::default());
+    let c6502_cpu = CPU6502::new(ChipDef::default());
+    let ricoh_cpu = CPURicoh::new(ChipDef::default());
+    let c6510_cpu = CPU6510::new(ChipDef::default(), None);
+    let cmos_cpu = CPU65C02::new(ChipDef::default());
+    let rockwell_cpu = CPU65C02Rockwell::new(ChipDef::default());
+    let c65sc02_cpu = CPU65SC02::new(ChipDef::default());
 
     let cpu: &dyn CPU = match args.cpu_type {
-        CPUType::NMOS => &nmos,
-        CPUType::RICOH => &ricoh,
-        CPUType::NMOS6510 => &c6510,
-        CPUType::CMOS => &cmos,
-        CPUType::CMOSRockwell => &rockwell,
-        CPUType::CMOS65SC02 => &c65sc02,
+        CPUType::NMOS => &c6502_cpu,
+        CPUType::RICOH => &ricoh_cpu,
+        CPUType::NMOS6510 => &c6510_cpu,
+        CPUType::CMOS => &cmos_cpu,
+        CPUType::CMOSRockwell => &rockwell_cpu,
+        CPUType::CMOS65SC02 => &c65sc02_cpu,
     };
-
     let mut dis = String::with_capacity(32);
     loop {
-        newpc = cpu.disassemble(&mut dis, pc, &ram);
+        newpc = cpu.disassemble(&mut dis, pc, &ram, false);
         println!("{dis}");
         // Check if we went off the end, or the newpc wrapped
         // as step() can overflow.
