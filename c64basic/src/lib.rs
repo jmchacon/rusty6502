@@ -1,4 +1,5 @@
 //! c64basic provides support for decoding c64 basic programs.
+use color_eyre::eyre::{eyre, Result};
 use rusty6502::prelude::*;
 use std::collections::HashMap;
 use std::fmt::{self, Write};
@@ -20,7 +21,7 @@ fn read_addr(r: &impl Memory, pc: u16) -> u16 {
     (u16::from(high) << 8) + u16::from(low)
 }
 
-type Result<T> = std::result::Result<T, ParseError>;
+//type Result<T> = std::result::Result<T, ParseError>;
 
 #[derive(Debug, Clone)]
 /// `ParseError` indicates a syntax error parsing the Basic input.
@@ -788,16 +789,18 @@ pub fn list(pc: u16, r: &impl Memory) -> Result<(String, u16)> {
             0x00 => break,
             0x01..=ASCII_END => {
                 b[0] = tok;
-                // SAFETY: We know this is < 128 so it must be valid utf8.
-                unsafe { str::from_utf8(&b).unwrap_unchecked() }
+                str::from_utf8(&b)?
             }
-            // SAFETY: We know the range of map keys.
-            KEYWORD_START..=KEYWORD_HIGH => unsafe {
-                tmp = keywords().get(&tok).unwrap_unchecked().to_string();
+            // We know the range of map keys.
+            KEYWORD_START..=KEYWORD_HIGH => {
+                tmp = keywords()
+                    .get(&tok)
+                    .ok_or(eyre!("Internal error: invalid keyword"))?
+                    .to_string();
                 tmp.as_str()
-            },
+            }
             KEYWORD_INVALID_LOW..=KEYWORD_INVALID_HIGH => {
-                return Err(ParseError { output_string });
+                return Err(eyre!(ParseError { output_string }));
             }
         };
         write!(output_string, "{emit}").unwrap();
