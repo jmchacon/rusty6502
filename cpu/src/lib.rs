@@ -1,5 +1,4 @@
 //! cpu defines a 6502 CPU which is clock accurate to the supporting environment.
-use ahash::AHashMap;
 use serde::Deserialize;
 use std::cell::RefCell;
 use std::fmt;
@@ -907,11 +906,10 @@ pub trait CPU<'a>: Chip {
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
         // Default impl is NMOS
-        let hm: &AHashMap<AddressMode, Vec<u8>>;
-        // SAFETY: When we built NMOS_OPCODES we validated all Opcodes were present
-        unsafe {
-            hm = nmos_opcodes().get(op).unwrap_unchecked();
-        }
+        let Some(hm) = nmos_opcodes().get(op) else {
+            return Err(eyre!("invalid opcode {op} for NMOS cpu"));
+        };
+
         let Some(v) = hm.get(mode) else {
             return Err(eyre!("address mode {mode} isn't valid for opcode {op}"));
         };
@@ -926,7 +924,8 @@ pub trait CPU<'a>: Chip {
 
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
-        //         an index lookup.
+        //         an index lookup. This is measurably faster than a [x]
+        //         lookup which always error checks.
         unsafe { *nmos_opcodes_values().get_unchecked(usize::from(op)) }
     }
 
@@ -5246,11 +5245,9 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
     /// # Errors
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
-        let hm: &AHashMap<AddressMode, Vec<u8>>;
-        // SAFETY: When we built NMOS_OPCODES we validated all Opcodes were present
-        unsafe {
-            hm = cmos_wdc_opcodes().get(op).unwrap_unchecked();
-        }
+        let Some(hm) = cmos_wdc_opcodes().get(op) else {
+            return Err(eyre!("invalid opcode {op} for 65C02 cpu"));
+        };
         let Some(v) = hm.get(mode) else {
             return Err(eyre!("address mode {mode} isn't valid for opcode {op}"));
         };
@@ -5263,7 +5260,8 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
     fn opcode_op(&self, op: u8) -> Operation {
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
-        //         an index lookup.
+        //         an index lookup. This is measurably faster than a [x]
+        //         lookup which always error checks.
         unsafe { *cmos_wdc_opcodes_values().get_unchecked(usize::from(op)) }
     }
 }
@@ -5278,11 +5276,9 @@ impl<'a> CPU<'a> for CPU65C02Rockwell<'a> {
     /// # Errors
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
-        let hm: &AHashMap<AddressMode, Vec<u8>>;
-        // SAFETY: When we built NMOS_OPCODES we validated all Opcodes were present
-        unsafe {
-            hm = cmos_rockwell_opcodes().get(op).unwrap_unchecked();
-        }
+        let Some(hm) = cmos_rockwell_opcodes().get(op) else {
+            return Err(eyre!("invalid opcode {op} for 65C02 Rockwell cpu"));
+        };
         let Some(v) = hm.get(mode) else {
             return Err(eyre!("address mode {mode} isn't valid for opcode {op}"));
         };
@@ -5295,7 +5291,8 @@ impl<'a> CPU<'a> for CPU65C02Rockwell<'a> {
     fn opcode_op(&self, op: u8) -> Operation {
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
-        //         an index lookup.
+        //         an index lookup. This is measurably faster than a [x]
+        //         lookup which always error checks.
         unsafe { *cmos_rockwell_opcodes_values().get_unchecked(usize::from(op)) }
     }
 }
@@ -5310,24 +5307,23 @@ impl<'a> CPU<'a> for CPU65SC02<'a> {
     /// # Errors
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
-        let hm: &AHashMap<AddressMode, Vec<u8>>;
-        // SAFETY: When we built NMOS_OPCODES we validated all Opcodes were present
-        unsafe {
-            hm = cmos_65SC02_opcodes().get(op).unwrap_unchecked();
-        }
+        let Some(hm) = cmos_65SC02_opcodes().get(op) else {
+            return Err(eyre!("invalid opcode {op} for 65SC02 cpu"));
+        };
         let Some(v) = hm.get(mode) else {
             return Err(eyre!("address mode {mode} isn't valid for opcode {op}"));
         };
         Ok(v)
     }
 
-    /// Given an opcode u8 value this will return the Operation struct
+    /// Given an opcode u8 value this will ret urn the Operation struct
     /// defining it. i.e. `Opcode` and `AddressMode`.
     #[must_use]
     fn opcode_op(&self, op: u8) -> Operation {
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
-        //         an index lookup.
+        //         an index lookup. This is measurably faster than a [x]
+        //         lookup which always error checks.
         unsafe { *cmos_65SC02_opcodes_values().get_unchecked(usize::from(op)) }
     }
 }
@@ -5495,11 +5491,7 @@ macro_rules! chip_impl_nmos {
                         }));
                     }
 
-                    let state;
-                    // SAFETY: Err was checked above so just pull this out.
-                    unsafe {
-                        state = ret.unwrap_unchecked();
-                    }
+                    let state = ret?;
 
                     if state == OpState::Done {
                         // Reset so the next tick starts a new instruction
@@ -5739,11 +5731,7 @@ macro_rules! chip_impl_cmos {
                         }));
                     }
 
-                    let state;
-                    // SAFETY: Err was checked above so just pull this out.
-                    unsafe {
-                        state = ret.unwrap_unchecked();
-                    }
+                    let state = ret?;
 
                     if state == OpState::Done {
                         // Reset so the next tick starts a new instruction

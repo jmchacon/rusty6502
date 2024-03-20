@@ -6,7 +6,7 @@ use color_eyre::eyre::{eyre, Result};
 use regex::Regex;
 use rusty6502::prelude::*;
 use std::collections::HashMap;
-use std::fmt::{self, Write};
+use std::fmt::Write;
 use std::io::BufReader;
 use std::num::Wrapping;
 use std::str::FromStr;
@@ -118,18 +118,6 @@ enum OpVal {
     Val(TokenVal),
 }
 
-impl fmt::Display for OpVal {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            OpVal::Label(s) => write!(f, "{s}"),
-            OpVal::Val(tok) => match tok {
-                TokenVal::Val8(v) => write!(f, "{v:#04X}"),
-                TokenVal::Val16(v) => write!(f, "{v:#06X}"),
-            },
-        }
-    }
-}
-
 // OpVal8 is similar to an OpVal but is constrained to an 8 bit value only.
 // Mostly used with WORD/BYTE to emit a series of values or label values.
 #[derive(Clone, Debug, PartialEq)]
@@ -158,6 +146,7 @@ struct LabelDef {
 
 /// Assembly defines the output from an assemble pass.
 /// Both a binary image and a listing file are returned.
+#[derive(Debug)]
 pub struct Assembly {
     /// The binary image. Always 64k to represent a complete
     /// memory image (often used to simulate a cartridge).
@@ -445,7 +434,7 @@ fn word_byte_state(
     line_num: usize,
 ) -> Result<State> {
     // We may have tokens left which is a comment so check for that and move to that phase.
-    if token.starts_with(';') {
+    if let Some(token) = token.strip_prefix(';') {
         if md.is_empty() {
             // Account for '<WORD|BYTE> ; some comments'
             return Err(eyre!(
@@ -460,9 +449,7 @@ fn word_byte_state(
             Token::Byte(md)
         };
         tokens.push(tok);
-        // SAFETY: We know it has a prefix..
-        let c = unsafe { token.strip_prefix(';').unwrap_unchecked() };
-        return Ok(State::Comment(c.into()));
+        return Ok(State::Comment(token.into()));
     }
 
     // Below for all MemDef the PC value is computed and changed during
@@ -545,12 +532,16 @@ fn asciiz_state(
         .replace("\\r", "\r")
         .replace("\\t", "\t");
 
-    // SAFETY: We know this contains ASCIIZ or else we
-    //         can't get to this state. And it must have
-    //         a whitespace char after that due to the initial match from Begin.
-    let mut idx = unsafe { &st.to_uppercase().find("ASCIIZ").unwrap_unchecked() } + "ASCIIZ".len();
+    // We know this contains ASCIIZ or else we
+    // can't get to this state. And it must have
+    // a whitespace char after that due to the initial match from Begin.
+    let mut idx = st
+        .to_uppercase()
+        .find("ASCIIZ")
+        .unwrap_or_else(|| panic!("ASCIIZ state without token in line - {line}?"))
+        + "ASCIIZ".len();
 
-    let bytes = &st.as_bytes();
+    let bytes = st.as_bytes();
     for i in bytes.iter().skip(idx) {
         if !i.is_ascii_whitespace() {
             break;
@@ -594,9 +585,9 @@ fn asciiz_state(
         if *i == b';' {
             // Comment so we're done.
 
-            // SAFETY: We never changed this so it's a valid utf8 string still from
+            // We never changed this so it's a valid utf8 string still from
             // here forward since this was always an ASCII string.
-            comment = unsafe { String::from_utf8_unchecked(bytes[idx - 1..].to_vec()) };
+            comment = String::from_utf8(bytes[idx - 1..].to_vec())?;
         }
     }
     // Always push an ASCIIZ token along with possibly a comment and we always
@@ -753,9 +744,9 @@ fn op_state(
         // Either Absolute, ZeroPage, Relative or a Label
         _ => token.as_bytes(),
     };
-    // SAFETY: We know the remainder is valid utf8 since we only removed ASCII
-    //         and started with a valid utf8 ASCII str.
-    let op_val = unsafe { std::str::from_utf8(val).unwrap_unchecked() };
+    // We know the remainder is valid utf8 since we only removed ASCII
+    // and started with a valid utf8 ASCII str.
+    let op_val = std::str::from_utf8(val)?;
 
     let ov = token_to_val_or_label(op_val, ret, false, line, line_num)?;
     match ov {
@@ -1062,7 +1053,7 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
             let ld = get_label_val(&ast_output.labels, &lbl);
 
             let TokenVal::Val16(v) = ld else {
-                panic!("Single line label must be a PC value!");
+                panic!("Single line label {lbl} must be a PC value!");
             };
             write!(output, "{v:04X}          {label_out}").unwrap();
         }
@@ -1097,8 +1088,10 @@ fn word_byte_output(oa: &mut OutputArgs, md: &[MemDef], is_word: bool) {
                 if is_word {
                     // Words are 2 bytes so extract and then get the next one.
                     let low = *v;
-                    // SAFETY: Impossible state to have a word def with no values and already checked.
-                    let m = unsafe { it.next().unwrap_unchecked() };
+                    // Impossible state to have a word def with no values and already checked.
+                    let m = it
+                        .next()
+                        .unwrap_or_else(|| panic!("Iterator expired early for WORD?"));
                     let OpVal8::Val(high) = m.val else {
                         panic!("Impossible state. One byte followed by label for WORD");
                     };
@@ -1197,7 +1190,7 @@ fn comment_output(oa: &mut OutputArgs, c: &String, index: usize) {
         let ld = get_label_val(oa.labels, &lbl);
 
         let TokenVal::Val16(v) = ld else {
-            panic!("Single line label must be a PC value!");
+            panic!("Single line label {lbl} must be a PC value!");
         };
         write!(oa.output, "{v:04X}          {}", oa.label_out).unwrap();
         oa.label_out.clear();
@@ -1209,9 +1202,7 @@ fn comment_output(oa: &mut OutputArgs, c: &String, index: usize) {
 }
 
 fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: usize) -> Result<()> {
-    let modes = cpu
-        .resolve_opcode(&o.op, &o.mode)
-        .unwrap_or_else(|err| panic!("Internal error on line {}: {err}", line_num + 1));
+    let modes = cpu.resolve_opcode(&o.op, &o.mode)?;
 
     assert!(
         !(o.op_val.is_none() && o.mode != AddressMode::Implied),
@@ -1236,8 +1227,12 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
     // TODO(jchacon): If > 1 pick one randomly.
     if o.mode == AddressMode::ZeroPageRelative {
         // BBR/BBS are special. This is actually the vector offsets based on the first opval value.
-        // SAFETY: We know this is fine since we range checked it above.
-        let v = unsafe { o.op_val.as_ref().unwrap_unchecked() };
+        // We know this is fine since we range checked it above.
+        let v = o
+            .op_val
+            .as_ref()
+            .unwrap_or_else(|| panic!("op_val is None for zprel?"));
+        println!("Got v: {v:?}");
         let OpVal::Val(TokenVal::Val8(offset)) = v[0] else {
             panic!("First value of ZeroPageRelative must be a u8");
         };
@@ -1478,22 +1473,23 @@ pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Resul
 // Given a labels map (label->LabelDef) return a labeldef ref directly w/o checking.
 // This should be only called after AST building as it assumes all labels are valid.
 fn get_label<'a>(hm: &'a HashMap<String, LabelDef>, label: &String) -> &'a LabelDef {
-    // SAFETY: Only called after AST built so all labels are in map.
-    unsafe { hm.get(label).unwrap_unchecked() }
+    hm.get(label)
+        .unwrap_or_else(|| panic!("Missing label {label}"))
 }
 
 // Given a labels map (label->LabelDef) return the label's val directly w/o checking.
 // This should be only called after AST building as it assumes all labels are valid.
 fn get_label_val(hm: &HashMap<String, LabelDef>, label: &String) -> TokenVal {
-    // SAFETY: Only called after AST built so all labels are in map.
-    unsafe { hm.get(label).unwrap_unchecked().val.unwrap_unchecked() }
+    get_label(hm, label)
+        .val
+        .unwrap_or_else(|| panic!("Missing val for label {label}"))
 }
 
 // Given a labels map (label->LabelDef) return a mutable labeldef ref directly w/o checking.
 // This should be only called after AST building as it assumes all labels are valid.
 fn get_label_mut<'a>(hm: &'a mut HashMap<String, LabelDef>, label: &String) -> &'a mut LabelDef {
-    // SAFETY: Only called after AST built so all labels are in map.
-    unsafe { hm.get_mut(label).unwrap_unchecked() }
+    hm.get_mut(label)
+        .unwrap_or_else(|| panic!("Missing label {label}"))
 }
 
 // parse_val returns a parsed TokenVal8/16 or nothing. Set is_u16 to force returning a Val16 always
