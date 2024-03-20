@@ -303,7 +303,7 @@ fn invalid_states() -> Result<()> {
     let d = Debug::<CPUState>::new(128, Some(1));
     let debug = { || d.debug() };
     let nmi_addr = 0x1212;
-    let mut cpu = setup_cpu_cmos(
+    let mut cmos_cpu = setup_cpu_cmos(
         nmi_addr,
         0xEA,
         None,
@@ -311,7 +311,25 @@ fn invalid_states() -> Result<()> {
         None, // RDY doesn't matter here
         Some(&debug),
     );
-    cpu.power_on()?;
+    cmos_cpu.power_on()?;
+    let mut c65cs02 = setup_cpu_cmos_C65SC02(
+        nmi_addr,
+        0xEA,
+        None,
+        None,
+        None, // RDY doesn't matter here
+        Some(&debug),
+    );
+    c65cs02.power_on()?;
+    let mut rockwell = setup_cpu_cmos_rockwell(
+        nmi_addr,
+        0xEA,
+        None,
+        None,
+        None, // RDY doesn't matter here
+        Some(&debug),
+    );
+    rockwell.power_on()?;
     let mut nmos = setup_cpu_nmos(
         nmi_addr,
         0xEA,
@@ -322,12 +340,49 @@ fn invalid_states() -> Result<()> {
     );
     nmos.power_on()?;
 
-    // Make sure the bad states in reset error.
-    cpu.reset()?;
+    // Test the CPU's don't resolve each others opcodes
+    let e = cmos_cpu.resolve_opcode(&Opcode::AHX, &AddressMode::IndirectY);
+    assert!(e.is_err(), "CMOS resolved AHX?");
+    #[allow(clippy::unwrap_used)]
+    let errs = e.as_ref().err().unwrap().to_string();
+    assert!(
+        errs.contains("invalid opcode AHX for"),
+        "CMOS - Wrong error for invalid op? - {e:?}"
+    );
 
-    cpu.reset_tick = ResetTick::Tick3;
-    cpu.op_tick = Tick::Tick8;
-    let ret = cpu.reset();
+    let e = c65cs02.resolve_opcode(&Opcode::AHX, &AddressMode::IndirectY);
+    assert!(e.is_err(), "CMOS 65CS02 resolved AHX?");
+    #[allow(clippy::unwrap_used)]
+    let errs = e.as_ref().err().unwrap().to_string();
+    assert!(
+        errs.contains("invalid opcode AHX for"),
+        "CMOS 65CS02 - Wrong error for invalid op? - {e:?}"
+    );
+
+    let e = rockwell.resolve_opcode(&Opcode::AHX, &AddressMode::IndirectY);
+    assert!(e.is_err(), "Rockwell resolved AHX?");
+    #[allow(clippy::unwrap_used)]
+    let errs = e.as_ref().err().unwrap().to_string();
+    assert!(
+        errs.contains("invalid opcode AHX for"),
+        "Rockwell - Wrong error for invalid op? - {e:?}"
+    );
+
+    let e = nmos.resolve_opcode(&Opcode::BBR, &AddressMode::ZeroPageRelative);
+    assert!(e.is_err(), "NMOS resolved BBR?");
+    #[allow(clippy::unwrap_used)]
+    let errs = e.as_ref().err().unwrap().to_string();
+    assert!(
+        errs.contains("invalid opcode BBR for"),
+        "NMOS - Wrong error for invalid op? - {e:?}"
+    );
+
+    // Make sure the bad states in reset error.
+    cmos_cpu.reset()?;
+
+    cmos_cpu.reset_tick = ResetTick::Tick3;
+    cmos_cpu.op_tick = Tick::Tick8;
+    let ret = cmos_cpu.reset();
     let Err(errs) = ret else {
         panic!("CMOS: didn't get op_tick reset error?");
     };
@@ -349,9 +404,9 @@ fn invalid_states() -> Result<()> {
     );
 
     // Make sure invalid combos aren't somehow present in our processing.
-    cpu.op.op = Opcode::NOP;
-    cpu.op.mode = AddressMode::Relative;
-    let ret = cpu.process_opcode();
+    cmos_cpu.op.op = Opcode::NOP;
+    cmos_cpu.op.mode = AddressMode::Relative;
+    let ret = cmos_cpu.process_opcode();
     assert!(ret.is_err(), "No error for a relative NOP in CMOS? {ret:?}");
 
     nmos.op.op = Opcode::NOP;
@@ -360,8 +415,8 @@ fn invalid_states() -> Result<()> {
     assert!(ret.is_err(), "No error for a relative NOP in NMOS? {ret:?}");
 
     // Now go through all the various modes/instructions getting an error
-    cpu.op_tick = Tick::Tick1;
-    let ret = cpu.addr_absolute(&InstructionMode::Load);
+    cmos_cpu.op_tick = Tick::Tick1;
+    let ret = cmos_cpu.addr_absolute(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_absolute"
@@ -371,7 +426,7 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for NMOS addr mode func addr_absolute"
     );
-    let ret = cpu.addr_absolute_x(&InstructionMode::Load);
+    let ret = cmos_cpu.addr_absolute_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_absolute_x"
@@ -381,7 +436,7 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for NMOS addr mode func addr_absolute_x"
     );
-    let ret = cpu.addr_immediate(&InstructionMode::Load);
+    let ret = cmos_cpu.addr_immediate(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_immediate"
@@ -391,7 +446,7 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for NMOS addr mode func addr_immediate"
     );
-    let ret = cpu.addr_indirect_x(&InstructionMode::Load);
+    let ret = cmos_cpu.addr_indirect_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_indirect_x"
@@ -401,12 +456,12 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for NMOS addr mode func addr_indirect_x"
     );
-    let ret = cpu.addr_indirect(&InstructionMode::Load);
+    let ret = cmos_cpu.addr_indirect(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_indirect"
     );
-    let ret = cpu.addr_indirect_y(&InstructionMode::Load);
+    let ret = cmos_cpu.addr_indirect_y(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_indirect_y"
@@ -416,7 +471,7 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for NMOS addr mode func addr_indirect_y"
     );
-    let ret = cpu.addr_zp(&InstructionMode::Load);
+    let ret = cmos_cpu.addr_zp(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_zp"
@@ -426,7 +481,7 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for NMOS addr mode func addr_zp"
     );
-    let ret = cpu.addr_zp_x(&InstructionMode::Load);
+    let ret = cmos_cpu.addr_zp_x(&InstructionMode::Load);
     assert!(
         ret.is_err(),
         "didn't get an error for addr mode func addr_zp_x"
@@ -439,54 +494,54 @@ fn invalid_states() -> Result<()> {
     let ret = nmos.hlt();
     assert!(ret.is_err(), "didn't get an error for NMOS HLT");
 
-    let ret = cpu.perform_branch();
+    let ret = cmos_cpu.perform_branch();
     assert!(ret.is_err(), "didn't get an error for perform_branch");
-    let ret = cpu.branch_nop();
+    let ret = cmos_cpu.branch_nop();
     assert!(ret.is_err(), "didn't get an error for branch_nop");
-    let ret = cpu.run_interrupt(0x1234, false);
+    let ret = cmos_cpu.run_interrupt(0x1234, false);
     assert!(ret.is_err(), "didn't get an error for run_interrupt");
     let ret = nmos.run_interrupt(0x1234, false);
     assert!(ret.is_err(), "didn't get an error for NMOS run_interrupt");
 
-    let ret = cpu.bbr(1);
+    let ret = cmos_cpu.bbr(1);
     assert!(ret.is_err(), "didn't get an error for bbr1");
 
-    let ret = cpu.jmp();
+    let ret = cmos_cpu.jmp();
     assert!(ret.is_err(), "didn't get an error for jmp");
-    let ret = cpu.jmp_indirect();
+    let ret = cmos_cpu.jmp_indirect();
     assert!(ret.is_err(), "didn't get an error for jmp_indirect");
     let ret = nmos.jmp_indirect();
     assert!(ret.is_err(), "didn't get an error for NMOS jmp_indirect");
-    let ret = cpu.jmp_indirect_x();
+    let ret = cmos_cpu.jmp_indirect_x();
     assert!(ret.is_err(), "didn't get an error for jmp_indirect_x");
-    let ret = cpu.jsr();
+    let ret = cmos_cpu.jsr();
     assert!(ret.is_err(), "didn't get an error for jsr");
-    let ret = cpu.rts();
+    let ret = cmos_cpu.rts();
     assert!(ret.is_err(), "didn't get an error for rts");
-    let ret = cpu.rti();
+    let ret = cmos_cpu.rti();
     assert!(ret.is_err(), "didn't get an error for rti");
 
-    let ret = cpu.nop8();
+    let ret = cmos_cpu.nop8();
     assert!(ret.is_err(), "didn't get an error for nop8");
 
-    let ret = cpu.pha();
+    let ret = cmos_cpu.pha();
     assert!(ret.is_err(), "didn't get an error for pha");
-    let ret = cpu.phx();
+    let ret = cmos_cpu.phx();
     assert!(ret.is_err(), "didn't get an error for phx");
-    let ret = cpu.phy();
+    let ret = cmos_cpu.phy();
     assert!(ret.is_err(), "didn't get an error for phy");
-    let ret = cpu.php();
+    let ret = cmos_cpu.php();
     assert!(ret.is_err(), "didn't get an error for php");
-    let ret = cpu.pla();
+    let ret = cmos_cpu.pla();
     assert!(ret.is_err(), "didn't get an error for pla");
-    let ret = cpu.plx();
+    let ret = cmos_cpu.plx();
     assert!(ret.is_err(), "didn't get an error for plx");
-    let ret = cpu.ply();
+    let ret = cmos_cpu.ply();
     assert!(ret.is_err(), "didn't get an error for ply");
-    let ret = cpu.plp();
+    let ret = cmos_cpu.plp();
     assert!(ret.is_err(), "didn't get an error for plp");
 
-    let ret = cpu.wai();
+    let ret = cmos_cpu.wai();
     assert!(ret.is_err(), "didn't get an error for wai");
 
     Ok(())
