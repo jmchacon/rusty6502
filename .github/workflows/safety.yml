@@ -95,7 +95,8 @@ jobs:
         run: cargo miri test -p c64basic
         env:
           # Disable isolation as we load external input files/images.
-          MIRIFLAGS: "-Zmiri-disable-isolation"
+          # Stacked borrows because eyre doesn't work.
+          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
       - name: cargo miri test cpu
         run: |
             # Only test a subset and do them in separate runs or miri OOMs
