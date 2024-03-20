@@ -43,27 +43,26 @@ struct Args {
     debug: bool,
 }
 
-#[allow(clippy::similar_names)]
 fn main() -> Result<()> {
     color_eyre::install()?;
     let args: Args = Args::parse();
 
     let lines = read_lines(args.filename)?;
 
-    let nmos = CPU6502::new(ChipDef::default());
-    let ricoh = CPURicoh::new(ChipDef::default());
-    let c6510 = CPU6510::new(ChipDef::default(), None);
-    let cmos = CPU65C02::new(ChipDef::default());
-    let rockwell = CPU65C02Rockwell::new(ChipDef::default());
-    let c65sc02 = CPU65SC02::new(ChipDef::default());
+    let c6502_cpu = CPU6502::new(ChipDef::default());
+    let ricoh_cpu = CPURicoh::new(ChipDef::default());
+    let c6510_cpu = CPU6510::new(ChipDef::default(), None);
+    let cmos_cpu = CPU65C02::new(ChipDef::default());
+    let rockwell_cpu = CPU65C02Rockwell::new(ChipDef::default());
+    let c65sc02_cpu = CPU65SC02::new(ChipDef::default());
 
     let cpu: &dyn CPU = match args.cpu_type {
-        CPUType::NMOS => &nmos,
-        CPUType::RICOH => &ricoh,
-        CPUType::NMOS6510 => &c6510,
-        CPUType::CMOS => &cmos,
-        CPUType::CMOSRockwell => &rockwell,
-        CPUType::CMOS65SC02 => &c65sc02,
+        CPUType::NMOS => &c6502_cpu,
+        CPUType::RICOH => &ricoh_cpu,
+        CPUType::NMOS6510 => &c6510_cpu,
+        CPUType::CMOS => &cmos_cpu,
+        CPUType::CMOSRockwell => &rockwell_cpu,
+        CPUType::CMOS65SC02 => &c65sc02_cpu,
     };
 
     let end = args.start_loc + args.bytes;

@@ -1,5 +1,6 @@
 use rusty6502::prelude::*;
 use std::{
+    collections::HashMap,
     error::Error,
     fs::{read, File},
     io::{self, BufRead},
@@ -12,7 +13,10 @@ struct AssembleTest<'a> {
     cpus: Vec<CPUType>,
 }
 
-use crate::parse;
+use crate::{
+    find_mode, generate_output, parse, ASTOutput, LabelDef, MemDef, OpVal, OpVal8, Operation,
+    Token, TokenVal,
+};
 
 macro_rules! assemble_test {
     ($suite:ident, $($name:ident: $assemble_test:expr)*) => {
@@ -292,6 +296,16 @@ bad_assemble_test!(
     error: "Invalid zero page relative (index 10 too large - greater than 7)",
   },
   CPUType::CMOS
+  bad_bbr3: BadAssembleTest{
+    asm: "cmos-bbr3.asm",
+    error: "either not 8 bit or out of range for relative instruction",
+  },
+  CPUType::CMOS
+  bad_bbr4: BadAssembleTest{
+    asm: "cmos-bbr4.asm",
+    error: "Invalid value for ZP address for ZP Relative"
+  },
+  CPUType::CMOS
   bad_word: BadAssembleTest{
     asm: "bad_word.asm",
     error: "invalid label or value",
@@ -299,7 +313,7 @@ bad_assemble_test!(
   CPUType::NMOS
   bad_word2: BadAssembleTest{
     asm: "bad_word2.asm",
-    error: " WORD, BYTE or ASCIIZ without value",
+    error: " WORD or BYTE without value",
   },
   CPUType::NMOS
   bad_word3: BadAssembleTest{
@@ -312,4 +326,219 @@ bad_assemble_test!(
     error: "ASCIIZ must be of the form",
   },
   CPUType::NMOS
+  bad_asciiz2: BadAssembleTest{
+    asm: "bad_asciiz2.asm",
+    error: "ASCIIZ without value",
+  },
+  CPUType::NMOS
+  not_ascii: BadAssembleTest{
+    asm: "not_ascii.asm",
+    error: "Input line has non ASCII characters",
+  },
+  CPUType::NMOS
 );
+
+#[test]
+#[should_panic(expected = "Single line label lbl must be a PC value!")]
+fn bad_generate_label_loc_input() {
+    let cpu = CPU6502::new(ChipDef::default());
+    // A single line label but has a u8 value is invalid and should panic
+    let mut ast_output = ASTOutput {
+        ast: vec![vec![Token::Label("lbl".into())]],
+        labels: HashMap::from([(
+            "lbl".into(),
+            LabelDef {
+                val: Some(TokenVal::Val8(1)),
+                line: 1,
+                refs: vec![],
+            },
+        )]),
+    };
+    let e = generate_output(&cpu, &mut ast_output);
+    assert!(e.is_ok(), "Random error: {e:?}");
+}
+
+#[test]
+#[should_panic(expected = "Single line label lbl must be a PC value!")]
+fn bad_generate_comment() {
+    let cpu = CPU6502::new(ChipDef::default());
+    // A single line label but has a u8 value is invalid and should panic
+    let mut ast_output = ASTOutput {
+        ast: vec![vec![
+            Token::Label("lbl".into()),
+            Token::Comment("comment".into()),
+        ]],
+        labels: HashMap::from([(
+            "lbl".into(),
+            LabelDef {
+                val: Some(TokenVal::Val8(1)),
+                line: 1,
+                refs: vec![],
+            },
+        )]),
+    };
+    let e = generate_output(&cpu, &mut ast_output);
+    assert!(e.is_ok(), "Random error: {e:?}");
+}
+
+#[test]
+#[should_panic(expected = "Impossible state. One byte followed by label for WORD")]
+fn bad_generate_input_bad_word() {
+    let cpu = CPU6502::new(ChipDef::default());
+    // Words should have 2 bytes defined, not labels.
+    let mut ast_output = ASTOutput {
+        ast: vec![vec![Token::Word(vec![
+            MemDef {
+                pc: 0,
+                val: OpVal8::Val(1),
+            },
+            MemDef {
+                pc: 0,
+                val: OpVal8::Label("lbl".into()),
+            },
+        ])]],
+        labels: HashMap::new(),
+    };
+    let e = generate_output(&cpu, &mut ast_output);
+    assert!(e.is_ok(), "Random error: {e:?}");
+}
+
+#[test]
+#[should_panic(expected = "Impossible ASCIIZ state!")]
+fn bad_generate_input_bad_asciiz() {
+    let cpu = CPU6502::new(ChipDef::default());
+    // AsciiZ can't have label refs. Just bytes
+    let mut ast_output = ASTOutput {
+        ast: vec![vec![Token::AsciiZ(vec![MemDef {
+            pc: 0,
+            val: OpVal8::Label("lbl".into()),
+        }])]],
+        labels: HashMap::new(),
+    };
+    let e = generate_output(&cpu, &mut ast_output);
+    assert!(e.is_ok(), "Random error: {e:?}");
+}
+
+#[test]
+#[should_panic(expected = "no op val but not implied instruction for opcode")]
+fn bad_generate_immediate_no_op_val_opcode() {
+    let cpu = CPU6502::new(ChipDef::default());
+    // A non implied mode means it must have an op_val.
+    let mut ast_output = ASTOutput {
+        ast: vec![vec![Token::Op(Operation {
+            op: Opcode::LDA,
+            mode: AddressMode::Immediate,
+            op_val: None,
+            pc: 0x0000,
+            width: 1,
+            x_index: false,
+            y_index: false,
+        })]],
+        labels: HashMap::new(),
+    };
+    let e = generate_output(&cpu, &mut ast_output);
+    assert!(e.is_ok(), "Random error: {e:?}");
+}
+
+#[test]
+#[should_panic(expected = "implied mode for opcode SEI but width not 1")]
+fn bad_generate_implied_opcode() {
+    let cpu = CPU6502::new(ChipDef::default());
+    // An implied instruction must be width 1.
+    let mut ast_output = ASTOutput {
+        ast: vec![vec![Token::Op(Operation {
+            op: Opcode::SEI,
+            mode: AddressMode::Implied,
+            op_val: None,
+            pc: 0x0000,
+            width: 2,
+            x_index: false,
+            y_index: false,
+        })]],
+        labels: HashMap::new(),
+    };
+    let e = generate_output(&cpu, &mut ast_output);
+    assert!(e.is_ok(), "Random error: {e:?}");
+}
+
+#[test]
+#[should_panic(expected = "First value of ZeroPageRelative must be a u8")]
+fn bad_generate_bad_zprel_vals() {
+    let cpu = CPU65C02::new(ChipDef::default());
+    // First op_val for ZPRel must be a u8.
+    let mut ast_output = ASTOutput {
+        ast: vec![vec![Token::Op(Operation {
+            op: Opcode::BBR,
+            mode: AddressMode::ZeroPageRelative,
+            op_val: Some(vec![
+                OpVal::Val(TokenVal::Val16(0x1234)),
+                OpVal::Val(TokenVal::Val8(0x02)),
+                OpVal::Val(TokenVal::Val8(0x03)),
+            ]),
+            pc: 0x0000,
+            width: 3,
+            x_index: false,
+            y_index: false,
+        })]],
+        labels: HashMap::new(),
+    };
+    let e = generate_output(&cpu, &mut ast_output);
+    assert!(e.is_ok(), "Random error: {e:?}");
+}
+
+#[test]
+#[should_panic(expected = "got wrong data for ZP rel on op BBR and mode ZeroPageRelative")]
+fn bad_generate_bad_zprel_width() {
+    let cpu = CPU65C02::new(ChipDef::default());
+    // First op_val for ZPRel must be a u8.
+    let mut ast_output = ASTOutput {
+        ast: vec![vec![Token::Op(Operation {
+            op: Opcode::BBR,
+            mode: AddressMode::ZeroPageRelative,
+            op_val: Some(vec![
+                OpVal::Val(TokenVal::Val8(0x1)),
+                OpVal::Val(TokenVal::Val8(0x02)),
+                OpVal::Val(TokenVal::Val8(0x03)),
+            ]),
+            pc: 0x0000,
+            width: 2,
+            x_index: false,
+            y_index: false,
+        })]],
+        labels: HashMap::new(),
+    };
+    let e = generate_output(&cpu, &mut ast_output);
+    assert!(e.is_ok(), "Random error: {e:?}");
+}
+
+#[test]
+#[should_panic(expected = "can't have x and y index set")]
+fn bad_find_mode_u8() {
+    let tv = TokenVal::Val8(1);
+    let op = Operation {
+        op: Opcode::ADC,
+        mode: AddressMode::Absolute,
+        op_val: None,
+        x_index: true,
+        y_index: true,
+        width: 3,
+        pc: 0x0000,
+    };
+    find_mode(tv, &op);
+}
+
+#[test]
+#[should_panic(expected = "can't have x and y index set")]
+fn bad_find_mode_u16() {
+    let tv = TokenVal::Val16(0x1234);
+    let op = Operation {
+        op: Opcode::ADC,
+        mode: AddressMode::Absolute,
+        op_val: None,
+        x_index: true,
+        y_index: true,
+        width: 3,
+        pc: 0x0000,
+    };
+    find_mode(tv, &op);
+}
