@@ -15,10 +15,10 @@ memory = { workspace = true }
 
 color-eyre = { workspace = true }
 rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

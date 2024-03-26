@@ -481,7 +481,9 @@ pub enum State {
     /// until an interrupt happens.
     WaitingForInterrupt,
 
-    /// RDY indicates RDY is held high and we're only advancing time.
+    /// RDY is the state we remain in while RDY is asserted.
+    /// Clock will tick but the CPU just keeps reading the same
+    /// (last) addr over and over.
     RDY,
 }
 
@@ -897,7 +899,9 @@ impl fmt::Display for CPUState {
     }
 }
 
-/// The interface any 6502 implementation must conform to.
+/// The interface any 6502 implementation must conform to. This provides
+/// opcode functions as well as enough internal state to implement debugging
+/// (i.e. get/setting the PC, getting RAM, disassemble, etc)
 pub trait CPU<'a>: Chip {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
@@ -924,8 +928,8 @@ pub trait CPU<'a>: Chip {
 
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
-        //         an index lookup. This is measurably faster than a [x]
-        //         lookup which always error checks.
+        //         an index lookup. This is a 5-8% performance improvement
+        //         depending on code paths.
         unsafe { *nmos_opcodes_values().get_unchecked(usize::from(op)) }
     }
 
