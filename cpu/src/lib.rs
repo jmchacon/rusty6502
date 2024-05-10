@@ -898,7 +898,7 @@ impl fmt::Display for CPUState {
 }
 
 /// The interface any 6502 implementation must conform to.
-pub trait CPU<'a>: Chip {
+pub trait CPU<'a>: Chip + Send {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
     ///
@@ -1172,6 +1172,8 @@ enum LastBusAction {
 #[cpu_base_struct]
 pub struct CPU6502<'a> {}
 
+unsafe impl Send for CPU6502<'_> {}
+
 /// The NMOS 6510 implementation for the 6502 architecture.
 /// Includes the 6 I/O pins and support for their memory mapped behavior
 /// at locations 0x0000 and 0x0001
@@ -1180,10 +1182,14 @@ pub struct CPU6510<'a> {
     io: Rc<RefCell<[io::Style; 6]>>,
 }
 
+unsafe impl Send for CPU6510<'_> {}
+
 /// The Richo implementation for the 6502 architecture.
 /// The same as an NMOS 6502 except it doesn't have BCD support for ADC/SBC."
 #[cpu_base_struct]
 pub struct CPURicoh<'a> {}
+
+unsafe impl Send for CPURicoh<'_> {}
 
 /// The CMOS implementation for the 65C02 architecture.
 /// Fixes many bugs from the 6502 (no more undocumented opcodes) and adds
@@ -1192,6 +1198,8 @@ pub struct CPURicoh<'a> {}
 #[cpu_base_struct]
 pub struct CPU65C02<'a> {}
 
+unsafe impl Send for CPU65C02<'_> {}
+
 /// The CMOS implementation for the 65C02 architecture.
 /// Fixes many bugs from the 6502 (no more undocumented opcodes) and adds
 /// additional instructions.
@@ -1199,12 +1207,16 @@ pub struct CPU65C02<'a> {}
 #[cpu_base_struct]
 pub struct CPU65C02Rockwell<'a> {}
 
+unsafe impl Send for CPU65C02Rockwell<'_> {}
+
 /// The CMOS implementation for the 65SC02 architecture.
 /// Fixes many bugs from the 6502 (no more undocumented opcodes) and adds
 /// additional instructions. This has no rockwell or WDC extensions. Those are all
 /// 1 cycle NOP in this case.
 #[cpu_base_struct]
 pub struct CPU65SC02<'a> {}
+
+unsafe impl Send for CPU65SC02<'_> {}
 
 macro_rules! common_cpu_funcs {
   ($cpu:ident, $t:expr) => {

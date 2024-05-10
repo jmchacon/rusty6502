@@ -57,11 +57,20 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args: Args = Args::parse();
 
+    let cpu: Box<dyn CPU> = match args.cpu_type {
+        CPUType::NMOS => Box::new(CPU6502::new(ChipDef::default())),
+        CPUType::RICOH => Box::new(CPURicoh::new(ChipDef::default())),
+        CPUType::NMOS6510 => Box::new(CPU6510::new(ChipDef::default(), None)),
+        CPUType::CMOS => Box::new(CPU65C02::new(ChipDef::default())),
+        CPUType::CMOSRockwell => Box::new(CPU65C02Rockwell::new(ChipDef::default())),
+        CPUType::CMOS65SC02 => Box::new(CPU65SC02::new(ChipDef::default())),
+    };
+
     // The command channel.
     let (cpucommandtx, cpucommandrx) = channel();
     // The response channel.
     let (cpucommandresptx, cpucommandresprx) = channel();
-    let c = thread::spawn(move || cpu_loop(args.cpu_type, &cpucommandrx, &cpucommandresptx));
+    let c = thread::spawn(move || cpu_loop(cpu, &cpucommandrx, &cpucommandresptx));
     let mut cpu = Runner {
         h: c,
         n: "CPU",

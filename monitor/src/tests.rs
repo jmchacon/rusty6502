@@ -12,13 +12,22 @@ use tempfile::tempdir;
 
 #[allow(clippy::type_complexity)]
 fn setup(
-    cpu: CPUType,
+    cpu_type: CPUType,
     preload: bool,
 ) -> Result<(
     Sender<String>,
     Receiver<Output>,
     JoinHandle<Result<(), Report>>,
 )> {
+    let cpu: Box<dyn CPU> = match cpu_type {
+        CPUType::NMOS => Box::new(CPU6502::new(ChipDef::default())),
+        CPUType::RICOH => Box::new(CPURicoh::new(ChipDef::default())),
+        CPUType::NMOS6510 => Box::new(CPU6510::new(ChipDef::default(), None)),
+        CPUType::CMOS => Box::new(CPU65C02::new(ChipDef::default())),
+        CPUType::CMOSRockwell => Box::new(CPU65C02Rockwell::new(ChipDef::default())),
+        CPUType::CMOS65SC02 => Box::new(CPU65SC02::new(ChipDef::default())),
+    };
+
     // The command channel.
     let (cpucommandtx, cpucommandrx) = channel();
     // Pass through channels for cpucommand so we can log for tests.
@@ -82,7 +91,13 @@ fn run_invalid_commands() -> Result<()> {
     let (cpucommandresptx, cpucommandresprx) = channel();
 
     let cl = thread::Builder::new().name("cpu_loop".into());
-    cl.spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &cpucommandresptx))?;
+    cl.spawn(move || {
+        cpu_loop(
+            Box::new(CPU6502::new(ChipDef::default())),
+            &cpucommandrx,
+            &cpucommandresptx,
+        )
+    })?;
 
     cpucommandtx.send(Command::Run(false))?;
     cpucommandtx.send(Command::Break(Location { addr: 0x0400 }))?;
@@ -120,7 +135,13 @@ fn check_speed() -> Result<()> {
     let (cpucommandresptx, cpucommandresprx) = channel();
 
     let cl = thread::Builder::new().name("cpu_loop".into());
-    cl.spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &cpucommandresptx))?;
+    cl.spawn(move || {
+        cpu_loop(
+            Box::new(CPU6502::new(ChipDef::default())),
+            &cpucommandrx,
+            &cpucommandresptx,
+        )
+    })?;
 
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/6502_functional_test.bin");
     cpucommandtx.send(Command::Load(
