@@ -1,5 +1,5 @@
 use crate::commands::{Command, CommandResponse, Location, StepN, StepNReason, PC};
-use crate::{cpu_loop, input_loop, match_cmd, trim_newline, Output, StopReason};
+use crate::{cpu_loop, input_loop, match_cmd, process_running, trim_newline, Output, StopReason};
 use color_eyre::eyre::{eyre, Report, Result};
 use ntest::timeout;
 use rusty6502::prelude::*;
@@ -80,6 +80,67 @@ fn setup(
         )
     })?;
     Ok((inputtx, outputrx, ilh))
+}
+
+// process_runnning deals with the RUN state and gets check after
+// commands process. It's similar to the command checking below but
+// slightly differently so write it out completely.
+#[test]
+fn process_running_errors_test() -> Result<()> {
+    // The response channel.
+    let (cpucommandresptx, cpucommandresprx) = channel::<Result<CommandResponse>>();
+    // Where output goes
+    let (outputtx, outputrx) = channel::<Output>();
+
+    // First time send an invalid return
+    cpucommandresptx.send(Ok(CommandResponse::Dump))?;
+
+    let resp = process_running(1, &outputtx, &cpucommandresprx);
+    println!("Response1: {resp:?}");
+    let e = resp.err().unwrap_or_else(|| {
+        let r = outputrx.recv();
+        panic!("didn't get error from process_running - {r:?}")
+    });
+
+    let want = "Invalid return from Run";
+    assert!(
+        e.to_string().contains(&want),
+        "didn't get proper error from process_running: {e:?} vs {want}"
+    );
+
+    // Now send an error back instead.
+    cpucommandresptx.send(Err(eyre!("error from running")))?;
+
+    // The 2nd call should send some output about an error but otherwise return ok
+    let resp = process_running(1, &outputtx, &cpucommandresprx);
+    println!("Response2: {resp:?}");
+    assert!(resp.is_ok(), "Got error from cmd? - {resp:?}");
+
+    let r = outputrx.recv()?;
+    match r {
+        Output::Error(e) => {
+            let want = "Run error - error from running";
+            assert!(e.contains(&want), "error invalid - {e} vs {want}");
+        }
+        _ => panic!("Invalid output from cmd - {r:?}"),
+    }
+
+    // Now close the resptx end which should generate an error on a call.
+    drop(cpucommandresptx);
+    let resp = process_running(1, &outputtx, &cpucommandresprx);
+    println!("Response3: {resp:?}");
+    let e = resp.err().unwrap_or_else(|| {
+        let r = outputrx.recv();
+        panic!("didn't get error from process_running - {r:?}")
+    });
+
+    let want = "Sender channel died";
+    assert!(
+        e.to_string().contains(&want),
+        "didn't get proper error from process_running: {e:?} vs {want}"
+    );
+
+    Ok(())
 }
 
 // Each command has 2 conditions which require setting up a bad reciever/etc.

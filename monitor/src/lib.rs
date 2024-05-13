@@ -1071,10 +1071,10 @@ fn process_running(
                         Ok(running)
                     }
                 }
-                _ => panic!("invalid response from run: {ret:?}"),
+                _ => Err(eyre!("Invalid return from Run: {ret:?}")),
             },
             Err(e) => {
-                outputtx.send(Output::Error(format!("Error from Run - {e}")))?;
+                outputtx.send(Output::Error(format!("Run error - {e}")))?;
                 Ok(running)
             }
         },
