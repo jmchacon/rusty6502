@@ -51,7 +51,6 @@ pub enum Output {
 ///
 /// # Panics
 /// Additionally any invalid state transitions will result in an panic.
-#[allow(clippy::too_many_lines)]
 pub fn input_loop(
     cpucommandtx: &Sender<Command>,
     cpucommandresprx: &Receiver<Result<CommandResponse>>,
@@ -65,9 +64,8 @@ pub fn input_loop(
         outputtx.send(Output::Prompt(None))?;
     }
 
-    let mut running = 0;
+    let mut res = MatchCmdResult::default();
     loop {
-        let mut pre = None;
         match inputtx.try_recv() {
             Ok(line) => {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -77,12 +75,11 @@ pub fn input_loop(
                 }
                 if !parts.is_empty() {
                     let cmd = parts[0].to_uppercase();
-                    let mut cont = false;
 
                     // If we're running prevent commands as the other thread is filling the response
                     // channel which means everything below which assumes synchronous command+response
                     // will likely fail and panic. Instead just reject outright.
-                    if running > 0 {
+                    if res.running > 0 {
                         match cmd.as_str() {
                             "H" | "HELP" | "QUIT" | "Q" | "RUN" | "C" | "STOP" => {}
                             _ => {
@@ -93,108 +90,129 @@ pub fn input_loop(
                             }
                         }
                     }
+                    res = match_cmd(&cmd, &parts, outputtx, cpucommandtx, cpucommandresprx)?;
 
-                    match cmd.as_str() {
-                        "H" | "HELP" => {
-                            pre = help_cmd().into();
-                        }
-                        "QUIT" | "Q" => {
-                            return Ok(());
-                        }
-                        "RUN" | "C" => {
-                            (running, cont) = run_cmd(&parts, outputtx, cpucommandtx)?;
-                        }
-                        "STOP" => {
-                            cpucommandtx.send(Command::Stop)?;
-                        }
-                        "B" => {
-                            cont = b_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "BPL" => {
-                            (pre, cont) = bpl_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "DB" => {
-                            cont = db_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "S" => {
-                            (pre, cont) = s_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "STEPN" => {
-                            cont = stepn_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "T" => {
-                            (pre, cont) = t_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-
-                        "R" => {
-                            (pre, cont) = r_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "RR" => {
-                            cont = rr_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "W" => {
-                            cont = w_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "WR" => {
-                            cont = wr_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "CPU" => {
-                            cont = cpu_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "RAM" => {
-                            cont = ram_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "D" => {
-                            (pre, cont) = d_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "DR" => {
-                            (pre, cont) = dr_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "WP" => {
-                            cont = wp_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "WPL" => {
-                            (pre, cont) = wpl_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "DW" => {
-                            cont = dw_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "L" => {
-                            cont = l_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "BIN" => {
-                            cont = bin_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "PC" => {
-                            cont = pc_cmd(&parts, outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        "RESET" => {
-                            (running, cont) = reset_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
-                        }
-                        _ => {
-                            outputtx.send(Output::Error(format!(
-                                "ERROR: Invalid command - {}",
-                                parts[0]
-                            )))?;
-                            continue;
-                        }
+                    // The user said to QUIT.
+                    if res.exit {
+                        return Ok(());
                     }
-                    if cont {
-                        // If this was an error we just loop back around now.
+                    // If this was an error we just loop back around now.
+                    if res.cont {
                         continue;
                     }
                 }
-                outputtx.send(Output::Prompt(pre))?;
+                outputtx.send(Output::Prompt(res.pre.clone()))?;
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => return Err(eyre!("stdin died?")),
         }
 
         // Once it's running we have to juggle stdin vs possibly brk/watch happening.
-        if running > 0 {
-            running = process_running(running, outputtx, cpucommandresprx)?;
+        if res.running > 0 {
+            res.running = process_running(res.running, outputtx, cpucommandresprx)?;
         }
     }
+}
+
+#[derive(Default, Debug)]
+struct MatchCmdResult {
+    running: i32,
+    cont: bool,
+    pre: Option<String>,
+    exit: bool,
+}
+
+fn match_cmd(
+    cmd: &str,
+    parts: &[&str],
+    outputtx: &Sender<Output>,
+    cpucommandtx: &Sender<Command>,
+    cpucommandresprx: &Receiver<Result<CommandResponse>>,
+) -> Result<MatchCmdResult> {
+    let mut res = MatchCmdResult::default();
+    match cmd {
+        "H" | "HELP" => {
+            res.pre = help_cmd().into();
+        }
+        "QUIT" | "Q" => {
+            res.exit = true;
+        }
+        "RUN" | "C" => {
+            (res.running, res.cont) = run_cmd(parts, outputtx, cpucommandtx)?;
+        }
+        "STOP" => {
+            cpucommandtx.send(Command::Stop)?;
+        }
+        "B" => {
+            res.cont = b_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "BPL" => {
+            (res.pre, res.cont) = bpl_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "DB" => {
+            res.cont = db_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "S" => {
+            (res.pre, res.cont) = s_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "STEPN" => {
+            res.cont = stepn_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "T" => {
+            (res.pre, res.cont) = t_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+
+        "R" => {
+            (res.pre, res.cont) = r_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "RR" => {
+            res.cont = rr_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "W" => {
+            res.cont = w_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "WR" => {
+            res.cont = wr_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "CPU" => {
+            res.cont = cpu_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "RAM" => {
+            res.cont = ram_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "D" => {
+            (res.pre, res.cont) = d_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "DR" => {
+            (res.pre, res.cont) = dr_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "WP" => {
+            res.cont = wp_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "WPL" => {
+            (res.pre, res.cont) = wpl_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "DW" => {
+            res.cont = dw_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "L" => {
+            res.cont = l_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "BIN" => {
+            res.cont = bin_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "PC" => {
+            res.cont = pc_cmd(parts, outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        "RESET" => {
+            (res.running, res.cont) = reset_cmd(outputtx, cpucommandtx, cpucommandresprx)?;
+        }
+        _ => {
+            outputtx.send(Output::Error(format!("ERROR: Invalid command - {cmd}")))?;
+            res.cont = true;
+        }
+    }
+    Ok(res)
 }
 
 fn help_cmd() -> String {
@@ -270,13 +288,14 @@ fn b_cmd(
         Ok(addr) => {
             cpucommandtx.send(Command::Break(Location { addr }))?;
             let r = cpucommandresprx.recv()?;
+            println!("Got resp: {r:?}");
             match r {
                 Ok(CommandResponse::Break) => {}
                 Err(e) => {
                     outputtx.send(Output::Error(format!("Break error - {e}")))?;
                     return Ok(true);
                 }
-                _ => panic!("Invalid return from Break - {r:?}"),
+                _ => return Err(eyre!("Invalid return from Break - {r:?}")),
             }
         }
         Err(e) => {
@@ -308,7 +327,7 @@ fn bpl_cmd(
             outputtx.send(Output::Error(format!("BreakList error - {e}")))?;
             Ok((None, true))
         }
-        _ => panic!("Invalid return from BreakList - {r:?}"),
+        _ => Err(eyre!("Invalid return from BreakList - {r:?}")),
     }
 }
 
@@ -334,9 +353,7 @@ fn db_cmd(
                     outputtx.send(Output::Error(format!("Delete Breakpoint error - {e}")))?;
                     Ok(true)
                 }
-                _ => {
-                    panic!("Invalid return from Delete Breakpoint - {r:?}")
-                }
+                _ => Err(eyre!("Invalid return from Delete Breakpoint - {r:?}")),
             }
         }
         Err(e) => {
@@ -380,7 +397,7 @@ fn s_cmd(
             outputtx.send(Output::Error(format!("Step error - {e}")))?;
             Ok((None, true))
         }
-        _ => panic!("Invalid return from Step - {r:?}"),
+        _ => Err(eyre!("Invalid return from Step - {r:?}")),
     }
 }
 
@@ -439,7 +456,7 @@ fn stepn_cmd(
             outputtx.send(Output::Error(format!("StepN error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from Stepn - {r:?}"),
+        _ => Err(eyre!("Invalid return from StepN - {r:?}")),
     }
 }
 
@@ -477,7 +494,7 @@ fn t_cmd(
             outputtx.send(Output::Error(format!("Tick error - {e}")))?;
             Ok((None, true))
         }
-        _ => panic!("Invalid return from Tick - {r:?}"),
+        _ => Err(eyre!("Invalid return from Tick - {r:?}")),
     }
 }
 
@@ -505,7 +522,7 @@ fn r_cmd(
                     outputtx.send(Output::Error(format!("Read error - {e}\n")))?;
                     Ok((None, true))
                 }
-                _ => panic!("Invalid return from Read - {r:?}"),
+                _ => Err(eyre!("Invalid return from Read - {r:?}")),
             }
         }
         Err(e) => {
@@ -562,7 +579,7 @@ fn rr_cmd(
             outputtx.send(Output::Error(format!("Read Range error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from Read Range - {r:?}"),
+        _ => Err(eyre!("Invalid return from Read Range - {r:?}")),
     }
 }
 
@@ -601,7 +618,7 @@ fn w_cmd(
             outputtx.send(Output::Error(format!("Write error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from Write - {r:?}"),
+        _ => Err(eyre!("Invalid return from Write - {r:?}")),
     }
 }
 
@@ -652,7 +669,7 @@ fn wr_cmd(
             outputtx.send(Output::Error(format!("Write Range error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from Write Range - {r:?}"),
+        _ => Err(eyre!("Invalid return from Write Range - {r:?}")),
     }
 }
 
@@ -678,7 +695,7 @@ fn cpu_cmd(
             outputtx.send(Output::Error(format!("Cpu error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from Cpu - {r:?}"),
+        _ => Err(eyre!("Invalid return from Cpu - {r:?}")),
     }
 }
 
@@ -698,7 +715,7 @@ fn ram_cmd(
             outputtx.send(Output::Error(format!("Ram error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from Ram - {r:?}"),
+        _ => Err(eyre!("Invalid return from Ram - {r:?}")),
     }
 }
 
@@ -724,7 +741,7 @@ fn d_cmd(
                     outputtx.send(Output::Error(format!("Disassemble error - {e}")))?;
                     Ok((None, true))
                 }
-                _ => panic!("Invalid return from Disassemble - {r:?}"),
+                _ => Err(eyre!("Invalid return from Disassemble - {r:?}")),
             }
         }
         Err(e) => {
@@ -775,10 +792,10 @@ fn dr_cmd(
             Ok((Some(dr), false))
         }
         Err(e) => {
-            outputtx.send(Output::Error(format!("Dissasemble Range error - {e}")))?;
+            outputtx.send(Output::Error(format!("Disassemble Range error - {e}")))?;
             Ok((None, true))
         }
-        _ => panic!("Invalid return from Disassemble Range - {r:?}"),
+        _ => Err(eyre!("Invalid return from Disassemble Range - {r:?}")),
     }
 }
 
@@ -801,10 +818,10 @@ fn wp_cmd(
             match r {
                 Ok(CommandResponse::Watch) => Ok(false),
                 Err(e) => {
-                    outputtx.send(Output::Error(format!("Watch error - {e}")))?;
+                    outputtx.send(Output::Error(format!("Watchpoint error - {e}")))?;
                     Ok(true)
                 }
-                _ => panic!("Invalid return from Watch - {r:?}"),
+                _ => Err(eyre!("Invalid return from Watchpoint - {r:?}")),
             }
         }
         Err(e) => {
@@ -835,7 +852,7 @@ fn wpl_cmd(
             outputtx.send(Output::Error(format!("WatchList error - {e}\n")))?;
             Ok((None, true))
         }
-        _ => panic!("Invalid return from WatchList - {r:?}"),
+        _ => Err(eyre!("Invalid return from WatchList - {r:?}")),
     }
 }
 
@@ -861,9 +878,7 @@ fn dw_cmd(
                     outputtx.send(Output::Error(format!("Delete Watchpoint error - {e}")))?;
                     Ok(true)
                 }
-                _ => {
-                    panic!("Invalid return from Delete Watchpoint - {r:?}")
-                }
+                _ => Err(eyre!("Invalid return from Delete Watchpoint - {r:?}")),
             }
         }
         Err(e) => {
@@ -927,7 +942,7 @@ fn l_cmd(
             outputtx.send(Output::Error(format!("Load error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from Load - {r:?}"),
+        _ => Err(eyre!("Invalid return from Load - {r:?}")),
     }
 }
 
@@ -952,7 +967,7 @@ fn bin_cmd(
             outputtx.send(Output::Error(format!("Dump error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from Dump - {r:?}"),
+        _ => Err(eyre!("Invalid return from Dump - {r:?}")),
     }
 }
 
@@ -992,7 +1007,7 @@ fn pc_cmd(
             outputtx.send(Output::Error(format!("PC error - {e}")))?;
             Ok(true)
         }
-        _ => panic!("Invalid return from PC - {r:?}"),
+        _ => Err(eyre!("Invalid return from PC - {r:?}")),
     }
 }
 
@@ -1018,7 +1033,7 @@ fn reset_cmd(
             outputtx.send(Output::Error(format!("Reset error - {e}")))?;
             Ok((0, true))
         }
-        _ => panic!("Invalid return from Reset - {r:?}"),
+        _ => Err(eyre!("Invalid return from Reset - {r:?}")),
     }
 }
 

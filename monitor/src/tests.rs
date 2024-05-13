@@ -1,6 +1,6 @@
 use crate::commands::{Command, CommandResponse, Location, StepN, StepNReason, PC};
-use crate::{cpu_loop, input_loop, trim_newline, Output, StopReason};
-use color_eyre::eyre::{Report, Result};
+use crate::{cpu_loop, input_loop, match_cmd, trim_newline, Output, StopReason};
+use color_eyre::eyre::{eyre, Report, Result};
 use ntest::timeout;
 use rusty6502::prelude::*;
 use std::fs::read;
@@ -81,6 +81,113 @@ fn setup(
     })?;
     Ok((inputtx, outputrx, ilh))
 }
+
+// Each command has 2 conditions which require setting up a bad reciever/etc.
+// Easier to do that in a macro pattern as the calling conventions/errors are the
+// same per command. i.e.
+//
+// The command returns a wrapped error
+// The command returns an invalid response
+macro_rules! cmd_errors_test {
+  ($suite:ident, $($name:ident: $command:expr, $invalid:expr, $c:literal, $parts:expr,)*) => {
+    mod $suite {
+      use super::*;
+
+      $(
+        #[test]
+        fn $name() -> Result<()> {
+          // The command channel.
+          let (cpucommandtx, cpucommandrx) = channel::<Command>();
+          // The response channel.
+          let (cpucommandresptx, cpucommandresprx) = channel::<Result<CommandResponse>>();
+          // Where output goes
+          let (outputtx, outputrx) = channel::<Output>();
+
+          let cpuresp = thread::Builder::new().name(format!("cpu {} errors", $command).into());
+
+          cpuresp.spawn(move || -> Result<()> {
+              let cmd = cpucommandrx.recv()?;
+              println!("Got first cmd: {cmd:?}");
+
+              // First time send an invalid return
+              cpucommandresptx.send(Ok($invalid))?;
+
+              // Now send an error back instead.
+              let cmd = cpucommandrx.recv()?;
+              println!("Got 2nd cmd: {cmd:?}");
+
+              cpucommandresptx.send(Err(eyre!("error from cmd")))?;
+
+              Ok(())
+          })?;
+
+          let parts = $parts;
+
+          // The first call should generate an error for invalid return.
+          // NOTE: For macro purposes we use match_cmd to call the actual command
+          //       we're testing as then the macro only has to define 2 args which
+          //       is constant and easier to handle since at macro invocation time
+          //       things like the channels aren't identifiers in scope so they can't
+          //       be macro args.
+          let resp = match_cmd($c, &parts, &outputtx, &cpucommandtx, &cpucommandresprx);
+          println!("Response1: {resp:?}");
+          let e = resp
+              .err()
+              .unwrap_or_else(|| {
+                let r = outputrx.recv();
+                panic!("didn't get error from cmd - {r:?}")
+              });
+
+          let want = format!("Invalid return from {}", $command);
+          assert!(
+              e.to_string().contains(&want),
+              "didn't get proper error from cmd: {e:?} vs {want}"
+          );
+
+          // The 2nd call should send some output about an error but otherwise return ok
+          let resp = match_cmd($c, &parts, &outputtx, &cpucommandtx, &cpucommandresprx);
+          println!("Response2: {resp:?}");
+          assert!(resp.is_ok(), "Got error from cmd? - {resp:?}");
+
+          let r = outputrx.recv()?;
+          match r {
+              Output::Error(e) => {
+                let want = format!("{} error - error from cmd", $command);
+                assert!(e.contains(&want), "error invalid - {e} vs {want}");
+              }
+              _ => panic!("Invalid output from cmd - {r:?}"),
+          }
+          Ok(())
+        }
+      )*
+    }
+  }
+}
+
+cmd_errors_test!(
+  cmd_errors_tests,
+  b_cmd_error_test: "Break", CommandResponse::Dump, "B", ["B", "12345"],
+  bpl_cmd_error_test: "BreakList", CommandResponse::Dump, "BPL", ["BPL"],
+  db_cmd_error_test: "Delete Breakpoint", CommandResponse::Dump, "DB", ["DB", "12345"],
+  s_cmd_error_test: "Step", CommandResponse::Dump, "S", ["S"],
+  stepn_cmd_error_test: "StepN", CommandResponse::Dump, "STEPN", ["STEPN", "1", "1", "FALSE"],
+  t_cmd_error_test: "Tick", CommandResponse::Dump, "T", ["T"],
+  r_cmd_error_test: "Read", CommandResponse::Dump, "R", ["R", "12345"],
+  rr_cmd_error_test: "Read Range", CommandResponse::Dump, "RR", ["RR", "12345", "12345"],
+  w_cmd_error_test: "Write", CommandResponse::Dump, "W", ["W", "12345", "1"],
+  wr_cmd_error_test: "Write Range", CommandResponse::Dump, "WR", ["WR", "12345", "12345", "1"],
+  cpu_cmd_error_test: "Cpu", CommandResponse::Dump, "CPU", ["CPU"],
+  ram_cmd_error_test: "Ram", CommandResponse::Dump, "RAM", ["RAM"],
+  d_cmd_error_test: "Disassemble", CommandResponse::Dump, "D", ["D", "12345"],
+  dr_cmd_error_test: "Disassemble Range", CommandResponse::Dump, "DR", ["DR", "12345", "12345"],
+  wp_cmd_error_test: "Watchpoint", CommandResponse::Dump, "WP", ["WP", "12345"],
+  wpl_cmd_error_test: "WatchList", CommandResponse::Dump, "WPL", ["WPL"],
+  dw_cmd_error_test: "Delete Watchpoint", CommandResponse::Dump, "DW", ["DW", "1"],
+  l_cmd_error_test: "Load", CommandResponse::Dump, "L", ["L", "file"],
+  bin_cmd_error_test: "Dump", CommandResponse::Break, "BIN", ["BIN", "file"],
+  pc_cmd_error_test: "PC", CommandResponse::Dump, "PC", ["PC", "12345"],
+  reset_cmd_error_test: "Reset", CommandResponse::Dump, "RESET", ["RESET"],
+);
 
 #[test]
 #[timeout(60000)]
