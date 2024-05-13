@@ -117,7 +117,8 @@ jobs:
         env:
           # Disable isolation as we load external input files/images.
           # Stacked borrows because eyre doesn't work.
-          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-disable-stacked-borrows"
+          # Monitor delibertly leaks some things which is fine.
+          MIRIFLAGS: "-Zmiri-disable-isolation -Zmiri-disable-stacked-borrows -Zmiri-ignore-leaks"
   #loom:
   #  runs-on: ubuntu-latest
   #  steps:
