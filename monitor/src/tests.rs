@@ -104,7 +104,7 @@ fn process_running_errors_test() -> Result<()> {
 
     let want = "Invalid return from Run";
     assert!(
-        e.to_string().contains(&want),
+        e.to_string().contains(want),
         "didn't get proper error from process_running: {e:?} vs {want}"
     );
 
@@ -120,7 +120,7 @@ fn process_running_errors_test() -> Result<()> {
     match r {
         Output::Error(e) => {
             let want = "Run error - error from running";
-            assert!(e.contains(&want), "error invalid - {e} vs {want}");
+            assert!(e.contains(want), "error invalid - {e} vs {want}");
         }
         _ => panic!("Invalid output from cmd - {r:?}"),
     }
@@ -136,7 +136,7 @@ fn process_running_errors_test() -> Result<()> {
 
     let want = "Sender channel died";
     assert!(
-        e.to_string().contains(&want),
+        e.to_string().contains(want),
         "didn't get proper error from process_running: {e:?} vs {want}"
     );
 
