@@ -1,9 +1,9 @@
 use crate::{
-    AddressMode, CPU65C02Rockwell, CPUCMOSInternal, CPUError, CPUInternal, CPUNMOSInternal,
-    CPURicoh, CPUState, ChipDef, Flags, FlatRAM, InstructionMode, InterruptState, InterruptStyle,
-    LastBusAction, OpState, Opcode, Register, ResetTick, State, Tick, Vectors, CPU, CPU6502,
-    CPU6510, CPU65C02, CPU65SC02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT, P_NEGATIVE, P_OVERFLOW,
-    P_S1, P_ZERO, STACK_START,
+    AddressMode, CPU65C02Rockwell, CPUCMOSInternal, CPUDebug, CPUError, CPUInternal,
+    CPUNMOSInternal, CPURicoh, CPUState, ChipDef, Flags, FlatRAM, InstructionMode, InterruptState,
+    InterruptStyle, LastBusAction, OpState, Opcode, Register, ResetTick, State, Tick, Vectors, CPU,
+    CPU6502, CPU6510, CPU65C02, CPU65SC02, P_B, P_CARRY, P_DECIMAL, P_INTERRUPT, P_NEGATIVE,
+    P_OVERFLOW, P_S1, P_ZERO, STACK_START,
 };
 use chip::{CPUType, Chip};
 use color_eyre::eyre::{eyre, Result};
@@ -29,6 +29,7 @@ use std::rc::Rc;
 //
 // As grabbing a memory footprint can be expensive optionally
 // define how often to do this.
+#[derive(Clone)]
 struct Debug<T> {
     state: Vec<Rc<RefCell<T>>>,
     cur: RefCell<usize>,
@@ -99,7 +100,10 @@ impl Debug<CPUState> {
         }
         out
     }
-    fn debug(&self) -> (Rc<RefCell<CPUState>>, bool) {
+}
+
+impl CPUDebug for Debug<CPUState> {
+    fn get_debug(&self) -> (Rc<RefCell<CPUState>>, bool) {
         let ret = Rc::clone(&self.state[*self.cur.borrow()]);
 
         // Now roll the circular buffer portion of this.
@@ -135,7 +139,7 @@ macro_rules! setup_cpu {
             irq: Option<&'a dyn Sender>,
             nmi: Option<&'a dyn Sender>,
             rdy: Option<&'a dyn Sender>,
-            debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
+            debug: Option<Box<dyn CPUDebug>>,
         ) -> $cpu<'a> {
             // This should halt the cpu if a test goes off the rails since
             // endless execution will eventually end up at the NMI vector (it's the first
@@ -176,7 +180,7 @@ fn setup_cpu_nmos_6510<'a>(
     irq: Option<&'a dyn Sender>,
     nmi: Option<&'a dyn Sender>,
     rdy: Option<&'a dyn Sender>,
-    debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>,
+    debug: Option<Box<dyn CPUDebug>>,
 ) -> CPU6510<'a> {
     // This should halt the cpu if a test goes off the rails since
     // endless execution will eventually end up at the NMI vector (it's the first
@@ -300,8 +304,8 @@ fn invalid_states() -> Result<()> {
     let cpu = CPUState::default();
     let _ = cpu.clone();
 
-    let d = Debug::<CPUState>::new(128, Some(1));
-    let debug = { || d.debug() };
+    let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
+
     let nmi_addr = 0x1212;
     let mut cmos_cpu = setup_cpu_cmos(
         nmi_addr,
@@ -309,7 +313,7 @@ fn invalid_states() -> Result<()> {
         None,
         None,
         None, // RDY doesn't matter here
-        Some(&debug),
+        Some(d.clone()),
     );
     cmos_cpu.power_on()?;
     let mut c65cs02 = setup_cpu_cmos_C65SC02(
@@ -318,7 +322,7 @@ fn invalid_states() -> Result<()> {
         None,
         None,
         None, // RDY doesn't matter here
-        Some(&debug),
+        Some(d.clone()),
     );
     c65cs02.power_on()?;
     let mut rockwell = setup_cpu_cmos_rockwell(
@@ -327,7 +331,7 @@ fn invalid_states() -> Result<()> {
         None,
         None,
         None, // RDY doesn't matter here
-        Some(&debug),
+        Some(d.clone()),
     );
     rockwell.power_on()?;
     let mut nmos = setup_cpu_nmos(
@@ -336,7 +340,7 @@ fn invalid_states() -> Result<()> {
         None,
         None,
         None, // RDY doesn't matter here
-        Some(&debug),
+        Some(d),
     );
     nmos.power_on()?;
 
@@ -549,8 +553,8 @@ fn invalid_states() -> Result<()> {
 
 #[test]
 fn wai_test() -> Result<()> {
-    let d = Debug::<CPUState>::new(128, Some(1));
-    let debug = { || d.debug() };
+    let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
+
     let irq = Irq {
         raised: RefCell::new(false),
     };
@@ -564,7 +568,7 @@ fn wai_test() -> Result<()> {
         Some(&irq),
         Some(&nmi),
         None, // RDY doesn't matter here
-        Some(&debug),
+        Some(d),
     );
     cpu.power_on()?;
 
@@ -974,9 +978,8 @@ macro_rules! rdy_test {
                     };
                     let fill = 0xEE; // INC $EEEE
 
-                    let d = Debug::<CPUState>::new(128, None);
-                    let debug = { || d.debug() };
-                    let mut cpu = $type(0x1212, fill, None, None, Some(&r), Some(&debug));
+                    let d = Box::new(Debug::<CPUState>::new(128, None));
+                    let mut cpu = $type(0x1212, fill, None, None, Some(&r), Some(d));
 
                     cpu.power_on()?;
                     loop {
@@ -1111,9 +1114,8 @@ macro_rules! init_test {
                         };
                         let fill = $fill;
 
-                        let d = Debug::<CPUState>::new(128, None);
-                        let debug = { || d.debug() };
-                        let mut cpu = $type(0x1212, fill, None, None, Some(&r), Some(&debug));
+                        let d = Box::new(Debug::<CPUState>::new(128, None));
+                        let mut cpu = $type(0x1212, fill, None, None, Some(&r), Some(d));
 
                         // This should fail
                         assert!(cpu.reset().is_err(), "reset worked before power_on");
@@ -1277,9 +1279,8 @@ macro_rules! nop_hlt_test {
                     fn $name() -> Result<()> {
                         let test = $test;
                         let addr = u16::from(test.halt) << 8 | u16::from(test.halt);
-                        let d = Debug::<CPUState>::new(128, Some(1));
-                        let debug = {|| d.debug()};
-                        let mut cpu = setup_cpu_nmos(addr, $test.fill, None, None, None, Some(&debug));
+                        let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
+                        let mut cpu = setup_cpu_nmos(addr, $test.fill, None, None, None, Some(d.clone()));
                         // Make a copy so we can compare if RAM changed.
                         let mut canonical = setup_cpu_nmos(addr, test.fill, None, None, None, None);
                         cpu.power_on()?;
@@ -1431,9 +1432,8 @@ macro_rules! load_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let d = Debug::<CPUState>::new(128, Some(1));
-                        let debug = {|| d.debug()};
-                        let mut cpu = setup_cpu_nmos(0x1212, 0xEA, None, None, None, Some(&debug));
+                        let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
+                        let mut cpu = setup_cpu_nmos(0x1212, 0xEA, None, None, None, Some(d.clone()));
                         cpu.power_on()?;
 
                         cpu.ram.borrow_mut().write(0x1FFE, 0xA1); // LDA ($EA,x)
@@ -1520,9 +1520,8 @@ macro_rules! store_test {
             $(
                 #[test]
                 fn $name() -> Result<()> {
-                    let d = Debug::<CPUState>::new(128, Some(1));
-                    let debug = {|| d.debug()};
-                    let mut cpu = setup_cpu_nmos(0x1212, 0xEA, None, None, None, Some(&debug));
+                    let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
+                    let mut cpu = setup_cpu_nmos(0x1212, 0xEA, None, None, None, Some(d.clone()));
                     cpu.power_on()?;
 
                     cpu.ram.borrow_mut().write(0x1FFE, 0x81); // STA ($EA,x)
@@ -1598,9 +1597,8 @@ store_test!(
 // as many clocks as expected.
 #[test]
 fn cmos_bbr_extra_clocks() -> Result<()> {
-    let d = Debug::<CPUState>::new(128, Some(1));
-    let debug = { || d.debug() };
-    let mut cpu = setup_cpu_cmos(0xFFFF, 0x00, None, None, None, Some(&debug));
+    let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
+    let mut cpu = setup_cpu_cmos(0xFFFF, 0x00, None, None, None, Some(d));
     cpu.power_on()?;
 
     let start = 0x1FFA;
@@ -1656,15 +1654,14 @@ macro_rules! irq_and_nmi_test {
                         raised: RefCell::new(false),
                     };
 
-                    let d = Debug::<CPUState>::new(128, Some(1));
-                    let debug = { || d.debug() };
+                    let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
                     let mut cpu = $setup(
                         nmi,
                         0xEA,
                         Some(&i),
                         Some(&n),
                         None,
-                        Some(&debug),
+                        Some(d.clone()),
                     );
                     cpu.power_on()?;
 
@@ -2185,14 +2182,13 @@ macro_rules! rom_test {
                         let mut cpu: $cpu<'_>;
                         // Initialize as always but then we'll overwrite it with a ROM image.
                         // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let d = Debug::<CPUState>::new(128, Some(1));
-                        let debug = { || d.debug() };
+                        let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
 
                         // If we want debugging setup the debug hook. Otherwise go for faster execution.
                         // Callers should run without debug and then if fails rerun with debug so
                         // normal testing is fast.
                         if dbg {
-                            cpu = $setup(0x0202, 0x00, None, None, None, Some(&debug));
+                            cpu = $setup(0x0202, 0x00, None, None, None, Some(d.clone()));
                         } else {
                             cpu = $setup(0x0202, 0x00, None, None, None, None);
                         }
@@ -2772,14 +2768,13 @@ macro_rules! coverage_opcodes_test {
                         let mut cpu: $cpu<'_>;
                         // Initialize as always but then we'll overwrite it with a ROM image.
                         // For this we'll use BRK and a vector which if executed should halt the processor.
-                        let  d = Debug::<CPUState>::new(128, Some(1));
-                        let debug = { || d.debug() };
+                        let d = Box::new(Debug::<CPUState>::new(128, Some(1)));
 
                         // If we want debugging setup the debug hook. Otherwise go for faster execution.
                         // Callers should run without debug and then if fails rerun with debug so
                         // normal testing is fast.
                         if dbg {
-                            cpu = $setup(0x0000, 0xAA, None, None, None, Some(&debug));
+                            cpu = $setup(0x0000, 0xAA, None, None, None, Some(d.clone()));
                         } else {
                             cpu = $setup(0x0000, 0xAA, None, None, None, None);
                         }

@@ -897,6 +897,13 @@ impl fmt::Display for CPUState {
     }
 }
 
+/// `CPUDebug` defines the debugging interface an object must return to allow
+/// dynamic `CPUState` introspection.
+pub trait CPUDebug {
+    /// Return the wrapped `CPUState` and full RAM copy indicators for debugging.
+    fn get_debug(&self) -> (Rc<RefCell<CPUState>>, bool);
+}
+
 /// The interface any 6502 implementation must conform to.
 pub trait CPU<'a>: Chip + Send {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
@@ -930,7 +937,7 @@ pub trait CPU<'a>: Chip + Send {
     }
 
     /// Use this to enable or disable state based debugging dynamically.
-    fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>);
+    fn set_debug(&mut self, d: Option<Box<dyn CPUDebug>>);
 
     /// If the debug hook is set with `set_debug` then when this is called it
     /// will call that hook to get and then fill in a `CPUState`
@@ -5001,7 +5008,7 @@ macro_rules! cpu_nmos_power_reset {
 macro_rules! cpu_impl {
     () => {
         /// Use this to enable or disable state based debugging dynamically.
-        fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
+        fn set_debug(&mut self, d: Option<Box<dyn CPUDebug>>) {
             self.debug = d;
         }
 
@@ -5009,8 +5016,8 @@ macro_rules! cpu_impl {
         /// will only happen at the start of an opcode.
         /// If RDY is asserted it will simply repeat the previous state if at Tick1.
         fn debug(&self) {
-            if let Some(d) = self.debug {
-                let (ref_state, full) = d();
+            if let Some(d) = &self.debug {
+                let (ref_state, full) = d.get_debug();
                 let mut state = ref_state.borrow_mut();
                 state.state = self.state;
                 state.a = self.a.0;

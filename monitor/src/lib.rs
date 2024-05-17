@@ -1133,13 +1133,14 @@ fn parse_u8(val: &str) -> Result<u8> {
     }
 }
 
+#[derive(Debug, Clone)]
 struct Debug {
     state: Rc<RefCell<CPUState>>,
     full: Rc<RefCell<bool>>,
 }
 
-impl Debug {
-    fn debug(&self) -> (Rc<RefCell<CPUState>>, bool) {
+impl CPUDebug for Debug {
+    fn get_debug(&self) -> (Rc<RefCell<CPUState>>, bool) {
         (Rc::clone(&self.state), *self.full.borrow())
     }
 }
@@ -1271,22 +1272,16 @@ pub fn cpu_loop(
     cpucommandrx: &Receiver<Command>,
     cpucommandresptx: &Sender<Result<CommandResponse>>,
 ) -> Result<()> {
+    // Hold a borrowed ref here as doing this in the advance calls has lifetime issues.
     let cpu: &mut dyn CPU = cpu.borrow_mut();
 
     let mut is_running = false;
     let mut is_init = false;
-    let d = Box::leak(Box::new(Debug {
+    let debug = Box::new(Debug {
         state: Rc::new(RefCell::new(CPUState::default())),
         full: Rc::new(RefCell::new(false)),
-    }));
+    });
 
-    // If we don't leak this and the above lifetime errors occur due to cpu
-    // being able to consume this and the compiler is unable to see every time
-    // we do that is a "take it, use it and then replace it with None" that can't
-    // fail. Then it'll complain cpu can outlive debug which isn't actually true.
-    // So just live with a few bytes leaked for the lifetime of the program
-    // which isn't likely to be many cpu_loop's...
-    let debug = Box::leak(Box::new(|| d.debug()));
     let mut breakpoints: Vec<Location> = Vec::new();
     let mut watchpoints: Vec<Location> = Vec::new();
 
@@ -1309,14 +1304,14 @@ pub fn cpu_loop(
 
             if reason != StopReason::Run {
                 is_running = false;
-            }
-            cpu.set_debug(Some(debug));
-            *std::cell::RefCell::<_>::borrow_mut(&d.full) = running_ram_snapshot;
+            };
+            cpu.set_debug(Some(debug.clone() as Box<dyn CPUDebug>));
+            *std::cell::RefCell::<_>::borrow_mut(&debug.full) = running_ram_snapshot;
             cpu.debug();
             cpu.set_debug(None);
-            *std::cell::RefCell::<_>::borrow_mut(&d.full) = false;
+            *std::cell::RefCell::<_>::borrow_mut(&debug.full) = false;
             let _ = cpu.disassemble(
-                &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                 cpu.pc(),
                 &*cpu.ram().borrow(),
                 false,
@@ -1330,7 +1325,7 @@ pub fn cpu_loop(
                 tick_pc = cpu.pc();
             }
             let st = Box::new(Stop {
-                state: Box::new(d.state.borrow().clone()),
+                state: Box::new(debug.state.borrow().clone()),
                 reason: reason.clone(),
             });
             cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
@@ -1381,36 +1376,36 @@ pub fn cpu_loop(
                 }
                 running_ram_snapshot = ram;
                 is_running = true;
-                cpu.set_debug(Some(debug));
-                *std::cell::RefCell::<_>::borrow_mut(&d.full) = running_ram_snapshot;
+                cpu.set_debug(Some(debug.clone()));
+                *std::cell::RefCell::<_>::borrow_mut(&debug.full) = running_ram_snapshot;
                 cpu.debug();
                 cpu.set_debug(None);
-                *std::cell::RefCell::<_>::borrow_mut(&d.full) = false;
+                *std::cell::RefCell::<_>::borrow_mut(&debug.full) = false;
                 let _ = cpu.disassemble(
-                    &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                    &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
                     false,
                 );
                 let st = Box::new(Stop {
-                    state: Box::new(d.state.borrow().clone()),
+                    state: Box::new(debug.state.borrow().clone()),
                     reason: StopReason::Run,
                 });
                 cpucommandresptx.send(Ok(CommandResponse::Stop(st)))?;
             }
             Command::Stop => {
                 is_running = false;
-                cpu.set_debug(Some(debug));
+                cpu.set_debug(Some(debug.clone()));
                 cpu.debug();
                 cpu.set_debug(None);
                 let _ = cpu.disassemble(
-                    &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                    &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
                     false,
                 );
                 let st = Box::new(Stop {
-                    state: Box::new(d.state.borrow().clone()),
+                    state: Box::new(debug.state.borrow().clone()),
                     reason: StopReason::Stop,
                 });
                 println!("Sending stop: {st:?}");
@@ -1455,20 +1450,20 @@ pub fn cpu_loop(
                 if !capture_ram {
                     // Reset RAM to clear as we might have copied before this time and
                     // future ones should start clean.
-                    std::cell::RefCell::<_>::borrow_mut(&d.state).ram = [0; MAX_SIZE];
+                    std::cell::RefCell::<_>::borrow_mut(&debug.state).ram = [0; MAX_SIZE];
                 }
                 // The closure assumes run. Since we're doing single step only change
                 // that when returned or things go off contract.
                 if reason == StopReason::Run {
                     reason = StopReason::Step;
                 }
-                cpu.set_debug(Some(debug));
-                *std::cell::RefCell::<_>::borrow_mut(&d.full) = capture_ram;
+                cpu.set_debug(Some(debug.clone()));
+                *std::cell::RefCell::<_>::borrow_mut(&debug.full) = capture_ram;
                 cpu.debug();
                 cpu.set_debug(None);
-                *std::cell::RefCell::<_>::borrow_mut(&d.full) = false;
+                *std::cell::RefCell::<_>::borrow_mut(&debug.full) = false;
                 let _ = cpu.disassemble(
-                    &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                    &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
                     false,
@@ -1482,7 +1477,7 @@ pub fn cpu_loop(
                     tick_pc = cpu.pc();
                 }
                 let st = Box::new(Stop {
-                    state: Box::new(d.state.borrow().clone()),
+                    state: Box::new(debug.state.borrow().clone()),
                     reason,
                 });
                 cpucommandresptx.send(Ok(CommandResponse::Step(st)))?;
@@ -1497,7 +1492,7 @@ pub fn cpu_loop(
 
                 // Reset RAM to clear as we might have copied before this time and
                 // future ones should start clean.
-                std::cell::RefCell::<_>::borrow_mut(&d.state).ram = [0; MAX_SIZE];
+                std::cell::RefCell::<_>::borrow_mut(&debug.state).ram = [0; MAX_SIZE];
                 for i in 0..stepn.reps {
                     let reason = advance(
                         cpu.borrow_mut(),
@@ -1510,16 +1505,16 @@ pub fn cpu_loop(
                     )?;
                     // Might have triggered a break/watch so return early then.
                     if reason != StopReason::Run {
-                        cpu.set_debug(Some(debug));
-                        *std::cell::RefCell::<_>::borrow_mut(&d.full) = stepn.ram;
+                        cpu.set_debug(Some(debug.clone()));
+                        *std::cell::RefCell::<_>::borrow_mut(&debug.full) = stepn.ram;
                         cpu.debug();
                         let _ = cpu.disassemble(
-                            &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                            &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                             cpu.pc(),
                             &*cpu.ram().borrow(),
                             false,
                         );
-                        *std::cell::RefCell::<_>::borrow_mut(&d.full) = false;
+                        *std::cell::RefCell::<_>::borrow_mut(&debug.full) = false;
                         cpu.set_debug(None);
                         if let StopReason::Break(_) = reason {
                             // Progress one tick into the next instruction. This moves PC
@@ -1530,7 +1525,7 @@ pub fn cpu_loop(
                             tick_pc = cpu.pc();
                         }
                         let st = Box::new(Stop {
-                            state: Box::new(d.state.borrow().clone()),
+                            state: Box::new(debug.state.borrow().clone()),
                             reason,
                         });
                         cpucommandresptx.send(Ok(CommandResponse::StepN(StepNReason::Stop(st))))?;
@@ -1539,22 +1534,22 @@ pub fn cpu_loop(
                     }
                     // Don't record till the end.
                     if i >= stepn.reps - out.len() {
-                        cpu.set_debug(Some(debug));
-                        *std::cell::RefCell::<_>::borrow_mut(&d.full) = stepn.ram;
+                        cpu.set_debug(Some(debug.clone()));
+                        *std::cell::RefCell::<_>::borrow_mut(&debug.full) = stepn.ram;
                         cpu.debug();
                         cpu.set_debug(None);
-                        *std::cell::RefCell::<_>::borrow_mut(&d.full) = false;
+                        *std::cell::RefCell::<_>::borrow_mut(&debug.full) = false;
                         let _ = cpu.disassemble(
-                            &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                            &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                             cpu.pc(),
                             &*cpu.ram().borrow(),
                             false,
                         );
                         let idx = i + out.len() - stepn.reps;
                         if stepn.ram {
-                            out[idx] = d.state.borrow().clone();
+                            out[idx] = debug.state.borrow().clone();
                         } else {
-                            d.state.borrow().shallow_copy(&mut out[idx]);
+                            debug.state.borrow().shallow_copy(&mut out[idx]);
                         }
                         //out.push(d.state.borrow().clone());
                     }
@@ -1581,7 +1576,7 @@ pub fn cpu_loop(
                 if !capture_ram {
                     // Reset RAM to clear as we might have copied before this time and
                     // future ones should start clean.
-                    std::cell::RefCell::<_>::borrow_mut(&d.state).ram = [0; MAX_SIZE];
+                    std::cell::RefCell::<_>::borrow_mut(&debug.state).ram = [0; MAX_SIZE];
                 }
 
                 // The closure assumes run. Since we're doing single step only change
@@ -1589,11 +1584,11 @@ pub fn cpu_loop(
                 if reason == StopReason::Run {
                     reason = StopReason::Tick;
                 }
-                cpu.set_debug(Some(debug));
-                *std::cell::RefCell::<_>::borrow_mut(&d.full) = capture_ram;
+                cpu.set_debug(Some(debug.clone()));
+                *std::cell::RefCell::<_>::borrow_mut(&debug.full) = capture_ram;
                 cpu.debug();
                 cpu.set_debug(None);
-                *std::cell::RefCell::<_>::borrow_mut(&d.full) = false;
+                *std::cell::RefCell::<_>::borrow_mut(&debug.full) = false;
                 if let StopReason::Break(_) = reason {
                     // Progress one tick into the next instruction. This moves PC
                     // forward so hitting "C" after a breakpoint will "just work".
@@ -1603,13 +1598,13 @@ pub fn cpu_loop(
                     tick_pc = cpu.pc();
                 }
                 let _ = cpu.disassemble(
-                    &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                    &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
                     false,
                 );
                 let st = Box::new(Stop {
-                    state: Box::new(d.state.borrow().clone()),
+                    state: Box::new(debug.state.borrow().clone()),
                     reason,
                 });
                 cpucommandresptx.send(Ok(CommandResponse::Tick(st)))?;
@@ -1643,17 +1638,18 @@ pub fn cpu_loop(
                 }
             }
             Command::Cpu => {
-                cpu.set_debug(Some(debug));
+                cpu.set_debug(Some(debug.clone()));
                 cpu.debug();
                 cpu.set_debug(None);
                 let _ = cpu.disassemble(
-                    &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                    &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
                     false,
                 );
-                cpucommandresptx
-                    .send(Ok(CommandResponse::Cpu(Box::new(d.state.borrow().clone()))))?;
+                cpucommandresptx.send(Ok(CommandResponse::Cpu(Box::new(
+                    debug.state.borrow().clone(),
+                ))))?;
             }
             Command::Ram => {
                 let mut r = Box::new([0u8; MAX_SIZE]);
@@ -1736,17 +1732,17 @@ pub fn cpu_loop(
                                 | u16::from(cpu.ram().borrow().read(RESET_VECTOR));
                             cpu.pc_mut(addr);
                         }
-                        cpu.set_debug(Some(debug));
+                        cpu.set_debug(Some(debug.clone()));
                         cpu.debug();
                         cpu.set_debug(None);
                         let _ = cpu.disassemble(
-                            &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                            &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                             cpu.pc(),
                             &*cpu.ram().borrow(),
                             false,
                         );
                         cpucommandresptx.send(Ok(CommandResponse::Load(Box::new(
-                            d.state.borrow().clone(),
+                            debug.state.borrow().clone(),
                         ))))?;
                     }
                     Err(e) => {
@@ -1769,49 +1765,50 @@ pub fn cpu_loop(
             }
             Command::PC(addr) => {
                 cpu.pc_mut(addr.addr);
-                cpu.set_debug(Some(debug));
+                cpu.set_debug(Some(debug.clone()));
                 cpu.debug();
                 cpu.set_debug(None);
                 let _ = cpu.disassemble(
-                    &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                    &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
                     false,
                 );
-                cpucommandresptx
-                    .send(Ok(CommandResponse::PC(Box::new(d.state.borrow().clone()))))?;
+                cpucommandresptx.send(Ok(CommandResponse::PC(Box::new(
+                    debug.state.borrow().clone(),
+                ))))?;
             }
             Command::Reset => {
                 if !is_init {
                     is_init = true;
                     cpu.power_on()?;
                     // Power on does a reset so we don't have to do it again below.
-                    cpu.set_debug(Some(debug));
+                    cpu.set_debug(Some(debug.clone()));
                     cpu.debug();
                     cpu.set_debug(None);
                     let _ = cpu.disassemble(
-                        &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                        &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                         cpu.pc(),
                         &*cpu.ram().borrow(),
                         false,
                     );
                     cpucommandresptx.send(Ok(CommandResponse::Reset(Box::new(
-                        d.state.borrow().clone(),
+                        debug.state.borrow().clone(),
                     ))))?;
                     continue;
                 }
                 reset(cpu.borrow_mut(), cpucommandresptx)?;
-                cpu.set_debug(Some(debug));
+                cpu.set_debug(Some(debug.clone()));
                 cpu.debug();
                 cpu.set_debug(None);
                 let _ = cpu.disassemble(
-                    &mut std::cell::RefCell::<_>::borrow_mut(&d.state).dis,
+                    &mut std::cell::RefCell::<_>::borrow_mut(&debug.state).dis,
                     cpu.pc(),
                     &*cpu.ram().borrow(),
                     false,
                 );
                 cpucommandresptx.send(Ok(CommandResponse::Reset(Box::new(
-                    d.state.borrow().clone(),
+                    debug.state.borrow().clone(),
                 ))))?;
             }
         }

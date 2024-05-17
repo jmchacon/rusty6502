@@ -1,4 +1,4 @@
 # These tests are intended to leak some top level objects
 # Actually was able to remove this but leave here as an example
 #leak:cpu::tests::
-leak:monitor::cpu_loop::
+#leak:monitor::cpu_loop::
