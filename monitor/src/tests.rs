@@ -354,6 +354,39 @@ fn check_speed() -> Result<()> {
         }
         _ => panic!("Unknown resp: {resp:?}"),
     }
+
+    // Do this again without capturing RAM and validate it's considerably faster
+    let cap = 128;
+    let capture = vec![CPUState::default(); cap];
+    let now = std::time::Instant::now();
+    cpucommandtx.send(Command::StepN(StepN {
+        reps: 7457,
+        capture,
+        ram: false,
+    }))?;
+    let resp = cpucommandresprx.recv()?;
+    let n = now.elapsed();
+    #[cfg(not(miri))]
+    let max = std::time::Duration::from_millis(8);
+    // Miri takes an eon so just give it 15m. Allow here because we dynamically
+    // include sanitizer (which is nightly only) for those tests.
+    #[cfg(any(miri, coverage))]
+    let max = std::time::Duration::from_secs(600);
+
+    match resp {
+        Ok(CommandResponse::StepN(StepNReason::StepN(res))) => {
+            #[allow(clippy::unwrap_used)]
+            let last = res.last().unwrap();
+            println!("Elapsed: {n:#?} {last}");
+            assert!(
+                res.len() == cap,
+                "length should be {cap} and is {}",
+                res.len()
+            );
+            assert!(n <= max, "too slow. got {n:#?}");
+        }
+        _ => panic!("Unknown resp: {resp:?}"),
+    }
     Ok(())
 }
 
