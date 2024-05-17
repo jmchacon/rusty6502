@@ -8,7 +8,7 @@ pub enum Command {
     Run(bool),
     Stop,
     Break(Location),
-    BreakList,
+    Breaklist,
     DeleteBreakpoint(usize),
     // Bool indicates whether to snapshot RAM on each instruction (expensive).
     Step(bool),
@@ -25,7 +25,7 @@ pub enum Command {
     Disassemble(Location),
     DisassembleRange(LocationRange),
     Watch(Location),
-    WatchList,
+    Watchlist,
     DeleteWatchpoint(usize),
     Load(String, Option<Location>, Option<PC>),
     Dump(String),
