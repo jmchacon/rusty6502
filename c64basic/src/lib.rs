@@ -87,6 +87,7 @@ pub enum Keyword {
     #[strum(to_string = "INPUT#")]
     INPUTIO,
 
+    #[allow(clippy::doc_link_with_quotes)]
     /// INPUT is used to read data from the keyboard into one or more supplied variables.
     /// The INPUT command prints the optional text followed by a question mark (?) and
     /// then activates the screen editor for user input.
@@ -207,8 +208,8 @@ pub enum Keyword {
     ON,
 
     /// WAIT waits for a given memory location to match specific bit constellations.
-    /// The parameter values are specified as a bit mask, so WAITing on a value of 32
-    /// will cause the program to continue when bit 5 changes to 1. WAITing on 3 will
+    /// The parameter values are specified as a bit mask, so `WAIT`ing on a value of 32
+    /// will cause the program to continue when bit 5 changes to 1. `WAIT`ing on 3 will
     /// cause it to continue when either bit 1 or 2 is set. The optional 3rd parameter
     /// enables a check for unset bits by inverting the locations bits.
     ///
@@ -226,6 +227,7 @@ pub enum Keyword {
     /// Abbr: lO
     LOAD,
 
+    #[allow(clippy::doc_link_with_quotes)]
     /// SAVE permanently saves to a storage device such as a datasette, diskdrive
     /// or harddisk as a filetype of program (PRG). The Command SAVE can also be
     /// used in BASIC programs.
@@ -235,6 +237,7 @@ pub enum Keyword {
     /// Abbr: sA
     SAVE,
 
+    #[allow(clippy::doc_link_with_quotes)]
     /// VERIFY is used for verifying files, which were written with the
     /// BASIC-Command SAVE on a storage medium, with the data from memory (RAM).
     /// This command can used directly or in programs.
@@ -248,9 +251,9 @@ pub enum Keyword {
     /// be executed with FN afterwards. The definition may contain any legitimate
     /// mathematical expression consisting of mathematical and logical operands,
     /// functions and variables which finally results in a numeric value. Functions,
-    /// operands and system variables such as ABS(), AND, ATN(), ASC(), COS(), EXP(),
-    /// FN<function name>(), FRE(), INT(), LEN() LOG(), NOT, PEEK(), POS(), OR, RND(),
-    /// SGN(), SIN(), SQR(), STATUS (ST), TAN(), TIME (TI) or VAL() are possible.
+    /// operands and system variables such as `ABS`(), `AND`, `ATN`(), `ASC`(), `COS`(), `EXP`(),
+    /// `FN`<function name>(), `FRE`(), `INT`(), `LEN`() `LOG`(), `NOT`, `PEEK`(), `POS`(), `OR`, `RND`(),
+    /// `SGN`(), `SIN`(), `SQR`(), STATUS (`ST`), `TAN`(), TIME (`TI`) or `VAL`() are possible.
     ///
     /// DEF FN <function name>(parameter name)=<mathmatical expression>
     ///
@@ -315,6 +318,7 @@ pub enum Keyword {
     /// Abbr: cL
     CLR,
 
+    #[allow(clippy::doc_link_with_quotes)]
     /// CMD changes the data output from the screen to another peripheral device like casette,
     /// modem, printer or disk drive. CMD can be used directly or in programs. The logical
     /// filenumber is in the range 1-255 and must be selected with the BASIC command OPEN.

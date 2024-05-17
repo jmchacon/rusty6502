@@ -582,7 +582,7 @@ fn wai_test() -> Result<()> {
     step_cpu_cmos(&mut cpu)?;
     let p = cpu.pc.0;
     assert!(p == 0x2001, "PC after WAI not 0x2001 - is {p:#06X}");
-    let state = cpu.state();
+    let state = cpu.state;
     assert!(
         state == State::WaitingForInterrupt,
         "State not WAI is {state}"

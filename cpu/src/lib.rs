@@ -140,7 +140,7 @@ pub enum Opcode {
     /// Add with Carry A with the value at the operand address.
     ADC,
 
-    /// Undocumented opcode AHX. This stores a value as (A & X & (ADDR_HI + 1)).
+    /// Undocumented opcode AHX. This stores a value as (A & X & (`ADDR_HI` + 1)).
     AHX,
 
     /// Undocumented opcode ALR. This does AND #i and then LSR setting all associated flags
@@ -355,10 +355,10 @@ pub enum Opcode {
     /// Set the I flag.
     SEI,
 
-    /// Undocumented instruction SHX. Similar to AHX but the value stored is (X & (ADDR_HI + 1))
+    /// Undocumented instruction SHX. Similar to AHX but the value stored is (X & (`ADDR_HI` + 1))
     SHX,
 
-    /// Undocumented instruction SHX. Similar to AHX but the value stored is (Y & (ADDR_HI + 1))
+    /// Undocumented instruction SHX. Similar to AHX but the value stored is (Y & (`ADDR_HI` + 1))
     SHY,
 
     /// Undocumented instruction SLO. This does an ASL on the value at the operand address and then OR's it against A. Sets flags and carry
@@ -421,9 +421,9 @@ pub enum Opcode {
     /// Note: CMOS only on WDC implementations.
     WAI,
 
-    /// Undocumented instruction XAA. We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
+    /// Undocumented instruction XAA. We'll go with <http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)/>
     /// for implementation and pick 0xEE as the constant.
-    /// https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
+    /// <https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617/>
     XAA,
 }
 
@@ -433,7 +433,7 @@ pub enum Opcode {
 pub struct Operation {
     /// op is the Opcode such as ADC, LDA, etc.
     pub op: Opcode,
-    /// AddressMode is a valid addressing mode for this opcode such as Absolute.
+    /// `AddressMode` is a valid addressing mode for this opcode such as Absolute.
     pub mode: AddressMode,
 }
 
@@ -811,16 +811,16 @@ pub struct CPUState {
     /// How many clocks have run since power on
     pub clocks: usize,
 
-    /// The current op_val
+    /// The current `op_val`
     pub op_val: u8,
 
-    /// The current op_addr
+    /// The current `op_addr`
     pub op_addr: u16,
 
     /// The dissasembly of the current instruction at PC
     pub dis: String,
 
-    /// The current op_tick
+    /// The current `op_tick`
     pub op_tick: Tick,
 }
 
@@ -837,7 +837,7 @@ impl CPUState {
         dest.clocks = self.clocks;
         dest.op_val = self.op_val;
         dest.op_addr = self.op_addr;
-        dest.dis = self.dis.clone();
+        dest.dis.clone_from(&self.dis);
         dest.op_tick = self.op_tick;
     }
 }
@@ -1282,8 +1282,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // and must be implmented by the relevant struct in order to provide
     // access and mutability for the default trait methods below.
 
-    // state returns the current CPU state.
-    fn state(&self) -> State;
     // state_mut sets the current CPU state.
     fn state_mut(&mut self, new: State);
 
@@ -2837,10 +2835,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
 
 macro_rules! cpu_internal {
     () => {
-        // state returns the current CPU state.
-        fn state(&self) -> State {
-            self.state
-        }
         // state_mut sets the current CPU state.
         fn state_mut(&mut self, new: State) {
             self.state = new;
