@@ -72,7 +72,7 @@ pub fn cpu_base_struct(args: TokenStream, input: TokenStream) -> TokenStream {
                   #[doc = " If set `debug` will be passed a raw `CPUState` on each instruction."]
                   #[doc = " The boolean returns indicates whether to include a full memory dump (slow)"]
                   #[doc = " or just to fill in the current PC values so dissembly can function."]
-                  debug: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>
+                  debug: Option<Box<dyn CPUDebug>>
                 })
                 .unwrap(),
         );

@@ -70,7 +70,7 @@ pub struct NES {
     /// Any trailing ROM data
     pub misc_rom: Option<Vec<u8>>,
 
-    /// The number of misc ROM's contained in the misc_rom field
+    /// The number of misc ROM's contained in the `misc_rom` field
     /// The specific cart/mapper code will need to know what to do with this.
     pub num_misc_rom: u8,
 
@@ -485,7 +485,7 @@ pub enum ExpansionDevice {
     /// Dongda PEC586 Keyboard
     DongdaPEC586Keyboard,
 
-    /// BitCorp Bit79 Keyboard
+    /// `BitCorp` Bit79 Keyboard
     BitCorpBit79Keyboard,
 
     /// Subor Keyboard
@@ -509,7 +509,7 @@ pub enum ExpansionDevice {
     /// Racer Mate Bicycle
     RacerMateBicycle,
 
-    /// UForce
+    /// `UForce`
     UForce,
 
     /// R.O.B. Stack Up
