@@ -27,6 +27,7 @@ macro_rules! list_test {
 
                         // Copy the program into place.
                         for i in 2..bytes.len() {
+                          #[allow(clippy::cast_possible_truncation)]
                             r.write(BASIC_LOAD_ADDR+(i-2) as u16, bytes[i]);
                         }
 

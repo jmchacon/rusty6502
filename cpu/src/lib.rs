@@ -140,7 +140,7 @@ pub enum Opcode {
     /// Add with Carry A with the value at the operand address.
     ADC,
 
-    /// Undocumented opcode AHX. This stores a value as (A & X & (ADDR_HI + 1)).
+    /// Undocumented opcode AHX. This stores a value as (A & X & (`ADDR_HI` + 1)).
     AHX,
 
     /// Undocumented opcode ALR. This does AND #i and then LSR setting all associated flags
@@ -355,10 +355,10 @@ pub enum Opcode {
     /// Set the I flag.
     SEI,
 
-    /// Undocumented instruction SHX. Similar to AHX but the value stored is (X & (ADDR_HI + 1))
+    /// Undocumented instruction SHX. Similar to AHX but the value stored is (X & (`ADDR_HI` + 1))
     SHX,
 
-    /// Undocumented instruction SHX. Similar to AHX but the value stored is (Y & (ADDR_HI + 1))
+    /// Undocumented instruction SHX. Similar to AHX but the value stored is (Y & (`ADDR_HI` + 1))
     SHY,
 
     /// Undocumented instruction SLO. This does an ASL on the value at the operand address and then OR's it against A. Sets flags and carry
@@ -421,9 +421,9 @@ pub enum Opcode {
     /// Note: CMOS only on WDC implementations.
     WAI,
 
-    /// Undocumented instruction XAA. We'll go with http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)
+    /// Undocumented instruction XAA. We'll go with <http://visual6502.org/wiki/index.php?title=6502_Opcode_8B_(XAA,_ANE)/>
     /// for implementation and pick 0xEE as the constant.
-    /// https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617
+    /// <https://sourceforge.net/tracker/?func=detail&aid=2110948&group_id=223021&atid=1057617/>
     XAA,
 }
 
@@ -433,7 +433,7 @@ pub enum Opcode {
 pub struct Operation {
     /// op is the Opcode such as ADC, LDA, etc.
     pub op: Opcode,
-    /// AddressMode is a valid addressing mode for this opcode such as Absolute.
+    /// `AddressMode` is a valid addressing mode for this opcode such as Absolute.
     pub mode: AddressMode,
 }
 
@@ -813,16 +813,16 @@ pub struct CPUState {
     /// How many clocks have run since power on
     pub clocks: usize,
 
-    /// The current op_val
+    /// The current `op_val`
     pub op_val: u8,
 
-    /// The current op_addr
+    /// The current `op_addr`
     pub op_addr: u16,
 
     /// The dissasembly of the current instruction at PC
     pub dis: String,
 
-    /// The current op_tick
+    /// The current `op_tick`
     pub op_tick: Tick,
 }
 
@@ -839,7 +839,7 @@ impl CPUState {
         dest.clocks = self.clocks;
         dest.op_val = self.op_val;
         dest.op_addr = self.op_addr;
-        dest.dis = self.dis.clone();
+        dest.dis.clone_from(&self.dis);
         dest.op_tick = self.op_tick;
     }
 }
@@ -899,10 +899,16 @@ impl fmt::Display for CPUState {
     }
 }
 
+/// `CPUDebug` defines the debugging interface an object must return to allow
+/// dynamic `CPUState` introspection.
+pub trait CPUDebug {
+    /// Return the wrapped `CPUState` and full RAM copy indicators for debugging.
+    fn get_debug(&self) -> (Rc<RefCell<CPUState>>, bool);
+}
+
 /// The interface any 6502 implementation must conform to. This provides
 /// opcode functions as well as enough internal state to implement debugging
-/// (i.e. get/setting the PC, getting RAM, disassemble, etc)
-pub trait CPU<'a>: Chip {
+/// (i.e. get/setting the PC, getting RAM, disassemble, etc)pub trait CPU<'a>: Chip + Send {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
     ///
@@ -934,7 +940,7 @@ pub trait CPU<'a>: Chip {
     }
 
     /// Use this to enable or disable state based debugging dynamically.
-    fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>);
+    fn set_debug(&mut self, d: Option<Box<dyn CPUDebug>>);
 
     /// If the debug hook is set with `set_debug` then when this is called it
     /// will call that hook to get and then fill in a `CPUState`
@@ -1176,6 +1182,8 @@ enum LastBusAction {
 #[cpu_base_struct]
 pub struct CPU6502<'a> {}
 
+unsafe impl Send for CPU6502<'_> {}
+
 /// The NMOS 6510 implementation for the 6502 architecture.
 /// Includes the 6 I/O pins and support for their memory mapped behavior
 /// at locations 0x0000 and 0x0001
@@ -1184,10 +1192,14 @@ pub struct CPU6510<'a> {
     io: Rc<RefCell<[io::Style; 6]>>,
 }
 
+unsafe impl Send for CPU6510<'_> {}
+
 /// The Richo implementation for the 6502 architecture.
 /// The same as an NMOS 6502 except it doesn't have BCD support for ADC/SBC."
 #[cpu_base_struct]
 pub struct CPURicoh<'a> {}
+
+unsafe impl Send for CPURicoh<'_> {}
 
 /// The CMOS implementation for the 65C02 architecture.
 /// Fixes many bugs from the 6502 (no more undocumented opcodes) and adds
@@ -1196,6 +1208,8 @@ pub struct CPURicoh<'a> {}
 #[cpu_base_struct]
 pub struct CPU65C02<'a> {}
 
+unsafe impl Send for CPU65C02<'_> {}
+
 /// The CMOS implementation for the 65C02 architecture.
 /// Fixes many bugs from the 6502 (no more undocumented opcodes) and adds
 /// additional instructions.
@@ -1203,12 +1217,16 @@ pub struct CPU65C02<'a> {}
 #[cpu_base_struct]
 pub struct CPU65C02Rockwell<'a> {}
 
+unsafe impl Send for CPU65C02Rockwell<'_> {}
+
 /// The CMOS implementation for the 65SC02 architecture.
 /// Fixes many bugs from the 6502 (no more undocumented opcodes) and adds
 /// additional instructions. This has no rockwell or WDC extensions. Those are all
 /// 1 cycle NOP in this case.
 #[cpu_base_struct]
 pub struct CPU65SC02<'a> {}
+
+unsafe impl Send for CPU65SC02<'_> {}
 
 macro_rules! common_cpu_funcs {
   ($cpu:ident, $t:expr) => {
@@ -1267,8 +1285,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
     // and must be implmented by the relevant struct in order to provide
     // access and mutability for the default trait methods below.
 
-    // state returns the current CPU state.
-    fn state(&self) -> State;
     // state_mut sets the current CPU state.
     fn state_mut(&mut self, new: State);
 
@@ -2822,10 +2838,6 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
 
 macro_rules! cpu_internal {
     () => {
-        // state returns the current CPU state.
-        fn state(&self) -> State {
-            self.state
-        }
         // state_mut sets the current CPU state.
         fn state_mut(&mut self, new: State) {
             self.state = new;
@@ -4993,7 +5005,7 @@ macro_rules! cpu_nmos_power_reset {
 macro_rules! cpu_impl {
     () => {
         /// Use this to enable or disable state based debugging dynamically.
-        fn set_debug(&mut self, d: Option<&'a dyn Fn() -> (Rc<RefCell<CPUState>>, bool)>) {
+        fn set_debug(&mut self, d: Option<Box<dyn CPUDebug>>) {
             self.debug = d;
         }
 
@@ -5001,8 +5013,8 @@ macro_rules! cpu_impl {
         /// will only happen at the start of an opcode.
         /// If RDY is asserted it will simply repeat the previous state if at Tick1.
         fn debug(&self) {
-            if let Some(d) = self.debug {
-                let (ref_state, full) = d();
+            if let Some(d) = &self.debug {
+                let (ref_state, full) = d.get_debug();
                 let mut state = ref_state.borrow_mut();
                 state.state = self.state;
                 state.a = self.a.0;

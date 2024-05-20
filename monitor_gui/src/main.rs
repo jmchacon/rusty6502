@@ -45,7 +45,13 @@ fn main() -> Result<()> {
     let (cpucommandtx, cpucommandrx) = channel();
     // The response channel.
     let (cpucommandresptx, cpucommandresprx) = channel();
-    let c = thread::spawn(move || cpu_loop(CPUType::NMOS, &cpucommandrx, &cpucommandresptx));
+    let c = thread::spawn(move || {
+        cpu_loop(
+            Box::new(CPU6502::new(ChipDef::default())),
+            &cpucommandrx,
+            &cpucommandresptx,
+        )
+    });
     let mut cpu = Runner {
         h: c,
         n: "CPU".into(),
