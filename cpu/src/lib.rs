@@ -906,9 +906,8 @@ pub trait CPUDebug {
     fn get_debug(&self) -> (Rc<RefCell<CPUState>>, bool);
 }
 
-/// The interface any 6502 implementation must conform to. This provides
-/// opcode functions as well as enough internal state to implement debugging
-/// (i.e. get/setting the PC, getting RAM, disassemble, etc)pub trait CPU<'a>: Chip + Send {
+/// The interface any 6502 implementation must conform to.
+pub trait CPU<'a>: Chip + Send {
     /// Given an `Opcode` and `AddressMode` return the valid u8 values that
     /// can represent it.
     ///
