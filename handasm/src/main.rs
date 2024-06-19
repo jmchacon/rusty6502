@@ -9,7 +9,6 @@
 //! respectively with the remainder all zeros.
 
 use std::{
-    fmt,
     fs::{write, File},
     io::{self, BufRead},
     path::Path,
@@ -25,19 +24,6 @@ use color_eyre::eyre::{eyre, Result};
 struct Args {
     filename: String,
     output: String,
-}
-
-#[derive(Debug, Clone)]
-/// `ParseError` indicates a syntax error parsing the input.
-pub struct ParseError {
-    line: String,
-    line_num: usize,
-}
-
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Can't parse line {} - {}", self.line_num, self.line)
-    }
 }
 
 fn main() -> Result<()> {
