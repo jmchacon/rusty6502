@@ -639,15 +639,10 @@ fn equ_state(
     match val {
         OpVal::Label(_) => {}
         OpVal::Val(v) => {
-            // This might be a forward ref already defined. If so update it's
-            // definition. Otherwise add it in.
-            if ret.labels.contains_key(&label) {
-                let lbl = get_label_mut(&mut ret.labels, &label);
-                lbl.val = Some(v);
-                lbl.line = line_num + 1;
-            } else {
-                add_label(true, ret, &label, Some(v), line, line_num)?;
-            }
+            // This is already defined since the EQU block always calls add_label.
+            let lbl = get_label_mut(&mut ret.labels, &label);
+            lbl.val = Some(v);
+            lbl.line = line_num + 1;
         }
     };
     tokens.push(Token::Equ(label, val));

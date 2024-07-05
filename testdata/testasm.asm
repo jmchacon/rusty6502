@@ -60,6 +60,10 @@ BBB = AAA
 AAA = MSGX
 MSGX = 0x1234
 
+BEQ ABC
+ABC = BCD
+BCD = 0x00
+
 HERE = *
 
 .org $FFFC

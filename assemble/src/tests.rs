@@ -336,6 +336,11 @@ bad_assemble_test!(
     error: "Input line has non ASCII characters",
   },
   CPUType::NMOS
+  bad_label_crossref: BadAssembleTest{
+    asm: "bad_label_crossref.asm",
+    error: "The following labels are referenced but never defined:",
+  },
+  CPUType::NMOS
 );
 
 #[test]
