@@ -7,14 +7,18 @@ use regex::Regex;
 use rusty6502::prelude::*;
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::io::BufReader;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::num::Wrapping;
 use std::str::FromStr;
 use std::sync::OnceLock;
-use std::{fs::File, io::Lines};
 
 // Basic grammer:
 //
+// INCLUDE|.INCLUDE - Read in the given filename and insert it inline with the current
+//                    input. When processed this will convert .INCLUDE into a comment
+//                    and add a trailing comment at the end of the included file
+//                    to indicate it's termination.
 // <u8> - 0-255 expressed as decimal (default), hex ($ or 0x), binary (%), or a single char as "X".
 //        NOTE: Characters can be expressed as \X for newline (\n), CR (\r) and Tab (\t). Anything else
 //              just set the direct 8 bit value...
@@ -164,13 +168,13 @@ struct ASTOutput {
 // It will compute an AST from the file reader along with a label map
 // that has references to both fully defined labels (EQU) and references
 // to location labels (either defs or refs).
-fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
+fn pass1(cpu: &dyn CPU, lines: &[String]) -> Result<ASTOutput> {
     let mut ret = ASTOutput {
         ast: Vec::<Vec<Token>>::new(),
         labels: HashMap::new(),
     };
 
-    for (line_num, line) in lines.map_while(Result::ok).enumerate() {
+    for (line_num, line) in lines.iter().enumerate() {
         // We only support ASCII encoded files (parsing is far simpler).
         // TODO(jchacon): Add support for comments?
         if !line.is_ascii() {
@@ -199,25 +203,25 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
             let upper = token.to_uppercase();
 
             state = match state {
-                State::Begin => beginning_states(token, &upper, &line, line_num)?,
+                State::Begin => beginning_states(token, &upper, line, line_num)?,
                 State::Label(label) => {
-                    label_state(label, &mut ret, token, &upper, &mut tokens, &line, line_num)?
+                    label_state(label, &mut ret, token, &upper, &mut tokens, line, line_num)?
                 }
 
                 // An ORG statement must be followed by a u16 value.
-                State::Org => org_state(token, &mut tokens, &line, line_num)?,
+                State::Org => org_state(token, &mut tokens, line, line_num)?,
 
                 // Word and Byte are effectively the same logic except which size
                 // is required (bytes can't be 16 bit).
                 State::Word(md) => {
-                    word_byte_state(token, &mut ret, md, &mut tokens, true, &line, line_num)?
+                    word_byte_state(token, &mut ret, md, &mut tokens, true, line, line_num)?
                 }
                 State::Byte(md) => {
-                    word_byte_state(token, &mut ret, md, &mut tokens, false, &line, line_num)?
+                    word_byte_state(token, &mut ret, md, &mut tokens, false, line, line_num)?
                 }
 
                 // Asciiz parsing.
-                State::AsciiZ(md) => asciiz_state(token, md, &mut tokens, &line, line_num)?,
+                State::AsciiZ(md) => asciiz_state(token, md, &mut tokens, line, line_num)?,
 
                 // Remainder is an intermediate state after we've processed something.
                 // At this point we can only define a comment and move to that stage.
@@ -226,7 +230,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 // Needs the line_done field as ASCIIZ and comment support parses the whole line
                 // and this gives us a way out of the enclosing token parsing loop
                 // (it'll just end up here for all the tokens and fall out).
-                State::Remainder(line_done) => remainder_state(line_done, token, &line, line_num)?,
+                State::Remainder(line_done) => remainder_state(line_done, token, line, line_num)?,
 
                 // For comments take everything left, construct a comment and then jump to Remainder
                 // to ignore the remaining tokens.
@@ -242,9 +246,9 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
 
                 // EQU is label EQU <val> so process the value and push a new TokenDef into tokens.
                 State::Equ(label) => {
-                    equ_state(token, &mut ret, &mut tokens, label, &line, line_num)?
+                    equ_state(token, &mut ret, &mut tokens, label, line, line_num)?
                 }
-                State::Op(op) => op_state(token, &mut ret, &mut tokens, cpu, op, &line, line_num)?,
+                State::Op(op) => op_state(token, &mut ret, &mut tokens, cpu, op, line, line_num)?,
             };
         }
 
@@ -280,7 +284,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 // can only handle
                 //
                 // LABEL: ; Some comments
-                add_label(true, &mut ret, &label, None, &line, line_num)?;
+                add_label(true, &mut ret, &label, None, line, line_num)?;
                 tokens.push(Token::Label(label));
             }
 
@@ -1409,13 +1413,61 @@ fn emit_zp_relative(
     Ok(())
 }
 
-/// `parse` will take the given filename, read it into RAM
-/// and assemble it into 6502 assembly written back as the 64k
-/// array returned along with a listing file.
+/// `parse_file` will take the given filename and read it in, process any
+/// INCLUDE|.INCLUDE directives and then pass it along to `parse` for processing
+/// and assembly generation.
 ///
 /// # Errors
 /// Any parsing error of the input stream can be returned in Result.
-pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Result<Assembly> {
+pub fn parse_file(cpu: &dyn CPU, filename: &str, debug: bool) -> Result<Assembly> {
+    let mut lines = Vec::new();
+    read_file_and_process(filename, &mut lines)?;
+    parse(cpu, &lines, debug)
+}
+
+fn read_file_and_process(filename: &str, lines: &mut Vec<String>) -> Result<()> {
+    let file = File::open(filename)?;
+    let rdr = BufReader::new(file).lines();
+    for (line_num, line) in rdr.map_while(Result::ok).enumerate() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.is_empty() {
+            lines.push(line.clone());
+        } else {
+            let upper = fields[0].to_uppercase();
+            if upper == "INCLUDE" || upper == ".INCLUDE" {
+                if fields.len() != 2 {
+                    return Err(eyre!(
+                        "INCLUDE directive invalid on line {}: Must supply a filename",
+                        line_num + 1
+                    ));
+                }
+                lines.push("\n".into());
+                lines.push(format!("; {line}"));
+                let mut sub_lines = Vec::new();
+                read_file_and_process(fields[1], &mut sub_lines)?;
+                lines.append(&mut sub_lines);
+                lines.push(format!("; END INCLUDE {}", fields[1]));
+                lines.push("\n".into());
+            } else {
+                lines.push(line.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `parse` will take the given lines and assemble it into 6502 assembly written
+/// back as the 64k array returned along with a listing file.
+/// This is a separate public function to allow on the fly assembly inside of
+/// other programs without requiring file ops.
+///
+/// NOTE: This will not process any INCLUDE|.INCLUDE directives as it assumes
+///       a fully constructed stream of input at this point. If this support is needed
+///       use `parse_file` instead.
+///
+/// # Errors
+/// Any parsing error of the input stream can be returned in Result.
+pub fn parse(cpu: &dyn CPU, lines: &[String], debug: bool) -> Result<Assembly> {
     // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
     // while filling in a label mapping. The 2nd one does actual assembly over
     // the tokens with labels getting filled in from the map or computed as needed.
