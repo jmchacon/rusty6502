@@ -30,7 +30,7 @@ LDA #"\n"
 LDA #"\r"
 LDA #"\t"
 
-MSG EQU 0x0004
+MSG EQU 0x0004 ; MSG = 0x0004
 LDA MSG
 MSG2 EQU 0x04
 LDA MSG2
@@ -48,6 +48,19 @@ ASCIIZ "So"
 ASCIIZ "s"
 ASCIIZ "Soo"
 LDA ALABEL
+
+; Recursive label refs
+AA = MSG
+AB = AA
+
+; Now do a set in reverse order to cause multiple resolution loops
+DDD = CCC
+CCC = BBB
+BBB = AAA
+AAA = MSGX
+MSGX = 0x1234
+
+HERE = *
 
 .org $FFFC
 RESET .word END

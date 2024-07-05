@@ -116,8 +116,13 @@ START	LDA #$B1
 	BNE *
   STA TESTLOC
 	TSX
-	CPX #$91 ; What S changed to. Can't compare against stashed value, stack might be that?
+; Valid single line labels here too.
+LBL
+  CPX #$91 ; What S changed to. Can't compare against stashed value, stack might be that?
+LBL2:
 	BNE *
+LBL3 ; with comment
+LBL4: ; with comment
 	TXA
 	AND #$11
 	STA $02 ; precompute expected value from LAS for all regs since it's S&val (from 1300) and we know S

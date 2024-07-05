@@ -203,7 +203,7 @@ bad_assemble_test!(
   CPUType::NMOS
   invalid_equ_value: BadAssembleTest{
       asm: "invalid_equ_value.asm",
-      error: "not valid u8 or u16 for EQU",
+      error: "invalid label or value Error parsing label - $C0001. Must be of the form ^[a-zA-Z][a-zA-Z0-9_]+$",
   },
   CPUType::NMOS
   double_equ_ref: BadAssembleTest{
