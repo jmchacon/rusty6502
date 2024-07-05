@@ -1634,7 +1634,7 @@ fn disassemble_tests() -> Result<()> {
 }
 
 #[test]
-#[cfg_attr(not(miri), timeout(90000))]
+#[cfg_attr(not(miri), timeout(5000))]
 #[cfg_attr(miri, timeout(900000))]
 #[allow(clippy::too_many_lines)]
 fn step_tests() -> Result<()> {

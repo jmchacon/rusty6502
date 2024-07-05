@@ -23,15 +23,15 @@ use std::{fs::File, io::Lines};
 // <Val8> - <LABEL>|u8 - A label ref (which must be u8) or a u8 value.
 // <Val> - <LABEL>|u8|u16 - A label ref, a u8, or a u16 value.
 // STRING - An ASCII string surrounded by quotes - "STRING".
-// <LABEL> - A string of the form /^[a-zA-Z][a-zA-Z0-9+-_]+$/ or '*' which always
+// <LABEL> - A string of the form /^[a-zA-Z][a-zA-Z0-9_]+$/ or '*' which always
 //           refers to the current PC location.
-//           TODO(jchacon) - Remove + and implement real addition, subtraction, or/and/etc support.
 //
 // All entries below implicitly take comments after though as defined comments can also be standalone.
 //
 // ORG|.ORG <u16> - Reset the PC location to the u16 value
-// LABEL[:] <EQU|.EQU|=> <u8|u16> - A label followed by equality setting the label to the indicated value.
-// [<LABEL>]: - A single line label defining a location with no other data.
+// LABEL[:] <EQU|.EQU|=> <u8|u16|LABEL> - A label followed by equality setting the label to the indicated value.
+//                                        A chain of label references is allowed as long as it terminates eventually.
+// [<LABEL>][:] - A single line label defining a location with no other data.
 // [<LABEL>][:] WORD|.WORD <Val16> [<Val16> ...] - One or more u16 values with an optional
 //                                        label defining the location.
 // [<LABEL>][:] BYTE|.BYTE <Val8>|STRING [<Val8>|STRING ...] - One or more u8/string values
@@ -91,7 +91,7 @@ enum Token {
     AsciiZ(Vec<MemDef>),
     Op(Operation),
     Comment(String),
-    Equ(String),
+    Equ(String, OpVal),
 }
 
 // Operation defines an assembly instruction with
@@ -369,7 +369,7 @@ fn label_state(
     // Label with an opcode:
     //   LABEL[:] OP OPVAL [; [comments]]
     // Label with a definition
-    //   LABEL[:] <WORD|BYTE|EQU|ASCIIZ> <val>
+    //   LABEL[:] <WORD|BYTE|EQU|ASCIIZ> <val> [; [comments]]
 
     if let Some(tok) = token.strip_prefix(';') {
         add_label(true, ret, &label, None, line, line_num)?;
@@ -388,7 +388,8 @@ fn label_state(
                     ));
                 }
                 // Don't have to validate label since State::Begin did it above before
-                // progressing here.
+                // progressing here. But it does need an initial definition.
+                add_label(true, ret, &label, None, line, line_num)?;
                 Ok(State::Equ(label))
             }
             "WORD" | ".WORD" => {
@@ -631,18 +632,20 @@ fn equ_state(
     line_num: usize,
 ) -> Result<State> {
     // Find a value and then create the token.
-    let val = match parse_val(token, false) {
-        Some(TokenVal::Val8(v)) => TokenVal::Val8(v),
-        Some(TokenVal::Val16(v)) => TokenVal::Val16(v),
-        _ => {
-            return Err(eyre!(
-                "Error parsing line {}: not valid u8 or u16 for EQU - {line}",
-                line_num + 1,
-            ));
+    let val = token_to_val_or_label(token, ret, false, line, line_num)?;
+
+    // If it's got a value already we need to add that label completely as token_to_val_or_label
+    // only does this for new labels.
+    match val {
+        OpVal::Label(_) => {}
+        OpVal::Val(v) => {
+            // This is already defined since the EQU block always calls add_label.
+            let lbl = get_label_mut(&mut ret.labels, &label);
+            lbl.val = Some(v);
+            lbl.line = line_num + 1;
         }
     };
-    add_label(true, ret, &label, Some(val), line, line_num)?;
-    tokens.push(Token::Equ(label));
+    tokens.push(Token::Equ(label, val));
     Ok(State::Remainder(false))
 }
 
@@ -765,19 +768,17 @@ fn op_state(
 
 // compute_refs takes the previous AST output and cross references all labels,
 // builds PC values for each operation and updates the AST with these results.
-// The only thing it leaves is relative address computation since that can't be
-// known until all labels are fully cross referenced. That will be handled during
-// byte code generation.
+// Then compute relative addresses and recursive label refs.
 fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
     // Start the initial PC at 0x0000 until something resets it via ORG.
     let mut pc: u16 = 0x0000;
-
+    let mut hm = HashMap::new();
     for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
         // For each line process the token list.
         for t in line.iter_mut() {
             match t {
                 // Empty states we don't process.
-                Token::Equ(_) | Token::Comment(_) | Token::Line(_) => {}
+                Token::Comment(_) | Token::Line(_) => {}
 
                 // Stand alone labels are location labels so just assign those to
                 // the current PC.
@@ -808,7 +809,71 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                 Token::Op(o) => {
                     compute_opcode_refs(o, &mut ast_output.labels, &mut pc, cpu, line_num)?;
                 }
+                Token::Equ(td, ov) => {
+                    if let OpVal::Label(l) = ov {
+                        // It's a label reference. So let's see if it resolves yet (or is *)
+                        // If not we'll add it to the list to process once we've
+                        // done a complete pass. If it's * we'll just set to PC.
+                        if l == "*" {
+                            // This is simple. It's just the PC and we're done.
+                            get_label_mut(&mut ast_output.labels, td).val =
+                                Some(TokenVal::Val16(pc));
+                        } else {
+                            let lbl = get_label(&ast_output.labels, l);
+                            if lbl.val.is_some() {
+                                get_label_mut(&mut ast_output.labels, td).val = lbl.val;
+                            } else {
+                                hm.insert(td.clone(), l.clone());
+                            }
+                        }
+                    }
+                }
             };
+        }
+    }
+
+    // Ok, now do another pass just looping for opcodes which are relative
+    // and do final fixups there since we should have all PC values now.
+    for (line_num, line) in ast_output.ast.iter_mut().enumerate() {
+        // For each line process the token list.
+        for t in line.iter_mut() {
+            if let Token::Op(o) = t {
+                if o.mode == AddressMode::Relative || o.mode == AddressMode::ZeroPageRelative {
+                    fixup_relative_addr(o, &ast_output.labels, line_num)?;
+                }
+            }
+        }
+    }
+
+    loop {
+        let mut rem = Vec::new();
+        for (ld, lv) in &hm {
+            // Both labels have entries so we can just blind lookup.
+            let lbl = get_label(&ast_output.labels, lv);
+            if lbl.val.is_some() {
+                get_label_mut(&mut ast_output.labels, ld).val = lbl.val;
+                rem.push(ld.clone());
+            }
+        }
+
+        // If we did a loop and nothing changed but there are still entries
+        // this means a dangling reference such as:
+        //
+        // AA = BB
+        //
+        // and BB was never defined anywhere.
+        if rem.is_empty() && !hm.is_empty() {
+            return Err(eyre!(
+                "The following labels are referenced but never defined: {:?}",
+                hm.keys()
+            ));
+        }
+
+        for r in &rem {
+            hm.remove(r);
+        }
+        if hm.is_empty() {
+            break;
         }
     }
     Ok(())
@@ -1004,7 +1069,7 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
                     md,
                     false,
                 ),
-                Token::Equ(td) => equ_output(
+                Token::Equ(td, _) => equ_output(
                     &mut OutputArgs {
                         res: &mut res,
                         output: &mut output,
@@ -1217,12 +1282,6 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
         o.op
     );
 
-    // Things are mutable here as we may have to fixup op_val for branches before
-    // emitting bytes below.
-    if o.mode == AddressMode::Relative || o.mode == AddressMode::ZeroPageRelative {
-        fixup_relative_addr(o, oa.labels, line_num)?;
-    }
-
     // Grab the first entry in the bytes vec for the opcode value.
     // TODO(jchacon): If > 1 pick one randomly.
     if o.mode == AddressMode::ZeroPageRelative {
@@ -1232,7 +1291,6 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
             .op_val
             .as_ref()
             .unwrap_or_else(|| panic!("op_val is None for zprel?"));
-        println!("Got v: {v:?}");
         let OpVal::Val(TokenVal::Val8(offset)) = v[0] else {
             panic!("First value of ZeroPageRelative must be a u8");
         };
@@ -1432,7 +1490,6 @@ pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Resul
     // Verify all the labels defined got values (EQU and location definitions/references line up)
     let mut errors = String::new();
     for (l, ld) in &ast_output.labels {
-        //        println!("{l} -> {ld:?}");
         let locs = ld
             .refs
             .iter()
@@ -1449,9 +1506,6 @@ pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Resul
             .unwrap();
         }
     }
-    if !errors.is_empty() {
-        return Err(eyre!(errors));
-    }
 
     // If debug print this out
     if debug {
@@ -1464,6 +1518,10 @@ pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Resul
         for (k, v) in &ast_output.labels {
             println!("{k:?} -> {v:?}");
         }
+    }
+
+    if !errors.is_empty() {
+        return Err(eyre!(errors));
     }
 
     // Finally generate the output
@@ -1572,7 +1630,7 @@ fn parse_label(label: &str) -> Result<String> {
     }
 }
 
-const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9-+_]+$";
+const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9_]+$";
 
 fn re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
