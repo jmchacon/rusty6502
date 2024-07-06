@@ -49,7 +49,7 @@ macro_rules! assemble_test {
                           CPUType::CMOS65SC02 => &c65sc02,
                       };
 
-                      let asm = parse_file(cpu, path.to_str().unwrap(), true)?;
+                      let asm = parse_file(cpu, &path, true)?;
 
                       let diff = image
                           .iter()
@@ -136,7 +136,7 @@ macro_rules! bad_assemble_test {
                         CPUType::CMOS65SC02 => &c65sc02,
                     };
 
-                    let asm = parse_file(cpu, path.to_str().unwrap(), true);
+                    let asm = parse_file(cpu, &path, true);
                     assert!(asm.is_err(), "Didn't get error for {}", a.asm);
                     let e = asm.err().unwrap();
                     assert!(e.to_string().contains(a.error), "Missing error string '{}' for {e:?}", a.error);
@@ -330,6 +330,16 @@ bad_assemble_test!(
     error: "The following labels are referenced but never defined:",
   },
   CPUType::NMOS
+  bad_include: BadAssembleTest{
+    asm: "bad_include.asm",
+    error: "Must supply a filename",
+  },
+  CPUType::NMOS
+  bad_include2: BadAssembleTest{
+    asm: "bad_include2.asm",
+    error: "INCLUDE directive must have filename surrounded by quotes",
+  },
+  CPUType::NMOS
 );
 
 #[test]
@@ -343,7 +353,10 @@ fn bad_generate_label_loc_input() {
             "lbl".into(),
             LabelDef {
                 val: Some(TokenVal::Val8(1)),
-                line: 1,
+                file_info: crate::FileInfo {
+                    filename: String::new(),
+                    line_num: 1,
+                },
                 refs: vec![],
             },
         )]),
@@ -366,7 +379,10 @@ fn bad_generate_comment() {
             "lbl".into(),
             LabelDef {
                 val: Some(TokenVal::Val8(1)),
-                line: 1,
+                file_info: crate::FileInfo {
+                    filename: String::new(),
+                    line_num: 1,
+                },
                 refs: vec![],
             },
         )]),

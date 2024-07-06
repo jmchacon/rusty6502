@@ -66,7 +66,7 @@ fn main() -> Result<()> {
         args.start_loc,
         args.bytes
     );
-    match parse_file(cpu, &args.filename, args.debug) {
+    match parse_file(cpu, Path::new(&args.filename), args.debug) {
         Err(e) => Err(e),
         Ok(res) => {
             write(
