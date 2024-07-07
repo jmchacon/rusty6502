@@ -1,16 +1,12 @@
 //! assembler will take the given input file and generate a .bin file
 //! after assembling the instructions presented in it.
 
-use assemble::parse;
+use assemble::parse_file;
 use clap::Parser;
 use clap_num::maybe_hex;
 use color_eyre::eyre::Result;
 use rusty6502::prelude::*;
-use std::{
-    fs::{write, File},
-    io::{self, BufRead},
-    path::Path,
-};
+use std::{fs::write, path::Path};
 
 /// assembler will take the given input file and generate a .bin file
 /// after assembling the instructions presented in it.
@@ -47,8 +43,6 @@ fn main() -> Result<()> {
     color_eyre::install()?;
     let args: Args = Args::parse();
 
-    let lines = read_lines(args.filename)?;
-
     let c6502_cpu = CPU6502::new(ChipDef::default());
     let ricoh_cpu = CPURicoh::new(ChipDef::default());
     let c6510_cpu = CPU6510::new(ChipDef::default(), None);
@@ -72,7 +66,7 @@ fn main() -> Result<()> {
         args.start_loc,
         args.bytes
     );
-    match parse(cpu, lines, args.debug) {
+    match parse_file(cpu, Path::new(&args.filename), args.debug) {
         Err(e) => Err(e),
         Ok(res) => {
             write(
@@ -83,15 +77,6 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
-}
-
-// `read_lines` returns an Iterator to the Reader of the lines of the file.
-fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
-where
-    P: AsRef<Path>,
-{
-    let file = File::open(filename)?;
-    Ok(io::BufReader::new(file).lines())
 }
 
 #[test]

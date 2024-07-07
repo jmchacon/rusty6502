@@ -7,14 +7,19 @@ use regex::Regex;
 use rusty6502::prelude::*;
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::io::BufReader;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::num::Wrapping;
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::OnceLock;
-use std::{fs::File, io::Lines};
 
 // Basic grammer:
 //
+// INCLUDE|.INCLUDE "<filename>" - Read in the given filename and insert it inline
+//                                 with the current input. The path must be relative
+//                                 to the current processed file. When processed
+//                                 this will convert .INCLUDE into a comment.
 // <u8> - 0-255 expressed as decimal (default), hex ($ or 0x), binary (%), or a single char as "X".
 //        NOTE: Characters can be expressed as \X for newline (\n), CR (\r) and Tab (\t). Anything else
 //              just set the direct 8 bit value...
@@ -83,7 +88,7 @@ struct MemDef {
 // rounds occur.
 #[derive(Debug)]
 enum Token {
-    Line(String),
+    Line(FileInfo, String),
     Label(String),
     Org(u16),
     Word(Vec<MemDef>),
@@ -140,8 +145,8 @@ enum TokenVal {
 #[derive(Debug)]
 struct LabelDef {
     val: Option<TokenVal>,
-    line: usize,
-    refs: Vec<usize>,
+    file_info: FileInfo,
+    refs: Vec<FileInfo>,
 }
 
 /// Assembly defines the output from an assemble pass.
@@ -160,17 +165,30 @@ struct ASTOutput {
     labels: HashMap<String, LabelDef>,
 }
 
+#[derive(Clone, Debug)]
+/// `FileInfo` describes tracking information for each line of input.
+pub struct FileInfo {
+    filename: String,
+    line_num: usize, // 1..X range
+}
+
+impl std::fmt::Display for FileInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.filename, self.line_num)
+    }
+}
+
 // pass1 does the initial AST build for the input given.
 // It will compute an AST from the file reader along with a label map
 // that has references to both fully defined labels (EQU) and references
 // to location labels (either defs or refs).
-fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
+fn pass1(cpu: &dyn CPU, lines: &[(FileInfo, String)]) -> Result<ASTOutput> {
     let mut ret = ASTOutput {
         ast: Vec::<Vec<Token>>::new(),
         labels: HashMap::new(),
     };
 
-    for (line_num, line) in lines.map_while(Result::ok).enumerate() {
+    for (fi, line) in lines {
         // We only support ASCII encoded files (parsing is far simpler).
         // TODO(jchacon): Add support for comments?
         if !line.is_ascii() {
@@ -188,7 +206,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
         let mut tokens = if fields.is_empty() {
             Vec::<Token>::new()
         } else {
-            Vec::<Token>::from([Token::Line(line.clone())])
+            Vec::<Token>::from([Token::Line(fi.clone(), line.clone())])
         };
 
         // Every line starts here. If there are no tokens we'll just fall
@@ -199,25 +217,25 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
             let upper = token.to_uppercase();
 
             state = match state {
-                State::Begin => beginning_states(token, &upper, &line, line_num)?,
+                State::Begin => beginning_states(token, &upper, line, fi)?,
                 State::Label(label) => {
-                    label_state(label, &mut ret, token, &upper, &mut tokens, &line, line_num)?
+                    label_state(label, &mut ret, token, &upper, &mut tokens, line, fi)?
                 }
 
                 // An ORG statement must be followed by a u16 value.
-                State::Org => org_state(token, &mut tokens, &line, line_num)?,
+                State::Org => org_state(token, &mut tokens, line, fi)?,
 
                 // Word and Byte are effectively the same logic except which size
                 // is required (bytes can't be 16 bit).
                 State::Word(md) => {
-                    word_byte_state(token, &mut ret, md, &mut tokens, true, &line, line_num)?
+                    word_byte_state(token, &mut ret, md, &mut tokens, true, line, fi)?
                 }
                 State::Byte(md) => {
-                    word_byte_state(token, &mut ret, md, &mut tokens, false, &line, line_num)?
+                    word_byte_state(token, &mut ret, md, &mut tokens, false, line, fi)?
                 }
 
                 // Asciiz parsing.
-                State::AsciiZ(md) => asciiz_state(token, md, &mut tokens, &line, line_num)?,
+                State::AsciiZ(md) => asciiz_state(token, md, &mut tokens, line, fi)?,
 
                 // Remainder is an intermediate state after we've processed something.
                 // At this point we can only define a comment and move to that stage.
@@ -226,7 +244,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 // Needs the line_done field as ASCIIZ and comment support parses the whole line
                 // and this gives us a way out of the enclosing token parsing loop
                 // (it'll just end up here for all the tokens and fall out).
-                State::Remainder(line_done) => remainder_state(line_done, token, &line, line_num)?,
+                State::Remainder(line_done) => remainder_state(line_done, token, line, fi)?,
 
                 // For comments take everything left, construct a comment and then jump to Remainder
                 // to ignore the remaining tokens.
@@ -241,10 +259,8 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 }
 
                 // EQU is label EQU <val> so process the value and push a new TokenDef into tokens.
-                State::Equ(label) => {
-                    equ_state(token, &mut ret, &mut tokens, label, &line, line_num)?
-                }
-                State::Op(op) => op_state(token, &mut ret, &mut tokens, cpu, op, &line, line_num)?,
+                State::Equ(label) => equ_state(token, &mut ret, &mut tokens, label, line, fi)?,
+                State::Op(op) => op_state(token, &mut ret, &mut tokens, cpu, op, line, fi)?,
             };
         }
 
@@ -280,7 +296,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
                 // can only handle
                 //
                 // LABEL: ; Some comments
-                add_label(true, &mut ret, &label, None, &line, line_num)?;
+                add_label(true, &mut ret, &label, None, line, fi)?;
                 tokens.push(Token::Label(label));
             }
 
@@ -295,18 +311,14 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
             // Org can happen if they start and then end the line.
             State::Org => {
                 return Err(eyre!(
-                    "Error parsing line {}: missing data for {state:?} - {line}",
-                    line_num + 1
+                    "Error parsing line {fi} - missing data for {state:?} - {line}"
                 ));
             }
 
             // Anything else is an internal error which shouldn't be possible.
             // i.e. EQU and ASCIIZ handle all their parsing and can't fall through here.
             State::Equ(_) | State::AsciiZ(_) => {
-                panic!(
-                    "Internal error parsing line {}: invalid state {state:?} - {line}",
-                    line_num + 1
-                )
+                panic!("Internal error parsing line {fi} - invalid state {state:?} - {line}")
             }
         };
         ret.ast.push(tokens);
@@ -314,7 +326,7 @@ fn pass1(cpu: &dyn CPU, lines: Lines<BufReader<File>>) -> Result<ASTOutput> {
     Ok(ret)
 }
 
-fn beginning_states(token: &str, upper: &str, line: &str, line_num: usize) -> Result<State> {
+fn beginning_states(token: &str, upper: &str, line: &str, fi: &FileInfo) -> Result<State> {
     match upper {
         // We can match an ORG, WORD, BYTE or ASCIIZ here directly.
         "ORG" | ".ORG" => Ok(State::Org),
@@ -343,8 +355,7 @@ fn beginning_states(token: &str, upper: &str, line: &str, line_num: usize) -> Re
                     Ok(label) => Ok(State::Label(label)),
                     Err(err) => {
                         return Err(eyre!(
-                            "Error parsing line {}: invalid label {err} - {line}",
-                            line_num + 1
+                            "Error parsing line {fi} - invalid label {err} - {line}"
                         ));
                     }
                 }
@@ -360,7 +371,7 @@ fn label_state(
     upper: &str,
     tokens: &mut Vec<Token>,
     line: &str,
-    line_num: usize,
+    fi: &FileInfo,
 ) -> Result<State> {
     // We may get here a few ways
     //
@@ -372,7 +383,7 @@ fn label_state(
     //   LABEL[:] <WORD|BYTE|EQU|ASCIIZ> <val> [; [comments]]
 
     if let Some(tok) = token.strip_prefix(';') {
-        add_label(true, ret, &label, None, line, line_num)?;
+        add_label(true, ret, &label, None, line, fi)?;
         tokens.push(Token::Label(label));
         Ok(State::Comment(tok.into()))
     } else {
@@ -382,28 +393,25 @@ fn label_state(
             "EQU" | ".EQU" | "=" => {
                 let fc = line.split_whitespace().count();
                 if fc < 3 {
-                    return Err(eyre!(
-                        "Error parsing line {}: invalid EQU - {line}",
-                        line_num + 1
-                    ));
+                    return Err(eyre!("Error parsing line {fi} - invalid EQU - {line}"));
                 }
                 // Don't have to validate label since State::Begin did it above before
                 // progressing here. But it does need an initial definition.
-                add_label(true, ret, &label, None, line, line_num)?;
+                add_label(true, ret, &label, None, line, fi)?;
                 Ok(State::Equ(label))
             }
             "WORD" | ".WORD" => {
-                add_label(true, ret, &label, None, line, line_num)?;
+                add_label(true, ret, &label, None, line, fi)?;
                 tokens.push(Token::Label(label));
                 Ok(State::Word(vec![]))
             }
             "BYTE" | ".BYTE" => {
-                add_label(true, ret, &label, None, line, line_num)?;
+                add_label(true, ret, &label, None, line, fi)?;
                 tokens.push(Token::Label(label));
                 Ok(State::Byte(vec![]))
             }
             "ASCIIZ" | ".ASCIIZ" => {
-                add_label(true, ret, &label, None, line, line_num)?;
+                add_label(true, ret, &label, None, line, fi)?;
                 tokens.push(Token::Label(label));
                 Ok(State::AsciiZ(vec![]))
             }
@@ -412,13 +420,12 @@ fn label_state(
             // into tokens. Phase 2 will figure out its value.
             _ => match Opcode::from_str(upper) {
                 Ok(op) => {
-                    add_label(true, ret, &label, None, line, line_num)?;
+                    add_label(true, ret, &label, None, line, fi)?;
                     tokens.push(Token::Label(label));
                     Ok(State::Op(op))
                 }
                 Err(_) => Err(eyre!(
-                    "Error parsing line {}: invalid opcode '{token}' - {line}",
-                    line_num + 1
+                    "Error parsing line {fi} - invalid opcode '{token}' - {line}"
                 )),
             },
         }
@@ -432,15 +439,14 @@ fn word_byte_state(
     tokens: &mut Vec<Token>,
     is_word: bool,
     line: &str,
-    line_num: usize,
+    fi: &FileInfo,
 ) -> Result<State> {
     // We may have tokens left which is a comment so check for that and move to that phase.
     if let Some(token) = token.strip_prefix(';') {
         if md.is_empty() {
             // Account for '<WORD|BYTE> ; some comments'
             return Err(eyre!(
-                "Error parsing line {}: WORD or BYTE without value - {line}",
-                line_num + 1
+                "Error parsing line {fi} - WORD or BYTE without value - {line}"
             ));
         }
 
@@ -455,7 +461,7 @@ fn word_byte_state(
 
     // Below for all MemDef the PC value is computed and changed during
     // `compute_refs`.
-    match token_to_val_or_label(token, ret, is_word, line, line_num)? {
+    match token_to_val_or_label(token, ret, is_word, line, fi)? {
         OpVal::Label(l) => {
             md.push(MemDef {
                 pc: 0x0000,
@@ -478,7 +484,7 @@ fn word_byte_state(
                 }
                 TokenVal::Val16(v) => {
                     if !is_word {
-                        return Err(eyre!("Error parsing line {}: invalid BYTE value not 8 bit - {token} - {line}", line_num + 1));
+                        return Err(eyre!("Error parsing line {fi} invalid BYTE value not 8 bit - {token} - {line}"));
                     }
                     // Even though we must parse as a u16 we store this in little endian
                     // form so we can emit straight into memory. Plus we don't need
@@ -505,7 +511,7 @@ fn asciiz_state(
     mut md: Vec<MemDef>,
     tokens: &mut Vec<Token>,
     line: &str,
-    line_num: usize,
+    fi: &FileInfo,
 ) -> Result<State> {
     // If this is a comment and we've never defined anything something is wrong.
     // The rest of comment parsing happens below since this handles the entire
@@ -513,8 +519,7 @@ fn asciiz_state(
     if token.starts_with(';') && md.is_empty() {
         // Account for '<ASCIIZ> ; some comments'
         return Err(eyre!(
-            "Error parsing line {}: ASCIIZ without value - {line}",
-            line_num + 1
+            "Error parsing line {fi} - ASCIIZ without value - {line}"
         ));
     }
 
@@ -522,7 +527,7 @@ fn asciiz_state(
     // to start with a quote. But...it could have whitespace inside
     // of it so we really have to parse the rest of the line here.
     if !token.starts_with('"') {
-        return Err(eyre!("Error parsing line {}: ASCIIZ must be of the form \"XXX\" bad token '{token}' - {line}", line_num + 1));
+        return Err(eyre!("Error parsing line {fi} - ASCIIZ must be of the form \"XXX\" bad token '{token}' - {line}"));
     };
 
     // Un-escape the special 3 chars through the whole input string.
@@ -600,7 +605,7 @@ fn asciiz_state(
     Ok(State::Remainder(true))
 }
 
-fn remainder_state(line_done: bool, token: &str, line: &str, line_num: usize) -> Result<State> {
+fn remainder_state(line_done: bool, token: &str, line: &str, fi: &FileInfo) -> Result<State> {
     // Just keep looping here until the line runs out of tokens.
     if line_done {
         return Ok(State::Remainder(line_done));
@@ -608,15 +613,14 @@ fn remainder_state(line_done: bool, token: &str, line: &str, line_num: usize) ->
 
     match token.as_bytes() {
             [b';', ..] => Ok(State::Comment(token[1..].into())),
-            _ => Err(eyre!("Error parsing line {}: only comment after parsed tokens allowed - remainder {token} - {line}", line_num + 1)),
+            _ => Err(eyre!("Error parsing line {fi} - only comment after parsed tokens allowed - remainder {token} - {line}")),
         }
 }
 
-fn org_state(token: &str, tokens: &mut Vec<Token>, line: &str, line_num: usize) -> Result<State> {
+fn org_state(token: &str, tokens: &mut Vec<Token>, line: &str, fi: &FileInfo) -> Result<State> {
     let Some(TokenVal::Val16(pc)) = parse_val(token, true) else {
         return Err(eyre!(
-            "Error parsing line {}: invalid ORG value not 16 bit - {token} - {line}",
-            line_num + 1,
+            "Error parsing line {fi} - invalid ORG value not 16 bit - {token} - {line}"
         ));
     };
     tokens.push(Token::Org(pc));
@@ -629,10 +633,10 @@ fn equ_state(
     tokens: &mut Vec<Token>,
     label: String,
     line: &str,
-    line_num: usize,
+    fi: &FileInfo,
 ) -> Result<State> {
     // Find a value and then create the token.
-    let val = token_to_val_or_label(token, ret, false, line, line_num)?;
+    let val = token_to_val_or_label(token, ret, false, line, fi)?;
 
     // If it's got a value already we need to add that label completely as token_to_val_or_label
     // only does this for new labels.
@@ -642,7 +646,7 @@ fn equ_state(
             // This is already defined since the EQU block always calls add_label.
             let lbl = get_label_mut(&mut ret.labels, &label);
             lbl.val = Some(v);
-            lbl.line = line_num + 1;
+            lbl.file_info = fi.clone();
         }
     };
     tokens.push(Token::Equ(label, val));
@@ -656,7 +660,7 @@ fn op_state(
     cpu: &dyn CPU,
     op: Opcode,
     line: &str,
-    line_num: usize,
+    fi: &FileInfo,
 ) -> Result<State> {
     // Start all address modes with implied. If we can figure
     // it out at a given point change to the correct one. This
@@ -685,16 +689,15 @@ fn op_state(
         let parts: Vec<&str> = token.split(',').collect();
         if parts.len() != 3 {
             return Err(eyre!(
-                "Invalid zero page relative (too many parts) on line {} - {token}",
-                line_num + 1
+                "Invalid zero page relative (too many parts) on line {fi} - {token}"
             ));
         }
         let pre = parts[0].parse::<u8>().unwrap_or(10);
         if pre > 7 {
-            return Err(eyre!("Invalid zero page relative (index {pre} too large - greater than 7) on line {} - {token}", line_num + 1));
+            return Err(eyre!("Invalid zero page relative (index {pre} too large - greater than 7) on line {fi} - {token}"));
         }
-        let zpaddr = token_to_val_or_label(parts[1], ret, false, line, line_num)?;
-        let dest = token_to_val_or_label(parts[2], ret, false, line, line_num)?;
+        let zpaddr = token_to_val_or_label(parts[1], ret, false, line, fi)?;
+        let dest = token_to_val_or_label(parts[2], ret, false, line, fi)?;
         operation.op_val = Some(vec![OpVal::Val(TokenVal::Val8(pre)), zpaddr, dest]);
         tokens.push(Token::Op(operation));
         return Ok(State::Remainder(false));
@@ -751,7 +754,7 @@ fn op_state(
     // and started with a valid utf8 ASCII str.
     let op_val = std::str::from_utf8(val)?;
 
-    let ov = token_to_val_or_label(op_val, ret, false, line, line_num)?;
+    let ov = token_to_val_or_label(op_val, ret, false, line, fi)?;
     match ov {
         OpVal::Label(_) => {}
         OpVal::Val(v) => {
@@ -778,7 +781,7 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
         for t in line.iter_mut() {
             match t {
                 // Empty states we don't process.
-                Token::Comment(_) | Token::Line(_) => {}
+                Token::Comment(_) | Token::Line(_, _) => {}
 
                 // Stand alone labels are location labels so just assign those to
                 // the current PC.
@@ -1026,9 +1029,9 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
         let (mut output, mut label_out) = (String::new(), String::new());
         for (index, t) in line.iter_mut().enumerate() {
             match t {
-                Token::Line(line) => {
+                Token::Line(fi, line) => {
                     // Print the original input line as a comment in the output
-                    writeln!(output, "; {line}").unwrap();
+                    writeln!(output, "; {fi} - {line}").unwrap();
                 }
                 Token::Label(td) => {
                     // Location labels are always left justified
@@ -1260,7 +1263,9 @@ fn comment_output(oa: &mut OutputArgs, c: &String, index: usize) {
         write!(oa.output, "{v:04X}          {}", oa.label_out).unwrap();
         oa.label_out.clear();
     }
-    if index != 0 {
+    // If this wasn't the first entry (index 0 is the Line entry) then add
+    // a space to separate it from the rest of the line. i.e. LDA #69 ; A
+    if index != 1 {
         write!(oa.output, " ").unwrap();
     }
     write!(oa.output, "{c}").unwrap();
@@ -1467,13 +1472,102 @@ fn emit_zp_relative(
     Ok(())
 }
 
-/// `parse` will take the given filename, read it into RAM
-/// and assemble it into 6502 assembly written back as the 64k
-/// array returned along with a listing file.
+/// `parse_file` will take the given filename and read it in, process any
+/// INCLUDE|.INCLUDE directives and then pass it along to `parse` for processing
+/// and assembly generation.
 ///
 /// # Errors
 /// Any parsing error of the input stream can be returned in Result.
-pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Result<Assembly> {
+pub fn parse_file(cpu: &dyn CPU, filename: &Path, debug: bool) -> Result<Assembly> {
+    let mut lines = Vec::new();
+    read_file_and_process(filename, &mut lines)?;
+    parse(cpu, &lines, debug)
+}
+
+fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -> Result<()> {
+    let file = File::open(filename)?;
+    let rdr = BufReader::new(file).lines();
+    for (line_num, line) in rdr.map_while(Result::ok).enumerate() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.is_empty() {
+            lines.push((
+                FileInfo {
+                    filename: filename.to_string_lossy().into(),
+                    line_num: line_num + 1,
+                },
+                line.clone(),
+            ));
+        } else {
+            let upper = fields[0].to_uppercase();
+            if upper == "INCLUDE" || upper == ".INCLUDE" {
+                if fields.len() != 2 {
+                    return Err(eyre!(
+                        "INCLUDE directive invalid on line {}: Must supply a filename",
+                        line_num + 1
+                    ));
+                }
+                if fields[1].as_bytes()[0] != b'"'
+                    || fields[1].as_bytes()[fields[1].len() - 1] != b'"'
+                {
+                    return Err(eyre!(
+                        "INCLUDE directive must have filename surrounded by quotes - {line}"
+                    ));
+                }
+                // Compute the final filename using the current open one as the base
+
+                // The new file is everything between the quotes.
+                let new_file = &fields[1][1..fields[1].len() - 1];
+                let parent = filename
+                    .parent()
+                    .ok_or_else(|| eyre!("No parent? - {filename:?}"))?;
+
+                let path = parent.join(new_file);
+
+                lines.push((
+                    FileInfo {
+                        filename: filename.to_string_lossy().into(),
+                        line_num: line_num + 1,
+                    },
+                    format!("; {line}"),
+                ));
+                let mut sub_lines = Vec::new();
+                read_file_and_process(&path, &mut sub_lines)?;
+                lines.append(&mut sub_lines);
+                lines.push((
+                    FileInfo {
+                        filename: filename.to_string_lossy().into(),
+                        line_num: line_num + 1,
+                    },
+                    format!("; ENDINCLUDE {filename:?}"),
+                ));
+            } else {
+                lines.push((
+                    FileInfo {
+                        filename: filename.to_string_lossy().into(),
+                        line_num: line_num + 1,
+                    },
+                    line.clone(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `parse` will take the given list of (filename, line number, line) tuples and
+/// assemble it into 6502 assembly written back as the 64k array returned along
+/// with a listing file.
+///
+/// This is a separate public function to allow on the fly assembly inside of
+/// other programs without requiring file ops.
+///
+/// NOTE: This will not process any INCLUDE|.INCLUDE directives (they will become errors)
+///       as it assumes a fully constructed stream of input at this point.
+///       If this support is needed use `parse_file` instead.
+///
+/// # Errors
+/// Any parsing error of the input stream can be returned in Result.
+pub fn parse(cpu: &dyn CPU, lines: &[(FileInfo, String)], debug: bool) -> Result<Assembly> {
     // Assemblers generally are 2+ passes. One pass to tokenize as much as possible
     // while filling in a label mapping. The 2nd one does actual assembly over
     // the tokens with labels getting filled in from the map or computed as needed.
@@ -1498,7 +1592,7 @@ pub fn parse(cpu: &dyn CPU, lines: Lines<BufReader<File>>, debug: bool) -> Resul
             .join(",");
         // As long as it's not "*" (which is resolved in generate_output) makes
         // sure everything else resolves.
-        if l != "*" && (ld.line == 0 || ld.val.is_none()) {
+        if l != "*" && (ld.file_info.line_num == 0 || ld.val.is_none()) {
             writeln!(
                 errors,
                 "Parsing error: Label {l} was never defined. Located on lines {locs}"
@@ -1668,19 +1762,18 @@ fn token_to_val_or_label(
     ret: &mut ASTOutput,
     is_16: bool,
     line: &str,
-    line_num: usize,
+    fi: &FileInfo,
 ) -> Result<OpVal> {
     let x = match parse_val(val, is_16) {
         Some(v) => OpVal::Val(v),
         None => match parse_label(val) {
             Ok(label) => {
-                add_label(false, ret, &label, None, line, line_num)?;
+                add_label(false, ret, &label, None, line, fi)?;
                 OpVal::Label(label)
             }
             Err(err) => {
                 return Err(eyre!(
-                    "Error parsing line {}: invalid label or value {err} - {line}",
-                    line_num + 1,
+                    "Error parsing line {fi} - invalid label or value {err} - {line}"
                 ));
             }
         },
@@ -1703,18 +1796,18 @@ fn add_label(
     label: &String,
     val: Option<TokenVal>,
     line: &str,
-    line_num: usize,
+    fi: &FileInfo,
 ) -> Result<()> {
     if let Some(ld) = ret.labels.get_mut(label) {
         // Could be a reference created this so there's no line number. If there is one this is a duplicate.
         if label_def {
-            if ld.line != 0 {
-                return Err(eyre!("Error parsing line {}: can't redefine location label {label}. Already defined at line {} - {line}", line_num+1, ld.line));
+            if ld.file_info.line_num != 0 {
+                return Err(eyre!("Error parsing line {fi} - can't redefine location label {label}. Already defined at line {} - {line}", ld.file_info));
             }
             ld.val = val;
-            ld.line = line_num + 1;
+            ld.file_info.line_num = fi.line_num;
         } else {
-            ld.refs.push(line_num + 1);
+            ld.refs.push(fi.clone());
         }
     } else {
         // Defining a new label means no references yet. Anything else is ref
@@ -1722,22 +1815,31 @@ fn add_label(
         let refs = if label_def {
             Vec::new()
         } else {
-            vec![line_num + 1]
+            vec![fi.clone()]
         };
         // Same for line number. If this is a definition this is the line we
         // record. References leave this blank for later updates (above).
-        let l = if label_def {
-            line_num + 1
+        let fi = if label_def {
+            fi.clone()
         } else {
             //  If this is the first mention of this label we'll have to create a placeholder
             // definition.
-            0
+            FileInfo {
+                filename: fi.filename.clone(),
+                line_num: 0,
+            }
         };
 
         // Don't have to validate label since already did it above before
         // progressing here.
-        ret.labels
-            .insert(label.clone(), LabelDef { val, line: l, refs });
+        ret.labels.insert(
+            label.clone(),
+            LabelDef {
+                val,
+                file_info: fi,
+                refs,
+            },
+        );
     }
     Ok(())
 }
