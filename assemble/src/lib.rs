@@ -195,6 +195,19 @@ impl std::fmt::Display for FileInfo {
     }
 }
 
+#[derive(Clone, Debug)]
+/// `FileInfo` describes tracking information for each line of input.
+pub struct FileInfo {
+    filename: String,
+    line_num: usize, // 1..X range
+}
+
+impl std::fmt::Display for FileInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.filename, self.line_num)
+    }
+}
+
 // pass1 does the initial AST build for the input given.
 // It will compute an AST from the file reader along with a label map
 // that has references to both fully defined labels (EQU) and references
@@ -1550,7 +1563,6 @@ fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -
                     .parent()
                     .ok_or_else(|| eyre!("No parent? - {filename:?}"))?;
 
-                println!("Parent: {parent:?}");
                 let path = parent.join(new_file);
 
                 lines.push((
@@ -1563,6 +1575,13 @@ fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -
                 let mut sub_lines = Vec::new();
                 read_file_and_process(&path, &mut sub_lines)?;
                 lines.append(&mut sub_lines);
+                lines.push((
+                    FileInfo {
+                        filename: filename.to_string_lossy().into(),
+                        line_num: line_num + 1,
+                    },
+                    format!("; ENDINCLUDE {filename:?}"),
+                ));
             } else {
                 lines.push((
                     FileInfo {
