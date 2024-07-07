@@ -1521,7 +1521,6 @@ fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -
                     .parent()
                     .ok_or_else(|| eyre!("No parent? - {filename:?}"))?;
 
-                println!("Parent: {parent:?}");
                 let path = parent.join(new_file);
 
                 lines.push((
@@ -1534,6 +1533,13 @@ fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -
                 let mut sub_lines = Vec::new();
                 read_file_and_process(&path, &mut sub_lines)?;
                 lines.append(&mut sub_lines);
+                lines.push((
+                    FileInfo {
+                        filename: filename.to_string_lossy().into(),
+                        line_num: line_num + 1,
+                    },
+                    format!("; ENDINCLUDE {filename:?}"),
+                ));
             } else {
                 lines.push((
                     FileInfo {
