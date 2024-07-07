@@ -20,6 +20,17 @@ use std::sync::OnceLock;
 //                                 with the current input. The path must be relative
 //                                 to the current processed file. When processed
 //                                 this will convert .INCLUDE into a comment.
+// MACRO <name> - Start definition of a new macro.
+//                NOTE: <name> must be unique in the macro namespace but can overlap
+//                      with labels.
+//
+//                Macros are simply pasted into the token stream "as-is" and then
+//                evaluated. If you need a label definition inside of a macro
+//                append a ? onto the end of it and an auto-generated version of
+//                it will occur on expansion.
+// ENDMACRO - End the current macro definition. Until this happens anything inside
+//            of a MACRO block is consumed for the macro definition.
+// @MACRO - Expand the named macro.
 // <u8> - 0-255 expressed as decimal (default), hex ($ or 0x), binary (%), or a single char as "X".
 //        NOTE: Characters can be expressed as \X for newline (\n), CR (\r) and Tab (\t). Anything else
 //              just set the direct 8 bit value...
@@ -160,9 +171,15 @@ pub struct Assembly {
     pub listing: String,
 }
 
+struct MacroDef {
+    def: Vec<(FileInfo, String)>,
+    expanded: usize,
+}
+
 struct ASTOutput {
     ast: Vec<Vec<Token>>, // A set of lines each of which is N tokens.
     labels: HashMap<String, LabelDef>,
+    macros: HashMap<String, MacroDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -186,9 +203,21 @@ fn pass1(cpu: &dyn CPU, lines: &[(FileInfo, String)]) -> Result<ASTOutput> {
     let mut ret = ASTOutput {
         ast: Vec::<Vec<Token>>::new(),
         labels: HashMap::new(),
+        macros: HashMap::new(),
     };
 
+    // Need to do a pass where we define all the macros.
+    for (fi, line) in lines {}
+
+    // Now another pass where we expand them all so we have a final input
+    // stream.
+    let mut expanded_lines = Vec::new();
     for (fi, line) in lines {
+        expanded_lines.push((fi.clone(), line.clone()));
+    }
+
+    // Now process the combined input stream.
+    for (fi, line) in &expanded_lines {
         // We only support ASCII encoded files (parsing is far simpler).
         // TODO(jchacon): Add support for comments?
         if !line.is_ascii() {

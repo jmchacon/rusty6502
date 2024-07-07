@@ -360,6 +360,7 @@ fn bad_generate_label_loc_input() {
                 refs: vec![],
             },
         )]),
+        macros: HashMap::new(),
     };
     let e = generate_output(&cpu, &mut ast_output);
     assert!(e.is_ok(), "Random error: {e:?}");
@@ -386,6 +387,7 @@ fn bad_generate_comment() {
                 refs: vec![],
             },
         )]),
+        macros: HashMap::new(),
     };
     let e = generate_output(&cpu, &mut ast_output);
     assert!(e.is_ok(), "Random error: {e:?}");
@@ -408,6 +410,7 @@ fn bad_generate_input_bad_word() {
             },
         ])]],
         labels: HashMap::new(),
+        macros: HashMap::new(),
     };
     let e = generate_output(&cpu, &mut ast_output);
     assert!(e.is_ok(), "Random error: {e:?}");
@@ -424,6 +427,7 @@ fn bad_generate_input_bad_asciiz() {
             val: OpVal8::Label("lbl".into()),
         }])]],
         labels: HashMap::new(),
+        macros: HashMap::new(),
     };
     let e = generate_output(&cpu, &mut ast_output);
     assert!(e.is_ok(), "Random error: {e:?}");
@@ -445,6 +449,7 @@ fn bad_generate_immediate_no_op_val_opcode() {
             y_index: false,
         })]],
         labels: HashMap::new(),
+        macros: HashMap::new(),
     };
     let e = generate_output(&cpu, &mut ast_output);
     assert!(e.is_ok(), "Random error: {e:?}");
@@ -466,6 +471,7 @@ fn bad_generate_implied_opcode() {
             y_index: false,
         })]],
         labels: HashMap::new(),
+        macros: HashMap::new(),
     };
     let e = generate_output(&cpu, &mut ast_output);
     assert!(e.is_ok(), "Random error: {e:?}");
@@ -491,6 +497,7 @@ fn bad_generate_bad_zprel_vals() {
             y_index: false,
         })]],
         labels: HashMap::new(),
+        macros: HashMap::new(),
     };
     let e = generate_output(&cpu, &mut ast_output);
     assert!(e.is_ok(), "Random error: {e:?}");
@@ -516,6 +523,7 @@ fn bad_generate_bad_zprel_width() {
             y_index: false,
         })]],
         labels: HashMap::new(),
+        macros: HashMap::new(),
     };
     let e = generate_output(&cpu, &mut ast_output);
     assert!(e.is_ok(), "Random error: {e:?}");
