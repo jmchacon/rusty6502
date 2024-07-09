@@ -30,7 +30,7 @@ LDA #"\n"
 LDA #"\r"
 LDA #"\t"
 
-MSG EQU 0x0004
+MSG EQU 0x0004 ; MSG = 0x0004
 LDA MSG
 MSG2 EQU 0x04
 LDA MSG2
@@ -49,5 +49,10 @@ ASCIIZ "s"
 ASCIIZ "Soo"
 LDA ALABEL
 
+; Recursive label refs
+AA = MSG
+AB = AA
+
+.INCLUDE "./testasm2.asm"
 .org $FFFC
 RESET .word END

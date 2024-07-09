@@ -1,11 +1,5 @@
 use rusty6502::prelude::*;
-use std::{
-    collections::HashMap,
-    error::Error,
-    fs::{read, File},
-    io::{self, BufRead},
-    path::Path,
-};
+use std::{collections::HashMap, error::Error, fs::read, path::Path};
 
 struct AssembleTest<'a> {
     asm: &'a str,
@@ -14,7 +8,7 @@ struct AssembleTest<'a> {
 }
 
 use crate::{
-    find_mode, generate_output, parse, ASTOutput, LabelDef, MemDef, OpVal, OpVal8, Operation,
+    find_mode, generate_output, parse_file, ASTOutput, LabelDef, MemDef, OpVal, OpVal8, Operation,
     Token, TokenVal,
 };
 
@@ -39,9 +33,6 @@ macro_rules! assemble_test {
                       // Get the input asm and read it in.
                       let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/").join(a.asm);
 
-                      let file = File::open(path)?;
-                      let lines = io::BufReader::new(file).lines();
-
                       let nmos = CPU6502::new(ChipDef::default());
                       let ricoh = CPURicoh::new(ChipDef::default());
                       let c6510 = CPU6510::new(ChipDef::default(), None);
@@ -58,7 +49,7 @@ macro_rules! assemble_test {
                           CPUType::CMOS65SC02 => &c65sc02,
                       };
 
-                      let asm = parse(cpu, lines, true)?;
+                      let asm = parse_file(cpu, &path, true)?;
 
                       let diff = image
                           .iter()
@@ -128,26 +119,24 @@ macro_rules! bad_assemble_test {
                     // Get the input asm and read it in.
                     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../testdata/badasm/").join(a.asm);
                     println!("trace path: {}", path.display());
-                    let file = File::open(path)?;
-                    let lines = io::BufReader::new(file).lines();
 
-                      let nmos = CPU6502::new(ChipDef::default());
-                      let ricoh = CPURicoh::new(ChipDef::default());
-                      let c6510 = CPU6510::new(ChipDef::default(), None);
-                      let cmos = CPU65C02::new(ChipDef::default());
-                      let rockwell = CPU65C02Rockwell::new(ChipDef::default());
-                      let c65sc02 = CPU65SC02::new(ChipDef::default());
+                    let nmos = CPU6502::new(ChipDef::default());
+                    let ricoh = CPURicoh::new(ChipDef::default());
+                    let c6510 = CPU6510::new(ChipDef::default(), None);
+                    let cmos = CPU65C02::new(ChipDef::default());
+                    let rockwell = CPU65C02Rockwell::new(ChipDef::default());
+                    let c65sc02 = CPU65SC02::new(ChipDef::default());
 
-                      let cpu: &dyn CPU = match $cpu {
-                          CPUType::NMOS => &nmos,
-                          CPUType::RICOH => &ricoh,
-                          CPUType::NMOS6510 => &c6510,
-                          CPUType::CMOS => &cmos,
-                          CPUType::CMOSRockwell => &rockwell,
-                          CPUType::CMOS65SC02 => &c65sc02,
-                      };
+                    let cpu: &dyn CPU = match $cpu {
+                        CPUType::NMOS => &nmos,
+                        CPUType::RICOH => &ricoh,
+                        CPUType::NMOS6510 => &c6510,
+                        CPUType::CMOS => &cmos,
+                        CPUType::CMOSRockwell => &rockwell,
+                        CPUType::CMOS65SC02 => &c65sc02,
+                    };
 
-                    let asm = parse(cpu, lines, true);
+                    let asm = parse_file(cpu, &path, true);
                     assert!(asm.is_err(), "Didn't get error for {}", a.asm);
                     let e = asm.err().unwrap();
                     assert!(e.to_string().contains(a.error), "Missing error string '{}' for {e:?}", a.error);
@@ -203,7 +192,7 @@ bad_assemble_test!(
   CPUType::NMOS
   invalid_equ_value: BadAssembleTest{
       asm: "invalid_equ_value.asm",
-      error: "not valid u8 or u16 for EQU",
+      error: "invalid label or value Error parsing label - $C0001. Must be of the form ^[a-zA-Z][a-zA-Z0-9_]+$",
   },
   CPUType::NMOS
   double_equ_ref: BadAssembleTest{
@@ -336,6 +325,21 @@ bad_assemble_test!(
     error: "Input line has non ASCII characters",
   },
   CPUType::NMOS
+  bad_label_crossref: BadAssembleTest{
+    asm: "bad_label_crossref.asm",
+    error: "The following labels are referenced but never defined:",
+  },
+  CPUType::NMOS
+  bad_include: BadAssembleTest{
+    asm: "bad_include.asm",
+    error: "Must supply a filename",
+  },
+  CPUType::NMOS
+  bad_include2: BadAssembleTest{
+    asm: "bad_include2.asm",
+    error: "INCLUDE directive must have filename surrounded by quotes",
+  },
+  CPUType::NMOS
 );
 
 #[test]
@@ -349,7 +353,10 @@ fn bad_generate_label_loc_input() {
             "lbl".into(),
             LabelDef {
                 val: Some(TokenVal::Val8(1)),
-                line: 1,
+                file_info: crate::FileInfo {
+                    filename: String::new(),
+                    line_num: 1,
+                },
                 refs: vec![],
             },
         )]),
@@ -372,7 +379,10 @@ fn bad_generate_comment() {
             "lbl".into(),
             LabelDef {
                 val: Some(TokenVal::Val8(1)),
-                line: 1,
+                file_info: crate::FileInfo {
+                    filename: String::new(),
+                    line_num: 1,
+                },
                 refs: vec![],
             },
         )]),

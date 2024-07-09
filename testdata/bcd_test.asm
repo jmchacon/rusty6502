@@ -3,7 +3,7 @@ N1    equ 0x01
 N2    equ 0x02
 N2L   equ 0x03
 N2H   equ 0x04
-N2H+1 equ 0x05
+N2H_PLUS1 equ 0x05
 N1L   equ 0x06
 N1H   equ 0x07
 DA    equ 0x08
@@ -28,8 +28,8 @@ ORG $C000
 	        LDA N2    	; N2H = N2 & $F0
 	        AND #$F0  	; [2] see text
 	        STA N2H
-	        ORA #$0F  	; N2H+1 = (N2 & $F0) + $0F
-	        STA N2H+1
+	        ORA #$0F  	; N2H_PLUS1 = (N2 & $F0) + $0F
+	        STA N2H_PLUS1
 	LOOP2   LDA N1    	; N1L = N1 & $0F
 	        AND #$0F  	; [3] see text
 	        STA N1L
