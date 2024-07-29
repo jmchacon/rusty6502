@@ -1,20 +1,15 @@
 use crate::{AddressMode, Opcode, Operation};
 use ahash::{AHashMap, AHashSet};
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 #[cfg(not(coverage))]
 use strum::IntoEnumIterator;
-
-// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
-//                once LazyLock stablizes.
 
 // NMOS_OPCODES is a hashmap of the Opcode -> Hashmap of valid addressing modes and their u8 opcode values.
 // This is a vector since NOP, HLT and a few others duplicate address mode and can do the same thing from N values.
 // An assembler should simply use the first value of each Vec unless they want to randomly chose.
 #[allow(clippy::too_many_lines)]
-pub(crate) fn nmos_opcodes() -> &'static AHashMap<Opcode, AHashMap<AddressMode, Vec<u8>>> {
-    static NMOS_OPCODES: OnceLock<AHashMap<Opcode, AHashMap<AddressMode, Vec<u8>>>> =
-        OnceLock::new();
-    NMOS_OPCODES.get_or_init(|| {
+pub(crate) static NMOS_OPCODES: LazyLock<AHashMap<Opcode, AHashMap<AddressMode, Vec<u8>>>> =
+    LazyLock::new(|| {
         let m = AHashMap::from([
             (
                 Opcode::ADC,
@@ -571,49 +566,45 @@ pub(crate) fn nmos_opcodes() -> &'static AHashMap<Opcode, AHashMap<AddressMode, 
             "Not all opcodes covered! - {m:?}"
         );
         m
-    })
-}
+    });
 
 // NMOS_OPCODES_VALUES is the inverse of NMOS_OPCODES where the keys are the u8 byte codes and values Operation defining
 // the Opcode and AddressMode. Used in processing the CPU tick() or in disassembly for mapping a byte code back
 // to an Opcode.
-pub(crate) fn nmos_opcodes_values() -> &'static Vec<Operation> {
-    static NMOS_OPCODES_VALUES: OnceLock<Vec<Operation>> = OnceLock::new();
-    NMOS_OPCODES_VALUES.get_or_init(|| {
-        // We know this much be a vector of all u8 values since the 6502
-        // has behavior at each so we'll have some combo of opcode/addressmode.
-        //
-        // Preallocate a vector of that size and fill with placeholders.
-        // Then track in the hashset which indexes we've seen (panic on dups)
-        // and insert directly to each index.
-        let mut m = Vec::new();
-        m.resize(
-            1 << 8,
-            Operation {
-                op: Opcode::BRK,
-                mode: AddressMode::Implied,
-            },
-        );
-        let sl = m.as_mut_slice();
-        let mut hs = AHashSet::new();
+pub(crate) static NMOS_OPCODES_VALUES: LazyLock<Vec<Operation>> = LazyLock::new(|| {
+    // We know this much be a vector of all u8 values since the 6502
+    // has behavior at each so we'll have some combo of opcode/addressmode.
+    //
+    // Preallocate a vector of that size and fill with placeholders.
+    // Then track in the hashset which indexes we've seen (panic on dups)
+    // and insert directly to each index.
+    let mut m = Vec::new();
+    m.resize(
+        1 << 8,
+        Operation {
+            op: Opcode::BRK,
+            mode: AddressMode::Implied,
+        },
+    );
+    let sl = m.as_mut_slice();
+    let mut hs = AHashSet::new();
 
-        for (op, hm) in nmos_opcodes() {
-            for (am, opbytes) in hm {
-                for opbyte in opbytes {
-                    assert!(!hs.contains(opbyte),"NMOS_OPCODES contains multiple entries for {opbyte:#04X} found in opcode {op} but we already have {:?}", sl[usize::from(*opbyte)]);
-                    hs.insert(*opbyte);
-                    sl[usize::from(*opbyte)] = Operation { op: *op, mode: *am };
-                }
+    for (op, hm) in &*NMOS_OPCODES {
+        for (am, opbytes) in hm {
+            for opbyte in opbytes {
+                assert!(!hs.contains(opbyte),"NMOS_OPCODES contains multiple entries for {opbyte:#04X} found in opcode {op} but we already have {:?}", sl[usize::from(*opbyte)]);
+                hs.insert(*opbyte);
+                sl[usize::from(*opbyte)] = Operation { op: *op, mode: *am };
             }
         }
+    }
 
-        #[cfg(not(coverage))]
-        assert!(
-            hs.len() == (1 << 8),
-            "Didn't fill out {} opcodes. Only defined {} - {m:?}",
-            1 << 8,
-            hs.len()
-        );
-        m
-    })
-}
+    #[cfg(not(coverage))]
+    assert!(
+        hs.len() == (1 << 8),
+        "Didn't fill out {} opcodes. Only defined {} - {m:?}",
+        1 << 8,
+        hs.len()
+    );
+    m
+});
