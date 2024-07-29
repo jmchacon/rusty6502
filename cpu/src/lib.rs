@@ -13,11 +13,11 @@ mod cmos_opcodes;
 mod nmos_opcodes;
 
 use cmos_opcodes::{
-    cmos_65SC02_opcodes, cmos_65SC02_opcodes_values, cmos_rockwell_opcodes,
-    cmos_rockwell_opcodes_values, cmos_wdc_opcodes, cmos_wdc_opcodes_values,
+    CMOS_65SC02_OPCODES, CMOS_65SC02_OPCODES_VALUES, CMOS_ROCKWELL_OPCODES,
+    CMOS_ROCKWELL_OPCODES_VALUES, CMOS_WDC_OPCODES, CMOS_WDC_OPCODES_VALUES,
 };
 use memory::{Memory, MAX_SIZE};
-use nmos_opcodes::{nmos_opcodes, nmos_opcodes_values};
+use nmos_opcodes::{NMOS_OPCODES, NMOS_OPCODES_VALUES};
 use thiserror::Error;
 
 use color_eyre::eyre::{eyre, ErrReport, Result};
@@ -915,7 +915,7 @@ pub trait CPU<'a>: Chip + Send {
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
         // Default impl is NMOS
-        let Some(hm) = nmos_opcodes().get(op) else {
+        let Some(hm) = &NMOS_OPCODES.get(op) else {
             return Err(eyre!("invalid opcode {op} for NMOS cpu"));
         };
 
@@ -935,7 +935,7 @@ pub trait CPU<'a>: Chip + Send {
         //         so a direct index is fine vs having the range check
         //         an index lookup. This is a 5-8% performance improvement
         //         depending on code paths.
-        unsafe { *nmos_opcodes_values().get_unchecked(usize::from(op)) }
+        unsafe { *NMOS_OPCODES_VALUES.get_unchecked(usize::from(op)) }
     }
 
     /// Use this to enable or disable state based debugging dynamically.
@@ -5260,7 +5260,7 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
     /// # Errors
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
-        let Some(hm) = cmos_wdc_opcodes().get(op) else {
+        let Some(hm) = CMOS_WDC_OPCODES.get(op) else {
             return Err(eyre!("invalid opcode {op} for 65C02 cpu"));
         };
         let Some(v) = hm.get(mode) else {
@@ -5277,7 +5277,7 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
         //         so a direct index is fine vs having the range check
         //         an index lookup. This is measurably faster than a [x]
         //         lookup which always error checks.
-        unsafe { *cmos_wdc_opcodes_values().get_unchecked(usize::from(op)) }
+        unsafe { *CMOS_WDC_OPCODES_VALUES.get_unchecked(usize::from(op)) }
     }
 }
 
@@ -5291,7 +5291,7 @@ impl<'a> CPU<'a> for CPU65C02Rockwell<'a> {
     /// # Errors
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
-        let Some(hm) = cmos_rockwell_opcodes().get(op) else {
+        let Some(hm) = CMOS_ROCKWELL_OPCODES.get(op) else {
             return Err(eyre!("invalid opcode {op} for 65C02 Rockwell cpu"));
         };
         let Some(v) = hm.get(mode) else {
@@ -5308,7 +5308,7 @@ impl<'a> CPU<'a> for CPU65C02Rockwell<'a> {
         //         so a direct index is fine vs having the range check
         //         an index lookup. This is measurably faster than a [x]
         //         lookup which always error checks.
-        unsafe { *cmos_rockwell_opcodes_values().get_unchecked(usize::from(op)) }
+        unsafe { *CMOS_ROCKWELL_OPCODES_VALUES.get_unchecked(usize::from(op)) }
     }
 }
 
@@ -5322,7 +5322,7 @@ impl<'a> CPU<'a> for CPU65SC02<'a> {
     /// # Errors
     /// If the `AddressMode` is not valid for this opcode an error will result.
     fn resolve_opcode(&self, op: &Opcode, mode: &AddressMode) -> Result<&'static Vec<u8>> {
-        let Some(hm) = cmos_65SC02_opcodes().get(op) else {
+        let Some(hm) = CMOS_65SC02_OPCODES.get(op) else {
             return Err(eyre!("invalid opcode {op} for 65SC02 cpu"));
         };
         let Some(v) = hm.get(mode) else {
@@ -5339,7 +5339,7 @@ impl<'a> CPU<'a> for CPU65SC02<'a> {
         //         so a direct index is fine vs having the range check
         //         an index lookup. This is measurably faster than a [x]
         //         lookup which always error checks.
-        unsafe { *cmos_65SC02_opcodes_values().get_unchecked(usize::from(op)) }
+        unsafe { *CMOS_65SC02_OPCODES_VALUES.get_unchecked(usize::from(op)) }
     }
 }
 
