@@ -477,7 +477,7 @@ impl MyApp {
         // If a color picker button has been pressed the modal dialog is up
         // so this window is inactive.
         if button.is_none() {
-          ui.disable();
+            ui.disable();
         }
 
         // The combo box for determining which palette to display.
