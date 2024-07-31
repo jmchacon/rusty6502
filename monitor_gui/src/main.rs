@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     let _ret = eframe::run_native(
         "egui example: global font style",
         options,
-        Box::new(|cc| Box::new(MyApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(MyApp::new(cc)))),
     );
 
     // The command channel.

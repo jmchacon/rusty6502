@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     let res = eframe::run_native(
         "NES file CHR renderer",
         options,
-        Box::new(|cc| Box::new(MyApp::new(cc, colors, tiles))),
+        Box::new(|cc| Ok(Box::new(MyApp::new(cc, colors, tiles)))),
     );
 
     if let Err(e) = res {
