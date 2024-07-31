@@ -476,13 +476,15 @@ impl MyApp {
 
         // If a color picker button has been pressed the modal dialog is up
         // so this window is inactive.
-        ui.set_enabled(button.is_none());
+        if button.is_none() {
+          ui.disable();
+        }
 
         // The combo box for determining which palette to display.
         egui::ComboBox::from_label(String::from("Palette"))
             .selected_text(self.pals[*selected_pal].name())
             .show_ui(ui, |ui| {
-                ui.style_mut().wrap = Some(false);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 for i in 0..self.pals.len() {
                     ui.selectable_value(selected_pal, i, self.pals[i].name());
                 }
@@ -527,7 +529,7 @@ impl MyApp {
         egui::ComboBox::from_label(format!("CHR set ({TILE_MULTIPLIER_X}x magnified)",))
             .selected_text(format!("{selected_chr}"))
             .show_ui(ui, |ui| {
-                ui.style_mut().wrap = Some(false);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 for i in 0..self.tiles.len() {
                     ui.selectable_value(selected_chr, i, format!("{i}"));
                 }
