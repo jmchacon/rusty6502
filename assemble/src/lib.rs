@@ -195,19 +195,6 @@ impl std::fmt::Display for FileInfo {
     }
 }
 
-#[derive(Clone, Debug)]
-/// `FileInfo` describes tracking information for each line of input.
-pub struct FileInfo {
-    filename: String,
-    line_num: usize, // 1..X range
-}
-
-impl std::fmt::Display for FileInfo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}:{}", self.filename, self.line_num)
-    }
-}
-
 // pass1 does the initial AST build for the input given.
 // It will compute an AST from the file reader along with a label map
 // that has references to both fully defined labels (EQU) and references
