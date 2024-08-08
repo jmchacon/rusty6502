@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     let res = eframe::run_native(
         "NES PAL file renderer",
         options,
-        Box::new(|cc| Box::new(MyApp::new(cc, colors))),
+        Box::new(|cc| Ok(Box::new(MyApp::new(cc, colors)))),
     );
 
     if let Err(e) = res {
