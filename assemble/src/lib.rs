@@ -20,6 +20,17 @@ use std::sync::OnceLock;
 //                                 with the current input. The path must be relative
 //                                 to the current processed file. When processed
 //                                 this will convert .INCLUDE into a comment.
+// MACRO <name> - Start definition of a new macro.
+//                NOTE: <name> must be unique in the macro namespace but can overlap
+//                      with labels.
+//
+//                Macros are simply pasted into the token stream "as-is" and then
+//                evaluated. If you need a label definition inside of a macro
+//                append a ? onto the end of it and an auto-generated version of
+//                it will occur on expansion.
+// ENDMACRO - End the current macro definition. Until this happens anything inside
+//            of a MACRO block is consumed for the macro definition.
+// @MACRO - Expand the named macro.
 // <u8> - 0-255 expressed as decimal (default), hex ($ or 0x), binary (%), or a single char as "X".
 //        NOTE: Characters can be expressed as \X for newline (\n), CR (\r) and Tab (\t). Anything else
 //              just set the direct 8 bit value...
@@ -74,6 +85,7 @@ enum State {
     Op(Opcode),
     Comment(String),
     Remainder(bool),
+    MacroExpansion(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -160,9 +172,16 @@ pub struct Assembly {
     pub listing: String,
 }
 
+struct MacroDef {
+    fi: FileInfo,
+    def: Vec<String>,
+    expanded: usize,
+}
+
 struct ASTOutput {
     ast: Vec<Vec<Token>>, // A set of lines each of which is N tokens.
     labels: HashMap<String, LabelDef>,
+    macros: HashMap<String, MacroDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -186,147 +205,294 @@ fn pass1(cpu: &dyn CPU, lines: &[(FileInfo, String)]) -> Result<ASTOutput> {
     let mut ret = ASTOutput {
         ast: Vec::<Vec<Token>>::new(),
         labels: HashMap::new(),
+        macros: HashMap::new(),
     };
 
+    let mut cur_macro = String::new();
+    let mut in_macro = false;
+    // Need to do a pass where we define all the macros.
     for (fi, line) in lines {
-        // We only support ASCII encoded files (parsing is far simpler).
-        // TODO(jchacon): Add support for comments?
-        if !line.is_ascii() {
-            return Err(eyre!(
-                "Input line has non ASCII characters which is not currently supported - {line}"
-            ));
-        }
+        define_macros_and_validate_ascii(&mut ret, fi, line, &mut cur_macro, &mut in_macro)?;
+    }
 
-        let fields: Vec<&str> = line.split_whitespace().collect();
+    // Now another pass where we comment out the macro defs since they're processed.
+    // This is simpler than defining macro states in the main tokenizer since expansion
+    // is enough there.
+    in_macro = false;
+    let mut expanded_lines = Vec::new();
+    for (fi, line) in lines {
+        comment_macros(fi, line, &mut in_macro, &mut expanded_lines);
+    }
 
-        // Always record a copy of the line unless it was a blank line
-        // This way generate output can emit this so we can see the original
-        // constants used ("a" for instance) which is otherwise hard to retain
-        // post processing.
-        let mut tokens = if fields.is_empty() {
-            Vec::<Token>::new()
-        } else {
-            Vec::<Token>::from([Token::Line(fi.clone(), line.clone())])
-        };
-
-        // Every line starts here. If there are no tokens we'll just fall
-        // through into the final state handling after the loop below.
-        let mut state = State::Begin;
-
-        for (index, token) in fields.iter().copied().enumerate() {
-            let upper = token.to_uppercase();
-
-            state = match state {
-                State::Begin => beginning_states(token, &upper, line, fi)?,
-                State::Label(label) => {
-                    label_state(label, &mut ret, token, &upper, &mut tokens, line, fi)?
-                }
-
-                // An ORG statement must be followed by a u16 value.
-                State::Org => org_state(token, &mut tokens, line, fi)?,
-
-                // Word and Byte are effectively the same logic except which size
-                // is required (bytes can't be 16 bit).
-                State::Word(md) => {
-                    word_byte_state(token, &mut ret, md, &mut tokens, true, line, fi)?
-                }
-                State::Byte(md) => {
-                    word_byte_state(token, &mut ret, md, &mut tokens, false, line, fi)?
-                }
-
-                // Asciiz parsing.
-                State::AsciiZ(md) => asciiz_state(token, md, &mut tokens, line, fi)?,
-
-                // Remainder is an intermediate state after we've processed something.
-                // At this point we can only define a comment and move to that stage.
-                // If instead this ran out of tokens in fields the loop would end and the
-                // next line starts at Begin automatically.
-                // Needs the line_done field as ASCIIZ and comment support parses the whole line
-                // and this gives us a way out of the enclosing token parsing loop
-                // (it'll just end up here for all the tokens and fall out).
-                State::Remainder(line_done) => remainder_state(line_done, token, line, fi)?,
-
-                // For comments take everything left, construct a comment and then jump to Remainder
-                // to ignore the remaining tokens.
-                State::Comment(c) => {
-                    // A parsed comment is anything after the ; plus
-                    // the remaining fields space separated.
-                    tokens.push(Token::Comment(format!(
-                        ";{c} {}",
-                        fields.as_slice()[index..].join(" ")
-                    )));
-                    State::Remainder(true)
-                }
-
-                // EQU is label EQU <val> so process the value and push a new TokenDef into tokens.
-                State::Equ(label) => equ_state(token, &mut ret, &mut tokens, label, line, fi)?,
-                State::Op(op) => op_state(token, &mut ret, &mut tokens, cpu, op, line, fi)?,
-            };
-        }
-
-        // At this point we've run out of tokens and are in some final state.
-        // Some are valid and some are not:
-        //
-        // Handle the case of a line of ";". i.e. nothing trailing the ; so we don't loop around
-        // to process the Comment state. Properly processing would have left us in Begin instead.
-        // It may also be a single token opcode such as SEI which has no operand value/label.
-        match state {
-            // These are valid states to exit so we can ignore them.
-            State::Begin | State::Remainder(_) => {}
-
-            // Comment with nothing left.
-            State::Comment(c) => {
-                tokens.push(Token::Comment(format!(";{c}")));
-            }
-
-            // Single opcode (SEI)
-            State::Op(op) => tokens.push(Token::Op(Operation {
-                op,
-                mode: AddressMode::Implied,
-                ..Default::default()
-            })),
-
-            // Lots of label cases
-            State::Label(label) => {
-                // Handle
-                //
-                // LABEL:
-                //
-                // Correctly by directly adding the label now. The loop above
-                // can only handle
-                //
-                // LABEL: ; Some comments
-                add_label(true, &mut ret, &label, None, line, fi)?;
-                tokens.push(Token::Label(label));
-            }
-
-            // Word/Byte gets here if we processed and then ended without a comment
-            State::Word(md) => {
-                tokens.push(Token::Word(md));
-            }
-            State::Byte(md) => {
-                tokens.push(Token::Byte(md));
-            }
-
-            // Org can happen if they start and then end the line.
-            State::Org => {
-                return Err(eyre!(
-                    "Error parsing line {fi} - missing data for {state:?} - {line}"
-                ));
-            }
-
-            // Anything else is an internal error which shouldn't be possible.
-            // i.e. EQU and ASCIIZ handle all their parsing and can't fall through here.
-            State::Equ(_) | State::AsciiZ(_) => {
-                panic!("Internal error parsing line {fi} - invalid state {state:?} - {line}")
-            }
-        };
-        ret.ast.push(tokens);
+    // Now process the combined input stream.
+    for (fi, line) in &expanded_lines {
+        let mut tokens = tokenize_line(
+            &mut ret,
+            fi,
+            line,
+            cpu,
+            &MacroExpand {
+                in_macro: false,
+                expansion: 0,
+            },
+        )?;
+        ret.ast.append(&mut tokens);
     }
     Ok(ret)
 }
 
-fn beginning_states(token: &str, upper: &str, line: &str, fi: &FileInfo) -> Result<State> {
+fn define_macros_and_validate_ascii(
+    ret: &mut ASTOutput,
+    fi: &FileInfo,
+    line: &String,
+    cur_macro: &mut String,
+    in_macro: &mut bool,
+) -> Result<()> {
+    // We only support ASCII encoded files (parsing is far simpler).
+    // This also means all future passes can assume ASCII.
+    if !line.is_ascii() {
+        return Err(eyre!(
+            "Input line has non ASCII characters which is not currently supported - {line}"
+        ));
+    }
+
+    let fields: Vec<&str> = line.split_whitespace().collect();
+
+    if !fields.is_empty() {
+        let upper = fields[0].to_uppercase();
+        if upper == "MACRO" {
+            if fields.len() < 2 {
+                return Err(eyre!(
+                    "{fi} - Invalid MACRO definition. Must include a name"
+                ));
+            }
+            let name = parse_label(
+                fields[1],
+                &MacroExpand {
+                    in_macro: false,
+                    expansion: 0,
+                },
+            )?;
+            if let Some(existing) = ret.macros.get(&name) {
+                return Err(eyre!(
+                    "{fi} - MACRO {name} already defined at {}",
+                    existing.fi
+                ));
+            }
+            *in_macro = true;
+            ret.macros.insert(
+                name.clone(),
+                MacroDef {
+                    fi: FileInfo {
+                        filename: fi.filename.clone(),
+                        line_num: fi.line_num,
+                    },
+                    def: Vec::new(),
+                    expanded: 0,
+                },
+            );
+            *cur_macro = name;
+            return Ok(());
+        }
+        if upper == "ENDMACRO" {
+            *in_macro = false;
+        }
+    }
+    if *in_macro {
+        let m = ret
+            .macros
+            .get_mut(cur_macro)
+            .ok_or(eyre!("Invalid macro key {cur_macro}?"))?;
+        m.def.push(line.clone());
+    }
+    Ok(())
+}
+
+fn comment_macros(
+    fi: &FileInfo,
+    line: &String,
+    in_macro: &mut bool,
+    expanded_lines: &mut Vec<(FileInfo, String)>,
+) {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+
+    if !fields.is_empty() {
+        let upper = fields[0].to_uppercase();
+
+        // Ignore macro defs and just comment them out for later.
+        if upper == "MACRO" {
+            *in_macro = true;
+        }
+        if *in_macro {
+            expanded_lines.push((fi.clone(), format!("; {line}")));
+            return;
+        }
+        if upper == "ENDMACRO" {
+            *in_macro = false;
+            expanded_lines.push((fi.clone(), format!("; {line}")));
+            return;
+        }
+        expanded_lines.push((fi.clone(), line.clone()));
+    }
+}
+
+struct MacroExpand {
+    in_macro: bool,
+    expansion: usize,
+}
+
+fn tokenize_line(
+    ret: &mut ASTOutput,
+    fi: &FileInfo,
+    line: &String,
+    cpu: &dyn CPU,
+    expand: &MacroExpand,
+) -> Result<Vec<Vec<Token>>> {
+    let fields: Vec<&str> = line.split_whitespace().collect();
+
+    // Always record a copy of the line unless it was a blank line
+    // This way generate output can emit this so we can see the original
+    // constants used ("a" for instance) which is otherwise hard to retain
+    // post processing.
+    let mut tokens: Vec<Vec<Token>> = Vec::new();
+    if !fields.is_empty() {
+        tokens.push(Vec::<Token>::from([Token::Line(fi.clone(), line.clone())]));
+    }
+
+    // Every line starts here. If there are no tokens we'll just fall
+    // through into the final state handling after the loop below.
+    let mut state = State::Begin;
+
+    for (index, token) in fields.iter().copied().enumerate() {
+        let upper = token.to_uppercase();
+
+        state = match state {
+            State::Begin => beginning_states(token, &upper, line, expand, fi)?,
+            State::MacroExpansion(m) => {
+                let (mut macro_tokens, state) = macro_expansion_state(&m, ret, cpu, fi)?;
+                tokens.append(&mut macro_tokens);
+                state
+            }
+
+            State::Label(label) => {
+                label_state(label, ret, token, &mut tokens[0], line, expand, fi)?
+            }
+
+            // An ORG statement must be followed by a u16 value.
+            State::Org => org_state(token, &mut tokens[0], line, fi)?,
+
+            // Word and Byte are effectively the same logic except which size
+            // is required (bytes can't be 16 bit).
+            State::Word(md) => {
+                word_byte_state(token, ret, md, &mut tokens[0], true, line, expand, fi)?
+            }
+            State::Byte(md) => {
+                word_byte_state(token, ret, md, &mut tokens[0], false, line, expand, fi)?
+            }
+
+            // Asciiz parsing.
+            State::AsciiZ(md) => asciiz_state(token, md, &mut tokens[0], line, fi)?,
+
+            // Remainder is an intermediate state after we've processed something.
+            // At this point we can only define a comment and move to that stage.
+            // If instead this ran out of tokens in fields the loop would end and the
+            // next line starts at Begin automatically.
+            // Needs the line_done field as ASCIIZ and comment support parses the whole line
+            // and this gives us a way out of the enclosing token parsing loop
+            // (it'll just end up here for all the tokens and fall out).
+            State::Remainder(line_done) => remainder_state(line_done, token, line, fi)?,
+
+            // For comments take everything left, construct a comment and then jump to Remainder
+            // to ignore the remaining tokens.
+            State::Comment(c) => {
+                // A parsed comment is anything after the ; plus
+                // the remaining fields space separated.
+                tokens[0].push(Token::Comment(format!(
+                    ";{c} {}",
+                    fields.as_slice()[index..].join(" ")
+                )));
+                State::Remainder(true)
+            }
+
+            // EQU is label EQU <val> so process the value and push a new TokenDef into tokens.
+            State::Equ(label) => equ_state(token, ret, &mut tokens[0], label, line, expand, fi)?,
+
+            // Op is literally anything else.
+            State::Op(op) => op_state(token, ret, &mut tokens[0], cpu, op, line, expand, fi)?,
+        };
+    }
+
+    // At this point we've run out of tokens and are in some final state.
+    // Some are valid and some are not:
+    //
+    // Handle the case of a line of ";". i.e. nothing trailing the ; so we don't loop around
+    // to process the Comment state. Properly processing would have left us in Begin instead.
+    // It may also be a single token opcode such as SEI which has no operand value/label.
+    match state {
+        // These are valid states to exit so we can ignore them.
+        State::Begin | State::Remainder(_) => {}
+        State::MacroExpansion(m) => {
+            let (mut macro_tokens, _) = macro_expansion_state(&m, ret, cpu, fi)?;
+            tokens.append(&mut macro_tokens);
+        }
+
+        // Comment with nothing left.
+        State::Comment(c) => {
+            tokens[0].push(Token::Comment(format!(";{c}")));
+        }
+
+        // Single opcode (SEI)
+        State::Op(op) => tokens[0].push(Token::Op(Operation {
+            op,
+            mode: AddressMode::Implied,
+            ..Default::default()
+        })),
+
+        // Lots of label cases
+        State::Label(label) => {
+            // Handle
+            //
+            // LABEL:
+            //
+            // Correctly by directly adding the label now. The loop above
+            // can only handle
+            //
+            // LABEL: ; Some comments
+            add_label(true, ret, &label, None, line, expand, fi)?;
+            tokens[0].push(Token::Label(label));
+        }
+
+        // Word/Byte gets here if we processed and then ended without a comment
+        State::Word(md) => {
+            tokens[0].push(Token::Word(md));
+        }
+        State::Byte(md) => {
+            tokens[0].push(Token::Byte(md));
+        }
+
+        // Org can happen if they start and then end the line.
+        State::Org => {
+            return Err(eyre!(
+                "Error parsing line {fi} - missing data for {state:?} - {line}"
+            ));
+        }
+
+        // Anything else is an internal error which shouldn't be possible.
+        // i.e. EQU and ASCIIZ handle all their parsing and can't fall through here.
+        State::Equ(_) | State::AsciiZ(_) => {
+            panic!("Internal error parsing line {fi} - invalid state {state:?} - {line}")
+        }
+    }
+    Ok(tokens)
+}
+
+fn beginning_states(
+    token: &str,
+    upper: &str,
+    line: &str,
+    expand: &MacroExpand,
+    fi: &FileInfo,
+) -> Result<State> {
     match upper {
         // We can match an ORG, WORD, BYTE or ASCIIZ here directly.
         "ORG" | ".ORG" => Ok(State::Org),
@@ -338,6 +504,8 @@ fn beginning_states(token: &str, upper: &str, line: &str, fi: &FileInfo) -> Resu
         _ => {
             if upper.starts_with(';') {
                 Ok(State::Comment(token[1..].into()))
+            } else if upper.starts_with('@') {
+                Ok(State::MacroExpansion(token[1..].into()))
             } else if let Ok(op) = Opcode::from_str(token) {
                 Ok(State::Op(op))
             } else {
@@ -351,7 +519,7 @@ fn beginning_states(token: &str, upper: &str, line: &str, fi: &FileInfo) -> Resu
                 } else {
                     token
                 };
-                match parse_label(token) {
+                match parse_label(token, expand) {
                     Ok(label) => Ok(State::Label(label)),
                     Err(err) => {
                         return Err(eyre!(
@@ -364,13 +532,44 @@ fn beginning_states(token: &str, upper: &str, line: &str, fi: &FileInfo) -> Resu
     }
 }
 
+fn macro_expansion_state(
+    m: &str,
+    ret: &mut ASTOutput,
+    cpu: &dyn CPU,
+    fi: &FileInfo,
+) -> Result<(Vec<Vec<Token>>, State)> {
+    let m = ret
+        .macros
+        .get_mut(m)
+        .ok_or(eyre!("Can't expand unknown MACRO {m}"))?;
+    m.expanded += 1;
+    let expanded = m.expanded;
+    let mut ret_tokens: Vec<Vec<Token>> = Vec::new();
+
+    for me in m.def.clone() {
+        let mut tokens = tokenize_line(
+            ret,
+            fi,
+            &me,
+            cpu,
+            &MacroExpand {
+                in_macro: true,
+                expansion: expanded,
+            },
+        )?;
+        ret_tokens.append(&mut tokens);
+    }
+
+    Ok((ret_tokens, State::Remainder(true)))
+}
+
 fn label_state(
     label: String,
     ret: &mut ASTOutput,
     token: &str,
-    upper: &str,
     tokens: &mut Vec<Token>,
     line: &str,
+    expand: &MacroExpand,
     fi: &FileInfo,
 ) -> Result<State> {
     // We may get here a few ways
@@ -382,12 +581,13 @@ fn label_state(
     // Label with a definition
     //   LABEL[:] <WORD|BYTE|EQU|ASCIIZ> <val> [; [comments]]
 
+    let upper = token.to_uppercase();
     if let Some(tok) = token.strip_prefix(';') {
-        add_label(true, ret, &label, None, line, fi)?;
+        add_label(true, ret, &label, None, line, expand, fi)?;
         tokens.push(Token::Label(label));
         Ok(State::Comment(tok.into()))
     } else {
-        match upper {
+        match upper.as_str() {
             // Labels can be EQU style in which case we need one more state to get
             // the value.
             "EQU" | ".EQU" | "=" => {
@@ -397,30 +597,30 @@ fn label_state(
                 }
                 // Don't have to validate label since State::Begin did it above before
                 // progressing here. But it does need an initial definition.
-                add_label(true, ret, &label, None, line, fi)?;
+                add_label(true, ret, &label, None, line, expand, fi)?;
                 Ok(State::Equ(label))
             }
             "WORD" | ".WORD" => {
-                add_label(true, ret, &label, None, line, fi)?;
+                add_label(true, ret, &label, None, line, expand, fi)?;
                 tokens.push(Token::Label(label));
                 Ok(State::Word(vec![]))
             }
             "BYTE" | ".BYTE" => {
-                add_label(true, ret, &label, None, line, fi)?;
+                add_label(true, ret, &label, None, line, expand, fi)?;
                 tokens.push(Token::Label(label));
                 Ok(State::Byte(vec![]))
             }
             "ASCIIZ" | ".ASCIIZ" => {
-                add_label(true, ret, &label, None, line, fi)?;
+                add_label(true, ret, &label, None, line, expand, fi)?;
                 tokens.push(Token::Label(label));
                 Ok(State::AsciiZ(vec![]))
             }
 
             // Otherwise this should be an opcode and we can push a label
             // into tokens. Phase 2 will figure out its value.
-            _ => match Opcode::from_str(upper) {
+            _ => match Opcode::from_str(upper.as_str()) {
                 Ok(op) => {
-                    add_label(true, ret, &label, None, line, fi)?;
+                    add_label(true, ret, &label, None, line, expand, fi)?;
                     tokens.push(Token::Label(label));
                     Ok(State::Op(op))
                 }
@@ -439,6 +639,7 @@ fn word_byte_state(
     tokens: &mut Vec<Token>,
     is_word: bool,
     line: &str,
+    expand: &MacroExpand,
     fi: &FileInfo,
 ) -> Result<State> {
     // We may have tokens left which is a comment so check for that and move to that phase.
@@ -461,7 +662,7 @@ fn word_byte_state(
 
     // Below for all MemDef the PC value is computed and changed during
     // `compute_refs`.
-    match token_to_val_or_label(token, ret, is_word, line, fi)? {
+    match token_to_val_or_label(token, ret, is_word, line, expand, fi)? {
         OpVal::Label(l) => {
             md.push(MemDef {
                 pc: 0x0000,
@@ -528,7 +729,7 @@ fn asciiz_state(
     // of it so we really have to parse the rest of the line here.
     if !token.starts_with('"') {
         return Err(eyre!("Error parsing line {fi} - ASCIIZ must be of the form \"XXX\" bad token '{token}' - {line}"));
-    };
+    }
 
     // Un-escape the special 3 chars through the whole input string.
     // This will never support anything else as raw bytes can just be emitted
@@ -633,10 +834,11 @@ fn equ_state(
     tokens: &mut Vec<Token>,
     label: String,
     line: &str,
+    expand: &MacroExpand,
     fi: &FileInfo,
 ) -> Result<State> {
     // Find a value and then create the token.
-    let val = token_to_val_or_label(token, ret, false, line, fi)?;
+    let val = token_to_val_or_label(token, ret, false, line, expand, fi)?;
 
     // If it's got a value already we need to add that label completely as token_to_val_or_label
     // only does this for new labels.
@@ -648,7 +850,7 @@ fn equ_state(
             lbl.val = Some(v);
             lbl.file_info = fi.clone();
         }
-    };
+    }
     tokens.push(Token::Equ(label, val));
     Ok(State::Remainder(false))
 }
@@ -660,6 +862,7 @@ fn op_state(
     cpu: &dyn CPU,
     op: Opcode,
     line: &str,
+    expand: &MacroExpand,
     fi: &FileInfo,
 ) -> Result<State> {
     // Start all address modes with implied. If we can figure
@@ -696,8 +899,8 @@ fn op_state(
         if pre > 7 {
             return Err(eyre!("Invalid zero page relative (index {pre} too large - greater than 7) on line {fi} - {token}"));
         }
-        let zpaddr = token_to_val_or_label(parts[1], ret, false, line, fi)?;
-        let dest = token_to_val_or_label(parts[2], ret, false, line, fi)?;
+        let zpaddr = token_to_val_or_label(parts[1], ret, false, line, expand, fi)?;
+        let dest = token_to_val_or_label(parts[2], ret, false, line, expand, fi)?;
         operation.op_val = Some(vec![OpVal::Val(TokenVal::Val8(pre)), zpaddr, dest]);
         tokens.push(Token::Op(operation));
         return Ok(State::Remainder(false));
@@ -754,7 +957,7 @@ fn op_state(
     // and started with a valid utf8 ASCII str.
     let op_val = std::str::from_utf8(val)?;
 
-    let ov = token_to_val_or_label(op_val, ret, false, line, fi)?;
+    let ov = token_to_val_or_label(op_val, ret, false, line, expand, fi)?;
     match ov {
         OpVal::Label(_) => {}
         OpVal::Val(v) => {
@@ -763,7 +966,7 @@ fn op_state(
                 operation.mode = find_mode(v, &operation);
             }
         }
-    };
+    }
     operation.op_val = Some(vec![ov]);
     tokens.push(Token::Op(operation));
     Ok(State::Remainder(false))
@@ -831,7 +1034,7 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                         }
                     }
                 }
-            };
+            }
         }
     }
 
@@ -932,9 +1135,9 @@ fn compute_opcode_refs(
                     OpVal::Val(t) => {
                         if let TokenVal::Val8(_) = t {
                             ok = true;
-                        };
+                        }
                     }
-                };
+                }
             }
             if !ok {
                 return Err(eyre!(
@@ -964,9 +1167,9 @@ fn compute_opcode_refs(
                     OpVal::Val(t) => {
                         if let TokenVal::Val16(_) = t {
                             ok = true;
-                        };
+                        }
                     }
-                };
+                }
             }
             if !ok {
                 return Err(eyre!(
@@ -1247,7 +1450,7 @@ fn equ_output(oa: &mut OutputArgs, td: &String, labels: &HashMap<String, LabelDe
         TokenVal::Val16(v) => {
             write!(oa.output, "{td:<13} EQU      {v:04X}").unwrap();
         }
-    };
+    }
 }
 
 fn comment_output(oa: &mut OutputArgs, c: &String, index: usize) {
@@ -1288,7 +1491,6 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
     );
 
     // Grab the first entry in the bytes vec for the opcode value.
-    // TODO(jchacon): If > 1 pick one randomly.
     if o.mode == AddressMode::ZeroPageRelative {
         // BBR/BBS are special. This is actually the vector offsets based on the first opval value.
         // We know this is fine since we range checked it above.
@@ -1348,7 +1550,7 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
                 )
                 .unwrap();
             }
-        };
+        }
 
         let mut val = String::new();
         cpu.disassemble(&mut val, o.pc, &oa.res.bin, true);
@@ -1418,9 +1620,9 @@ fn fixup_relative_addr(
             OpVal::Val(t) => {
                 if let TokenVal::Val8(_) = t {
                     ok = true;
-                };
+                }
             }
-        };
+        }
     }
     if !ok {
         return Err(eyre!(
@@ -1709,14 +1911,19 @@ fn parse_val(val: &str, mut is_u16: bool) -> Option<TokenVal> {
 
 // parse_label will validate a label is of the right form (letter followed by 0..N letter/number/some punc).
 // NOTE: * is a special case and always allowed.
-fn parse_label(label: &str) -> Result<String> {
+fn parse_label(label: &str, expand: &MacroExpand) -> Result<String> {
     // * is special case where it's always ok
     if label == "*" {
         return Ok(label.into());
     }
+    let reg = if expand.in_macro { re_exp() } else { re() };
 
-    if re().is_match(label) {
+    if reg.is_match(label) {
         Ok(label.into())
+    } else if expand.in_macro {
+        Err(eyre!(
+            "Error parsing label - {label}. Must be of the form {LABEL_EXP}"
+        ))
     } else {
         Err(eyre!(
             "Error parsing label - {label}. Must be of the form {LABEL}"
@@ -1725,6 +1932,7 @@ fn parse_label(label: &str) -> Result<String> {
 }
 
 const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9_]+$";
+const LABEL_EXP: &str = r"^[a-zA-Z][a-zA-Z0-9_]+[\?]$";
 
 fn re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -1732,6 +1940,16 @@ fn re() -> &'static Regex {
         Ok(re) => re,
         Err(err) => {
             panic!("Error parsing regex {LABEL} - {err}");
+        }
+    })
+}
+
+fn re_exp() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| match Regex::new(LABEL_EXP) {
+        Ok(re) => re,
+        Err(err) => {
+            panic!("Error parsing regex {LABEL_EXP} - {err}");
         }
     })
 }
@@ -1762,13 +1980,14 @@ fn token_to_val_or_label(
     ret: &mut ASTOutput,
     is_16: bool,
     line: &str,
+    expand: &MacroExpand,
     fi: &FileInfo,
 ) -> Result<OpVal> {
     let x = match parse_val(val, is_16) {
         Some(v) => OpVal::Val(v),
-        None => match parse_label(val) {
+        None => match parse_label(val, expand) {
             Ok(label) => {
-                add_label(false, ret, &label, None, line, fi)?;
+                add_label(false, ret, &label, None, line, expand, fi)?;
                 OpVal::Label(label)
             }
             Err(err) => {
@@ -1796,8 +2015,25 @@ fn add_label(
     label: &String,
     val: Option<TokenVal>,
     line: &str,
+    expand: &MacroExpand,
     fi: &FileInfo,
 ) -> Result<()> {
+    // If this is a macro expansion look for labels ending in ? and replace that with the current
+    // expansion number before processing onwards.
+    let label = if expand.in_macro {
+        if label.ends_with('?') {
+            let r = label.as_bytes();
+            &format!(
+                "{}{}",
+                String::from_utf8_lossy(&r[0..r.len()]),
+                expand.expansion
+            )
+        } else {
+            label
+        }
+    } else {
+        label
+    };
     if let Some(ld) = ret.labels.get_mut(label) {
         // Could be a reference created this so there's no line number. If there is one this is a duplicate.
         if label_def {
