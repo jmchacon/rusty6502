@@ -1005,7 +1005,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             };
         }
         CartStyle::ArchaicNES => {}
-    };
+    }
 
     Ok(nes)
 }

@@ -1180,7 +1180,7 @@ fn reset(cpu: &mut dyn CPU, cpucommandresptx: &Sender<Result<CommandResponse>>) 
     loop {
         match cpu.reset() {
             Ok(OpState::Done) => break,
-            Ok(OpState::Processing) => continue,
+            Ok(OpState::Processing) => {}
             Err(e) => {
                 cpucommandresptx.send(Err(eyre!("reset error: {e}")))?;
                 break;
@@ -1326,7 +1326,7 @@ pub fn cpu_loop(
 
             if reason != StopReason::Run {
                 state.is_running = false;
-            };
+            }
             cpu.set_debug(Some(debug.clone() as Box<dyn CPUDebug>));
             *std::cell::RefCell::<_>::borrow_mut(&debug.full) = state.running_ram_snapshot;
             cpu.debug();
@@ -1384,7 +1384,7 @@ pub fn cpu_loop(
                             .send(Err(eyre!("only Stop and Reset allowed in Run state")))?;
                         continue;
                     }
-                };
+                }
             }
             c
         } else {
