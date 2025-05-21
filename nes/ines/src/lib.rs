@@ -711,7 +711,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
         // Copy the trainer data over.
         unsafe {
             std::ptr::copy_nonoverlapping(
-                &data[HEADER_SIZE_U],
+                &raw const data[HEADER_SIZE_U],
                 trainer.as_mut_ptr(),
                 trainer.len(),
             );
@@ -825,7 +825,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
         // Copy the ROM data over.
         unsafe {
             std::ptr::copy_nonoverlapping(
-                &data[start + i * PRG_BLOCK_SIZE_U],
+                &raw const data[start + i * PRG_BLOCK_SIZE_U],
                 nes.prg[i].as_mut_ptr(),
                 PRG_BLOCK_SIZE_U,
             );
@@ -847,7 +847,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             // Copy the ROM data over.
             unsafe {
                 std::ptr::copy_nonoverlapping(
-                    &data[start + i * CHR_BLOCK_SIZE_U],
+                    &raw const data[start + i * CHR_BLOCK_SIZE_U],
                     nes.chr[i].as_mut_ptr(),
                     CHR_BLOCK_SIZE_U,
                 );
@@ -979,7 +979,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
                 // SAFETY: We know this fits from the size checks above.
                 // Copy the ROM data over.
                 unsafe {
-                    std::ptr::copy_nonoverlapping(&data[end], rom.as_mut_ptr(), size);
+                    std::ptr::copy_nonoverlapping(&raw const data[end], rom.as_mut_ptr(), size);
                 }
                 nes.misc_rom = Some(rom);
             }
