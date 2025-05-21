@@ -88,7 +88,7 @@ strum = "0.24.1"
 tempfile = "3.12.0"
 thiserror = "1.0.63"
 
-proc-macro2 = "1.0.86"
+proc-macro2 = "1.0.95"
 quote = "1.0.36"
 syn = { version = "2.0.72", features = ["extra-traits", "full"] }
 
