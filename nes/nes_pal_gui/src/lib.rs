@@ -19,7 +19,7 @@ pub fn texture_from_palette(
     filename: &str,
     colors: &[Color],
 ) -> TextureHandle {
-    let mut data: [u8; SIZE] = [0; SIZE];
+    let mut data = vec![0; SIZE].into_boxed_slice();
 
     for (loc, c) in colors.iter().enumerate() {
         // The upper left hand corner of the box we're coloring in.

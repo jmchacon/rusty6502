@@ -21,8 +21,6 @@ fn read_addr(r: &impl Memory, pc: u16) -> u16 {
     (u16::from(high) << 8) + u16::from(low)
 }
 
-//type Result<T> = std::result::Result<T, ParseError>;
-
 #[derive(Debug, Clone)]
 /// `ParseError` indicates a syntax error parsing the Basic input.
 pub struct ParseError {

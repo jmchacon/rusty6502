@@ -753,7 +753,7 @@ fn disassemble_test() -> Result<()> {
                 2 => write!(out, "     ")?,
                 3 => write!(out, "  ")?,
                 _ => panic!("odd vec?"),
-            };
+            }
             write!(out, "{}", t.1)?;
 
             cpu.disassemble(&mut s, addr.0, &*cpu.ram().borrow(), false);

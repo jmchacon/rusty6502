@@ -1433,7 +1433,7 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 self.p_mut(Flags(val.0));
                 return Ok(OpState::Done);
             }
-        };
+        }
         self.zero_check(val.0);
         self.negative_check(val.0);
         Ok(OpState::Done)
@@ -5269,7 +5269,6 @@ impl<'a> CPU<'a> for CPU65C02<'a> {
 
     /// Given an opcode u8 value this will return the Operation struct
     /// defining it. i.e. `Opcode` and `AddressMode`.
-    #[must_use]
     fn opcode_op(&self, op: u8) -> Operation {
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
@@ -5300,7 +5299,6 @@ impl<'a> CPU<'a> for CPU65C02Rockwell<'a> {
 
     /// Given an opcode u8 value this will return the Operation struct
     /// defining it. i.e. `Opcode` and `AddressMode`.
-    #[must_use]
     fn opcode_op(&self, op: u8) -> Operation {
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
@@ -5331,7 +5329,6 @@ impl<'a> CPU<'a> for CPU65SC02<'a> {
 
     /// Given an opcode u8 value this will ret urn the Operation struct
     /// defining it. i.e. `Opcode` and `AddressMode`.
-    #[must_use]
     fn opcode_op(&self, op: u8) -> Operation {
         // SAFETY: We know a u8 is in range due to how we built this
         //         so a direct index is fine vs having the range check
@@ -6963,7 +6960,6 @@ impl<'a> CPUCMOSInternal<'a> for CPU65C02Rockwell<'a> {
     // a stub function which panics if we somehow get here.
     #[allow(clippy::unused_self)]
     #[cfg(not(coverage))]
-
     fn wai(&mut self) -> Result<OpState> {
         panic!("WAI not implemented for Rockwell!");
     }
@@ -7024,7 +7020,7 @@ pub struct ChipDef<'a> {
     pub rdy: Option<&'a dyn irq::Sender>,
 }
 
-impl<'a> Default for ChipDef<'a> {
+impl Default for ChipDef<'_> {
     fn default() -> Self {
         Self {
             ram: Box::new([0u8; MAX_SIZE]),
