@@ -65,7 +65,7 @@ c64basic = { path = "./c64basic", version = "~0.1" }
 chip = { path = "./chip", version = "~0.1" }
 clap = { version = "~4.5", features = ["derive", "wrap_help"] }
 clap-num = "1.1.1"
-color-eyre = { version = "0.6.3", default-features = false }
+color-eyre = { version = "0.6.5", default-features = false }
 cpu_proc_macros = { path = "./cpu_proc_macros", version = "~0.1" }
 eframe = "0.26.0"
 egui = "0.26.0"
