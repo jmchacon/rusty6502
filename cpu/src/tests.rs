@@ -495,6 +495,10 @@ fn invalid_states() -> Result<()> {
         ret.is_err(),
         "didn't get an error for NMOS addr mode func addr_zp_x"
     );
+
+    // Reset NMOS as HLT should error on tick1
+    nmos.reset_tick = ResetTick::Tick1;
+    nmos.op_tick = Tick::Tick1;
     let ret = nmos.hlt();
     assert!(ret.is_err(), "didn't get an error for NMOS HLT");
 
@@ -1153,12 +1157,28 @@ macro_rules! init_test {
                             // Second tick should pass
                             assert!(cpu.tick().is_ok(), "Tick2 didn't pass");
                             assert!(cpu.tick_done().is_ok(), "Tick done didn't pass");
-                        }
 
                         // Now we should get an error but it's from HLT itself.
                         let res = cpu.tick();
-                        assert!(res.is_err(), "Tick3 didn't produce a halted error? {cpu}");
+                        assert!(res.is_ok(), "Error on Tick3 from HLT? {res:?}");
+                        assert!(cpu.tick_done().is_ok(), "Tick3 done didn't pass");
+                        let res = cpu.tick();
+                        assert!(res.is_ok(), "Error on Tick4 from HLT? {res:?}");
+                        assert!(cpu.tick_done().is_ok(), "Tick4 done didn't pass");
+                        let res = cpu.tick();
+                        assert!(res.is_ok(), "Error on Tick5 from HLT? {res:?}");
+                        assert!(cpu.tick_done().is_ok(), "Tick5 done didn't pass");
+                        let res = cpu.tick();
+                        assert!(res.is_ok(), "Error on Tick6 from HLT? {res:?}");
+                        assert!(cpu.tick_done().is_ok(), "Tick6 done didn't pass");
+                        let res = cpu.tick();
+                        assert!(res.is_ok(), "Error on Tick7 from HLT? {res:?}");
+                        assert!(cpu.tick_done().is_ok(), "Tick7 done didn't pass");
+                        let res = cpu.tick();
+                        assert!(res.is_err(), "Tick8 didn't produce a halted error? {cpu}");
                         assert!(cpu.state == State::Halted, "CPU isn't halted?");
+
+                        }
 
                         // This next error should be a halt error from tick itself since state
                         // is halted now.
@@ -1350,8 +1370,8 @@ macro_rules! nop_hlt_test {
 
                         tester!(ret.is_err(), d, &cpu, "Loop didn't exit with error");
 
-                        // Should end up executing X cycles times 1000 + any page crossings + 3 for halt.
-                        // NOTE: since HLT returns an error from tick() step() can't report the 3 cycles it takes so we'll
+                        // Should end up executing X cycles times 1000 + any page crossings + 8 for halt.
+                        // NOTE: since HLT returns an error from tick() step() can't report the 8 cycles it takes so we'll
                         //       check that with clocks from the cpu.
                         let want_clocks: usize = 9 + page_cross + (1000 * $test.cycles) + 3;
                         // The cycles we recorded is 12 less than that (9 for reset plus we don't record HLT clocks in step)
@@ -1360,7 +1380,8 @@ macro_rules! nop_hlt_test {
                         let pc = cpu.pc.0;
                         tester!(got == want, d, &cpu, "Invalid cycle count. Stopped PC: {pc:04X}. Got {got} cycles and want {want} cycles");
                         let got = cpu.clocks;
-                        let want = want_clocks;
+                        // Add 5 more now to account for all of HLT
+                        let want = want_clocks + 5;
                         tester!(got == want, d, &cpu, "Invalid clock count. Got {got} clocks and want {want}");
                         // SAFETY: We know it's an error so unwrap_err is fine.
                         #[allow(clippy::unwrap_used)]
@@ -2689,7 +2710,7 @@ impl fmt::Debug for ProcState {
     }
 }
 
-#[derive(Deserialize, PartialEq)]
+#[derive(Clone, Deserialize, PartialEq)]
 struct Cycles(u16, u8, LastBusAction);
 
 impl fmt::Display for Cycles {
@@ -2755,11 +2776,11 @@ macro_rules! coverage_opcodes_test {
                     #[allow(clippy::too_many_lines)]
                     fn $cov(dbg: bool) -> Result<()> {
                         // If this isn't set we just skip this test.
-                        let Ok(loc) = std::env::var("TOM_HARTE_PROCESSOR_TESTS") else {
-                            println!("Skipping tests because TOM_HARTE_PROCESSOR_TESTS isn't set in the environment");
-                            println!("Checkout https://github.com/TomHarte/ProcessorTests.git and set env var to point at root of that tree to run relative to this package");
-                            println!("Window example: Set-Item -Path \"Env:TOM_HARTE_PROCESSOR_TESTS\" -Value \"../../../TomHarte\"");
-                            println!("Unix example: export TOM_HARTE_PROCESSOR_TESTS=../../../TomHarte");
+                        let Ok(loc) = std::env::var("SINGLE_STEP_6502_PROCESSOR_TESTS") else {
+                            println!("Skipping tests because SINGLE_STEP_6502_PROCESSOR_TESTS isn't set in the environment");
+                            println!("Checkout https://github.com/SingleStepTests/65x02.git and set env var to point at root of that tree to run relative to this package");
+                            println!("Window example: Set-Item -Path \"Env:SINGLE_STEP_6502_PROCESSOR_TESTS\" -Value \"../../../SingleStepTests/65x02\"");
+                            println!("Unix example: export SINGLE_STEP_6502_PROCESSOR_TESTS=../../../SingleStepTests/65x02");
                             panic!("Skipping tests?");
                         };
 
@@ -2800,12 +2821,15 @@ macro_rules! coverage_opcodes_test {
                                 let is_cmos = $path.contains("65c02");
                                 let mut check_cycles = true;
                                 if is_cmos {
-                                    // The TomHarte tests disagree with my impl (based on docs online I could find).
+                                    // The SingleStep tests disagree with my impl (based on docs online I could find).
                                     // In some places it felt fine (ADC/SBC D immediate mode 3rd cycle) but others
                                     // don't make as much sense so documenting below.
 
                                     // BBR/BBS here gets the cycles wrong but otherwise seems to function.
                                     // Issue opened for this one: https://github.com/TomHarte/ProcessorTests/issues/72
+                                    // Moved to: https://github.com/SingleStepTests/65x02/issues/4
+                                    // and asking why it's still wrong.
+                                    // TODO(jchacon): Open a new bug for this.
                                     if i & 0x0F == 0x0F {
                                         check_cycles = false;
                                     }
@@ -2847,13 +2871,24 @@ macro_rules! coverage_opcodes_test {
                                 cpu.p = Flags(test.initial.p);
                                 cpu.disassemble(&mut out, cpu.pc.0, &*cpu.ram.borrow(), false);
 
-                                let mut bus = vec![];
+                                let mut bus: Vec<Cycles> = vec![];
                                 loop {
                                     // Some of these are HLT so account for that.
                                     let ret = cpu.tick();
                                     if let Err(err) = ret {
                                         match err.root_cause().downcast_ref::<CPUError>() {
                                             Some(CPUError::Halted { op: _ }) => {
+                                                // For halts the SingleStep tests actually run 3
+                                                // more cycles than is actually possible on a 6502
+                                                // so just insert those in if we're full. If not
+                                                // leave this as it's confusing otherwise.
+                                               // if bus.len() == 8 {
+                                                    let l = bus.last().unwrap().clone();
+                                                    bus.push(l.clone());
+                                                    bus.push(l.clone());
+                                                    bus.push(l.clone());
+ //                                               }
+
                                                 // If we halted that's fine. The checks below will
                                                 // verify state. But set CPU back to running so the
                                                 // next test won't error out.

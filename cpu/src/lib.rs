@@ -4651,21 +4651,29 @@ trait CPUNMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
 
     fn hlt(&mut self) -> Result<OpState> {
         match self.op_tick() {
-            Tick::Reset
-            | Tick::Tick1
-            | Tick::Tick4
-            | Tick::Tick5
-            | Tick::Tick6
-            | Tick::Tick7
-            | Tick::Tick8 => Err(eyre!("hlt invalid op_tick: {:?}", self.op_tick())),
+            Tick::Reset | Tick::Tick1 => Err(eyre!("hlt invalid op_tick: {:?}", self.op_tick())),
             Tick::Tick2 => Ok(OpState::Processing),
             Tick::Tick3 => {
-                // Read the next location one more time.
-                self.ram().borrow().read(self.pc());
+                // This now reads from 0xFFFF (per Visual 6502)
+                self.ram().borrow().read(0xFFFF);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick4 | Tick::Tick5 => {
+                // This now reads from 0xFFFE (per Visual 6502)
+                self.ram().borrow().read(0xFFFE);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick6 | Tick::Tick7 => {
+                // This now reads from 0xFFFF forever (per Visual 6502)
+                self.ram().borrow().read(0xFFFF);
+                Ok(OpState::Processing)
+            }
+            Tick::Tick8 => {
+                // This now reads from 0xFFFF forever (per Visual 6502)
+                self.ram().borrow().read(0xFFFF);
 
-                // The actual PC inside the chip doesn't advance so back it up.
-                self.pc_mut((Wrapping(self.pc()) - Wrapping(1)).0);
-
+                // Mark halted now and we always read from 0xFFFF on all future ticks
+                // which is handled in the halt logic in the main loop.
                 self.state_mut(State::Halted);
                 Ok(OpState::Done)
             }
@@ -5353,6 +5361,10 @@ macro_rules! chip_impl_nmos {
             fn tick(&mut self) -> Result<()> {
                 // Fast path if halted. PC doesn't advance nor do we take clocks.
                 if self.state == State::Halted {
+                    // This now reads from 0xFFFF forever (per Visual 6502)
+                    // But..does nothing else.
+                    self.ram().borrow().read(0xFFFF);
+
                     return Err(ErrReport::new(CPUError::Halted {
                         op: self.halt_opcode,
                     }));
@@ -5575,6 +5587,10 @@ macro_rules! chip_impl_cmos {
             fn tick(&mut self) -> Result<()> {
                 // Fast path if halted. PC doesn't advance nor do we take clocks.
                 if self.state == State::Halted {
+                    // This now reads from 0xFFFF forever (per Visual 6502)
+                    // But..does nothing else.
+                    self.ram().borrow().read(0xFFFF);
+
                     return Err(ErrReport::new(CPUError::Halted {
                         op: self.halt_opcode,
                     }));
@@ -6971,7 +6987,6 @@ impl<'a> CPUCMOSInternal<'a> for CPU65SC02<'a> {
     #[allow(clippy::unused_self)]
     #[cfg(not(coverage))]
     fn rmb(&mut self) -> Result<OpState> {
-        println!("{:?} {:02X}", self.op, self.op_raw);
         panic!("RMB not implemented for C65SC02");
     }
 
