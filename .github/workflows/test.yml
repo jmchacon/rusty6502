@@ -25,16 +25,16 @@ jobs:
         uses: actions/cache@v4
         with:
           enableCrossOsArchive: true
-          path: TomHarte
+          path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
-          repository: 'TomHarte/ProcessorTests'
-          path: 'TomHarte'
+          repository: 'SingleStepTests/65x02'
+          path: 'SingleStepTests'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
-        run: cd TomHarte && git pull
+        run: cd SingleStepTests && git pull
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
@@ -49,14 +49,14 @@ jobs:
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
       # https://github.com/rust-lang/cargo/issues/6669
       - name: cargo test --doc
         run: cargo test -r --locked --all-features --doc
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
   minimal:
     runs-on: ubuntu-latest
     name: ubuntu / stable / minimal-versions
@@ -69,16 +69,16 @@ jobs:
         uses: actions/cache@v4
         with:
           enableCrossOsArchive: true
-          path: TomHarte
+          path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
-          repository: 'TomHarte/ProcessorTests'
-          path: 'TomHarte'
+          repository: 'SingleStepTests/65x02'
+          path: 'SingleStepTests'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
-        run: cd TomHarte && git pull
+        run: cd SingleStepTests && git pull
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - name: Install nightly for -Zminimal-versions
@@ -93,7 +93,7 @@ jobs:
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
   os-check:
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.os }} / stable
@@ -110,16 +110,16 @@ jobs:
         uses: actions/cache@v4
         with:
           enableCrossOsArchive: true
-          path: TomHarte
+          path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
-          repository: 'TomHarte/ProcessorTests'
-          path: 'TomHarte'
+          repository: 'SingleStepTests/65x02'
+          path: 'SingleStepTests'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
-        run: cd TomHarte && git pull
+        run: cd SingleStepTests && git pull
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -131,7 +131,7 @@ jobs:
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
   coverage:
     runs-on: ubuntu-latest
     name: ubuntu / beta / coverage
@@ -144,16 +144,16 @@ jobs:
         uses: actions/cache@v4
         with:
           enableCrossOsArchive: true
-          path: TomHarte
+          path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
-          repository: 'TomHarte/ProcessorTests'
-          path: 'TomHarte'
+          repository: 'SingleStepTests/65x02'
+          path: 'SingleStepTests'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
-        run: cd TomHarte && git pull
+        run: cd SingleStepTests && git pull
       - name: Install beta
         uses: dtolnay/rust-toolchain@beta
         with:
@@ -172,7 +172,7 @@ jobs:
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v5
         with:

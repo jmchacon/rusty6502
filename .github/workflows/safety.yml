@@ -21,16 +21,16 @@ jobs:
         uses: actions/cache@v4
         with:
           enableCrossOsArchive: true
-          path: TomHarte
+          path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
-          repository: 'TomHarte/ProcessorTests'
-          path: 'TomHarte'
+          repository: 'SingleStepTests/65x02'
+          path: 'SingleStepTests'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
-        run: cd TomHarte && git pull
+        run: cd SingleStepTests && git pull
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - run: |
@@ -65,7 +65,7 @@ jobs:
           RUSTFLAGS: "-Z sanitizer=address"
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
       - name: cargo test -Zsanitizer=leak
         if: always()
         run: cargo test --all-features --target x86_64-unknown-linux-gnu
@@ -74,7 +74,7 @@ jobs:
           RUSTFLAGS: "-Z sanitizer=leak"
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
   miri:
     runs-on: ubuntu-latest
     steps:
