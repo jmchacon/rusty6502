@@ -276,7 +276,7 @@ fn run_invalid_commands() -> Result<()> {
         match cpucommandresprx.recv()? {
             Ok(st) => match st {
                 CommandResponse::Stop(stop) => match stop.reason {
-                    StopReason::Run => continue,
+                    StopReason::Run => {}
                     StopReason::Stop => break,
                     _ => panic!("Invalid stop reason while running: {stop}"),
                 },
@@ -2039,7 +2039,6 @@ fn step_tests() -> Result<()> {
                         inputtx.send("C".into())?;
                         cont = false;
                     }
-                    continue;
                 }
                 StopReason::Watch(_, _, _) => break,
                 _ => panic!("Unknown reason - {resp:?}"),

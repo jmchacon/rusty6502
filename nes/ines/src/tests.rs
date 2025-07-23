@@ -29,12 +29,12 @@ fn nestest_rom() -> Result<()> {
     //         so everything matches size wise.
     unsafe {
         std::ptr::copy_nonoverlapping(
-            &bytes[HEADER_SIZE_U],
+            &raw const bytes[HEADER_SIZE_U],
             want.prg[0].as_mut_ptr(),
             PRG_BLOCK_SIZE_U,
         );
         std::ptr::copy_nonoverlapping(
-            &bytes[HEADER_SIZE_U + PRG_BLOCK_SIZE_U],
+            &raw const bytes[HEADER_SIZE_U + PRG_BLOCK_SIZE_U],
             want.chr[0].as_mut_ptr(),
             CHR_BLOCK_SIZE_U,
         );

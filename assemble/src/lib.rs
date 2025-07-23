@@ -320,7 +320,7 @@ fn pass1(cpu: &dyn CPU, lines: &[(FileInfo, String)]) -> Result<ASTOutput> {
             State::Equ(_) | State::AsciiZ(_) => {
                 panic!("Internal error parsing line {fi} - invalid state {state:?} - {line}")
             }
-        };
+        }
         ret.ast.push(tokens);
     }
     Ok(ret)
@@ -528,7 +528,7 @@ fn asciiz_state(
     // of it so we really have to parse the rest of the line here.
     if !token.starts_with('"') {
         return Err(eyre!("Error parsing line {fi} - ASCIIZ must be of the form \"XXX\" bad token '{token}' - {line}"));
-    };
+    }
 
     // Un-escape the special 3 chars through the whole input string.
     // This will never support anything else as raw bytes can just be emitted
@@ -648,7 +648,7 @@ fn equ_state(
             lbl.val = Some(v);
             lbl.file_info = fi.clone();
         }
-    };
+    }
     tokens.push(Token::Equ(label, val));
     Ok(State::Remainder(false))
 }
@@ -763,7 +763,7 @@ fn op_state(
                 operation.mode = find_mode(v, &operation);
             }
         }
-    };
+    }
     operation.op_val = Some(vec![ov]);
     tokens.push(Token::Op(operation));
     Ok(State::Remainder(false))
@@ -831,7 +831,7 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                         }
                     }
                 }
-            };
+            }
         }
     }
 
@@ -932,9 +932,9 @@ fn compute_opcode_refs(
                     OpVal::Val(t) => {
                         if let TokenVal::Val8(_) = t {
                             ok = true;
-                        };
+                        }
                     }
-                };
+                }
             }
             if !ok {
                 return Err(eyre!(
@@ -964,9 +964,9 @@ fn compute_opcode_refs(
                     OpVal::Val(t) => {
                         if let TokenVal::Val16(_) = t {
                             ok = true;
-                        };
+                        }
                     }
-                };
+                }
             }
             if !ok {
                 return Err(eyre!(
@@ -1247,7 +1247,7 @@ fn equ_output(oa: &mut OutputArgs, td: &String, labels: &HashMap<String, LabelDe
         TokenVal::Val16(v) => {
             write!(oa.output, "{td:<13} EQU      {v:04X}").unwrap();
         }
-    };
+    }
 }
 
 fn comment_output(oa: &mut OutputArgs, c: &String, index: usize) {
@@ -1348,7 +1348,7 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
                 )
                 .unwrap();
             }
-        };
+        }
 
         let mut val = String::new();
         cpu.disassemble(&mut val, o.pc, &oa.res.bin, true);
@@ -1418,9 +1418,9 @@ fn fixup_relative_addr(
             OpVal::Val(t) => {
                 if let TokenVal::Val8(_) = t {
                     ok = true;
-                };
+                }
             }
-        };
+        }
     }
     if !ok {
         return Err(eyre!(
@@ -1538,7 +1538,7 @@ fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -
                         filename: filename.to_string_lossy().into(),
                         line_num: line_num + 1,
                     },
-                    format!("; ENDINCLUDE {filename:?}"),
+                    format!("; ENDINCLUDE {}", filename.display()),
                 ));
             } else {
                 lines.push((

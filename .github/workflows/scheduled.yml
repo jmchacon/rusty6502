@@ -25,16 +25,16 @@ jobs:
         uses: actions/cache@v4
         with:
           enableCrossOsArchive: true
-          path: TomHarte
+          path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
-          repository: 'TomHarte/ProcessorTests'
-          path: 'TomHarte'
+          repository: 'SingleStepTests/65x02'
+          path: 'SingleStepTests'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
-        run: cd TomHarte && git pull
+        run: cd SingleStepTests && git pull
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
@@ -46,7 +46,7 @@ jobs:
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests/65x02"
   # https://twitter.com/alcuadrado/status/1571291687837732873
   update:
     runs-on: ubuntu-latest
@@ -64,16 +64,16 @@ jobs:
         uses: actions/cache@v4
         with:
           enableCrossOsArchive: true
-          path: TomHarte
+          path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
-          repository: 'TomHarte/ProcessorTests'
-          path: 'TomHarte'
+          repository: 'SingleStepTests/65x02'
+          path: 'SingleStepTests'
       - name: cache-update
         if: steps.cache-git.outputs.cache-hit == 'true'
-        run: cd TomHarte && git pull
+        run: cd SingleStepTests && git pull
       - name: Install beta
         if: hashFiles('Cargo.lock') != ''
         uses: dtolnay/rust-toolchain@beta
@@ -88,4 +88,4 @@ jobs:
           RUSTFLAGS: -D deprecated
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          TOM_HARTE_PROCESSOR_TESTS: "../TomHarte"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
