@@ -21,18 +21,11 @@ impl Chip for APU {
 
 impl Memory for APU {
     fn read(&self, addr: u16) -> u8 {
-        match addr & 0x18 {
-            0x00 | 0x01 => {}
-            _ => panic!(),
-        }
-        0x00
+        self.ram[usize::from(addr) & 0x18]
     }
 
     fn write(&mut self, addr: u16, val: u8) {
-        match addr & 0x18 {
-            0x00 | 0x01 => {}
-            _ => panic!(),
-        }
+        self.ram[usize::from(addr) & 0x18] = val;
     }
 
     fn power_on(&mut self) {
@@ -40,7 +33,14 @@ impl Memory for APU {
     }
 
     fn ram(&self, dest: &mut [u8; memory::MAX_SIZE]) {
-        todo!()
+        for n in 0..=0xFFFF / 0x1F {
+            for p in 0..0x18 {
+                dest[n * 0x1F + p] = self.ram[p];
+            }
+            for p in 0x18..0x1F {
+                dest[n * 0x1F + p] = 0x00;
+            }
+        }
     }
 }
 

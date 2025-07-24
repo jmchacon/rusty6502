@@ -776,6 +776,7 @@ pub fn list(pc: u16, r: &impl Memory) -> Result<(String, u16)> {
     let mut output_string = String::new();
 
     // Emit the line number
+    #[allow(clippy::unwrap_used)]
     write!(output_string, "{line_num} ").unwrap();
 
     // a 1 byte array to stick tok into when we need to stringify it below.
@@ -805,6 +806,7 @@ pub fn list(pc: u16, r: &impl Memory) -> Result<(String, u16)> {
                 return Err(eyre!(ParseError { output_string }));
             }
         };
+        #[allow(clippy::unwrap_used)]
         write!(output_string, "{emit}").unwrap();
     }
     Ok((output_string, working_pc))

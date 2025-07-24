@@ -7,6 +7,7 @@ use memory::Memory;
 /// `PPU` is the implementation for the PPU chip in the original NES
 pub struct PPU {
     mapper: Box<dyn PPUMapper>,
+    registers: [u8; 0x08],
     pallete_ram: [u8; 0x20],
     oam_ram: [u8; 0x100],
     oam_ram_addr: usize,
@@ -38,18 +39,11 @@ pub trait PPUMapper {
 /// so many CPU side addresses mirror.
 impl Memory for PPU {
     fn read(&self, addr: u16) -> u8 {
-        match addr & 0x08 {
-            0x00 | 0x01 => {}
-            _ => panic!(),
-        }
-        0x00
+        self.registers[usize::from(addr) & 0x08]
     }
 
     fn write(&mut self, addr: u16, val: u8) {
-        match addr & 0x08 {
-            0x00 | 0x01 => {}
-            _ => panic!(),
-        }
+        self.registers[usize::from(addr) & 0x08] = val;
     }
 
     fn power_on(&mut self) {
@@ -57,6 +51,12 @@ impl Memory for PPU {
     }
 
     fn ram(&self, dest: &mut [u8; memory::MAX_SIZE]) {
+        for n in 0..=0xFFFF / 0x08 {
+            for p in 0..0x08 {
+                dest[n * 0x08 + p] = self.registers[p];
+            }
+        }
+
         todo!()
     }
 }
@@ -67,6 +67,7 @@ impl PPU {
     pub fn new(mapper: Box<dyn PPUMapper>) -> Self {
         Self {
             mapper,
+            registers: [0; 0x08],
             pallete_ram: [0; 0x20],
             oam_ram: [0; 0x100],
             oam_ram_addr: 0x000,
@@ -78,7 +79,12 @@ impl PPU {
     pub fn power_on(&mut self) {}
 
     /// Do a reset sequence for the PPU.
-    pub fn reset(&mut self) {}
+    pub fn reset(&mut self) {
+        // TODO(jchacon): Remove these on a real impl
+        self.ppu_read(0x00);
+        self.ppu_write(0x00, 0x00);
+        todo!()
+    }
 
     /// For use in OAM DMA transfers. Every write will write to the current OAM
     /// addr and then increment (and rollover) the addr.

@@ -71,6 +71,7 @@ impl<T: Display + std::default::Default> Debug<T> {
 impl Debug<CPUState> {
     fn dump(&self, s: &str, cpu: &dyn CPU) -> String {
         let mut out = String::new();
+        #[allow(clippy::unwrap_used)]
         writeln!(out, "\nFAIL: {s}\n\nExecution buffer:\n").unwrap();
         if *self.wrapped.borrow() {
             for i in *self.cur.borrow()..self.state.len() {
@@ -83,6 +84,7 @@ impl Debug<CPUState> {
                     _ = cpu.disassemble(&mut s, pc, r, false);
                 }
                 self.state[i].borrow_mut().dis = s;
+                #[allow(clippy::unwrap_used)]
                 writeln!(out, "{}", self.state[i].borrow()).unwrap();
             }
         }
@@ -96,6 +98,7 @@ impl Debug<CPUState> {
                 _ = cpu.disassemble(&mut s, pc, r, false);
             }
             self.state[i].borrow_mut().dis = s;
+            #[allow(clippy::unwrap_used)]
             writeln!(out, "{}", self.state[i].borrow()).unwrap();
         }
         out

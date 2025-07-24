@@ -353,11 +353,9 @@ fn beginning_states(token: &str, upper: &str, line: &str, fi: &FileInfo) -> Resu
                 };
                 match parse_label(token) {
                     Ok(label) => Ok(State::Label(label)),
-                    Err(err) => {
-                        return Err(eyre!(
-                            "Error parsing line {fi} - invalid label {err} - {line}"
-                        ));
-                    }
+                    Err(err) => Err(eyre!(
+                        "Error parsing line {fi} - invalid label {err} - {line}"
+                    )),
                 }
             }
         }
@@ -1031,14 +1029,17 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
             match t {
                 Token::Line(fi, line) => {
                     // Print the original input line as a comment in the output
+                    #[allow(clippy::unwrap_used)]
                     writeln!(output, "; {fi} - {line}").unwrap();
                 }
                 Token::Label(td) => {
                     // Location labels are always left justified
+                    #[allow(clippy::unwrap_used)]
                     write!(label_out, "{td:<8}").unwrap();
                 }
                 Token::Org(pc) => {
                     // ORG statements line up with EQU
+                    #[allow(clippy::unwrap_used)]
                     write!(output, "{:<13} {:<8} {pc:<04X}", " ", "ORG").unwrap();
                 }
                 Token::AsciiZ(md) => asciiz_output(
@@ -1123,10 +1124,12 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
             let TokenVal::Val16(v) = ld else {
                 panic!("Single line label {lbl} must be a PC value!");
             };
+            #[allow(clippy::unwrap_used)]
             write!(output, "{v:04X}          {label_out}").unwrap();
         }
 
         // If this was a blank line that also auto-parses for output purposes.
+        #[allow(clippy::unwrap_used)]
         writeln!(res.listing, "{output}").unwrap();
     }
     Ok(res)
@@ -1174,18 +1177,23 @@ fn word_byte_output(oa: &mut OutputArgs, md: &[MemDef], is_word: bool) {
         if lbl.is_empty() {
             if is_word {
                 let val = u16::from(val[1]) << 8 | u16::from(val[0]);
+                #[allow(clippy::unwrap_used)]
                 write!(post_bytes, " {val:04X}").unwrap();
             } else {
+                #[allow(clippy::unwrap_used)]
                 write!(post_bytes, " {:02X}", val[0]).unwrap();
             }
         } else {
+            #[allow(clippy::unwrap_used)]
             write!(post_bytes, " {lbl}").unwrap();
         }
         for (p, v) in val.iter().enumerate() {
+            #[allow(clippy::unwrap_used)]
             write!(byte_dump, " {v:02X}").unwrap();
             oa.res.bin[usize::from(m.pc) + p] = *v;
         }
     }
+    #[allow(clippy::unwrap_used)]
     write!(oa.output, "{byte_dump} {post_bytes}").unwrap();
     oa.label_out.clear();
 }
@@ -1202,7 +1210,9 @@ fn asciiz_output(oa: &mut OutputArgs, md: &[MemDef]) -> Result<()> {
 
         // End of string so process it.
         if v == 0x00 {
+            #[allow(clippy::unwrap_used)]
             write!(byte_dump, " 00").unwrap();
+            #[allow(clippy::unwrap_used)]
             write!(post_bytes, " {val}\"").unwrap();
             val.clear();
             val.push('"');
@@ -1218,8 +1228,10 @@ fn asciiz_output(oa: &mut OutputArgs, md: &[MemDef]) -> Result<()> {
             val.push(char::from(v));
         }
 
+        #[allow(clippy::unwrap_used)]
         write!(byte_dump, " {v:02X}").unwrap();
     }
+    #[allow(clippy::unwrap_used)]
     write!(oa.output, "{byte_dump} {post_bytes}").unwrap();
     oa.label_out.clear();
     Ok(())
@@ -1242,9 +1254,11 @@ fn compute_md_leader(oa: &OutputArgs, md: &[MemDef], pre: &str) -> (String, Stri
 fn equ_output(oa: &mut OutputArgs, td: &String, labels: &HashMap<String, LabelDef>) {
     match get_label_val(labels, td) {
         TokenVal::Val8(v) => {
+            #[allow(clippy::unwrap_used)]
             write!(oa.output, "{td:<13} EQU      {v:02X}").unwrap();
         }
         TokenVal::Val16(v) => {
+            #[allow(clippy::unwrap_used)]
             write!(oa.output, "{td:<13} EQU      {v:04X}").unwrap();
         }
     }
@@ -1260,14 +1274,17 @@ fn comment_output(oa: &mut OutputArgs, c: &String, index: usize) {
         let TokenVal::Val16(v) = ld else {
             panic!("Single line label {lbl} must be a PC value!");
         };
+        #[allow(clippy::unwrap_used)]
         write!(oa.output, "{v:04X}          {}", oa.label_out).unwrap();
         oa.label_out.clear();
     }
     // If this wasn't the first entry (index 0 is the Line entry) then add
     // a space to separate it from the rest of the line. i.e. LDA #69 ; A
     if index != 1 {
+        #[allow(clippy::unwrap_used)]
         write!(oa.output, " ").unwrap();
     }
+    #[allow(clippy::unwrap_used)]
     write!(oa.output, "{c}").unwrap();
 }
 
@@ -1304,6 +1321,7 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
         oa.res.bin[usize::from(o.pc)] = modes[0];
     }
     if oa.label_out.is_empty() {
+        #[allow(clippy::unwrap_used)]
         write!(oa.label_out, "{:<8}", "").unwrap();
     }
     if let Some(v) = &o.op_val {
@@ -1325,6 +1343,7 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
                     assert!(o.width == 2, "Internal error on line {}: got 8 bit value and expect 16 bit for op {} and mode {}", line_num+1, o.op, o.mode);
 
                     oa.res.bin[usize::from(o.pc + 1)] = b;
+                    #[allow(clippy::unwrap_used)]
                     write!(
                         oa.output,
                         "{:04X} {:02X} {b:02X}    {} ",
@@ -1341,6 +1360,7 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
                 let high = ((b & 0xFF00) >> 8) as u8;
                 oa.res.bin[usize::from(o.pc + 1)] = low;
                 oa.res.bin[usize::from(o.pc + 2)] = high;
+                #[allow(clippy::unwrap_used)]
                 write!(
                     oa.output,
                     "{:04X} {:02X} {low:02X} {high:02X} {} ",
@@ -1352,9 +1372,11 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
 
         let mut val = String::new();
         cpu.disassemble(&mut val, o.pc, &oa.res.bin, true);
+        #[allow(clippy::unwrap_used)]
         write!(oa.output, "{val}").unwrap();
         oa.label_out.clear();
     } else {
+        #[allow(clippy::unwrap_used)]
         write!(
             oa.output,
             "{:04X} {:02X}       {} {:?}",
@@ -1461,6 +1483,7 @@ fn emit_zp_relative(
 
     oa.res.bin[usize::from(o.pc + 1)] = zp;
     oa.res.bin[usize::from(o.pc + 2)] = b;
+    #[allow(clippy::unwrap_used)]
     write!(
         oa.output,
         "{:04X} {:02X} {zp:02X} {b:02X} {} ",
@@ -1593,6 +1616,7 @@ pub fn parse(cpu: &dyn CPU, lines: &[(FileInfo, String)], debug: bool) -> Result
         // As long as it's not "*" (which is resolved in generate_output) makes
         // sure everything else resolves.
         if l != "*" && (ld.file_info.line_num == 0 || ld.val.is_none()) {
+            #[allow(clippy::unwrap_used)]
             writeln!(
                 errors,
                 "Parsing error: Label {l} was never defined. Located on lines {locs}"

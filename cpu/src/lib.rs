@@ -1000,6 +1000,7 @@ pub trait CPU<'a>: Chip + Send {
     /// And with `opcode_only`:
     ///
     /// JMP 0402
+    #[allow(clippy::too_many_lines)]
     fn disassemble(&self, out: &mut String, pc: u16, r: &dyn Memory, opcode_only: bool) -> u16 {
         out.clear();
 
@@ -1019,6 +1020,7 @@ pub trait CPU<'a>: Chip + Send {
         };
 
         if !opcode_only {
+            #[allow(clippy::unwrap_used)]
             write!(out, "{pc:04X} {op:02X} ").unwrap();
         }
         let mut count = Wrapping(pc) + Wrapping(2);
@@ -1034,63 +1036,80 @@ pub trait CPU<'a>: Chip + Send {
                 | AddressMode::AbsoluteIndirectX
                 | AddressMode::AbsoluteNOP
                 | AddressMode::ZeroPageRelative => {
+                    #[allow(clippy::unwrap_used)]
                     write!(out, "{ov1:02X} {ov2:02X}   ").unwrap();
                 }
                 AddressMode::Implied | AddressMode::NOPCmos => {
+                    #[allow(clippy::unwrap_used)]
                     write!(out, "        ").unwrap();
                 }
                 _ => {
+                    #[allow(clippy::unwrap_used)]
                     write!(out, "{ov1:02X}      ").unwrap();
                 }
             }
         }
         match mode {
             AddressMode::Immediate => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} #${ov1:02X}").unwrap();
             }
             AddressMode::ZeroPage => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} ${ov1:02X}").unwrap();
             }
             AddressMode::ZeroPageX => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} ${ov1:02X},X").unwrap();
             }
             AddressMode::ZeroPageY => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} ${ov1:02X},Y").unwrap();
             }
             AddressMode::Indirect => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} (${ov1:02X})").unwrap();
             }
             AddressMode::IndirectX => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} (${ov1:02X},X)").unwrap();
             }
             AddressMode::IndirectY => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} (${ov1:02X}),Y").unwrap();
             }
             AddressMode::Absolute | AddressMode::AbsoluteNOP => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} ${ov2:02X}{ov1:02X}").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteX => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} ${ov2:02X}{ov1:02X},X").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteY => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} ${ov2:02X}{ov1:02X},Y").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteIndirect => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} (${ov2:02X}{ov1:02X})").unwrap();
                 count += 1;
             }
             AddressMode::AbsoluteIndirectX => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode} (${ov2:02X}{ov1:02X},X)",).unwrap();
                 count += 1;
             }
             AddressMode::Implied | AddressMode::NOPCmos => {
+                #[allow(clippy::unwrap_used)]
                 write!(out, "{opcode}").unwrap();
                 count -= 1;
             }
             AddressMode::Relative => {
+                #[allow(clippy::unwrap_used)]
                 write!(
                     out,
                     "{opcode} ${ov1:02X} (${:04X})",
@@ -1099,6 +1118,7 @@ pub trait CPU<'a>: Chip + Send {
                 .unwrap();
             }
             AddressMode::ZeroPageRelative => {
+                #[allow(clippy::unwrap_used)]
                 write!(
                     out,
                     "{opcode} {},${ov1:02X},${ov2:02X} (${:04X})",

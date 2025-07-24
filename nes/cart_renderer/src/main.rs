@@ -631,6 +631,7 @@ impl MyApp {
                     }
                     single_title.clear();
                     if let Some(hp) = hovered {
+                        #[allow(clippy::unwrap_used)]
                         write!(single_title, "# {hp}").unwrap();
                     }
                 }

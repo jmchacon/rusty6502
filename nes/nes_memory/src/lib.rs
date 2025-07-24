@@ -28,13 +28,13 @@ pub trait Mapper {
 
 /// The implementation for all memory on an NES.
 pub struct NESMemory {
-    nes: NES,
-    cart_ram: bool,
+    _nes: NES,
+    _cart_ram: bool,
     apu: APU,
     ppu: PPU,
     mapper: Box<dyn Mapper>,
     ram: [u8; 0x0800],
-    last_read: RefCell<u8>,
+    _last_read: RefCell<u8>,
     oam_dma: bool,
 }
 
@@ -43,18 +43,18 @@ impl NESMemory {
     #[must_use]
     pub fn new(nes: NES, cart_ram: bool, apu: APU, ppu: PPU, mapper: Box<dyn Mapper>) -> Self {
         Self {
-            nes,
-            cart_ram,
+            _nes: nes,
+            _cart_ram: cart_ram,
             apu,
             ppu,
             mapper,
             ram: [0; 0x0800],
-            last_read: RefCell::new(0x00),
+            _last_read: RefCell::new(0x00),
             oam_dma: false,
         }
     }
 
-    /// This should be called after every CPU tick(). If it returns true the CPU
+    /// This should be called after every CPU `tick`. If it returns true the CPU
     /// has attempted a write to 0x4014 which triggers OAM DMA to attempt to
     /// begin. The top level chip controller can then initate OAM DMA.
     /// This may still be delayed by 0-3 clock cycles depending when the
@@ -118,6 +118,9 @@ impl Memory for NESMemory {
     }
 
     fn ram(&self, dest: &mut [u8; memory::MAX_SIZE]) {
+        for n in dest.iter_mut().take(0xFFFF + 1) {
+            *n = 0x00;
+        }
         todo!()
     }
 }
