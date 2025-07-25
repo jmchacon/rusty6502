@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod tests;
 
-/// Representation of 6502 memory. Doesn't include bank support (yet).
+/// Representation of 16 bit address space 6502 uses. Doesn't include bank support (yet).
 pub trait Memory {
     /// `read` will return a value from the given address.
     fn read(&self, addr: u16) -> u8;
@@ -16,7 +16,7 @@ pub trait Memory {
     /// memory locations (or randomizing).
     fn power_on(&mut self);
 
-    /// Get a copy of the whole 64k RAM block as the CPU would see it.
+    /// Get a copy of the whole 64k RAM block as the bus would see it.
     /// i.e. if there is shadowing this will show that with copies in the
     /// relevant places.
     fn ram(&self, dest: &mut [u8; MAX_SIZE]);

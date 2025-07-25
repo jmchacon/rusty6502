@@ -75,8 +75,10 @@ pub fn tile_print(data: &[u8; 64]) -> Vec<String> {
         for x in 0..8 {
             let e = data[y * 8 + x];
             if e == 0x00 {
+                #[allow(clippy::unwrap_used)]
                 write!(line, ".").unwrap();
             } else {
+                #[allow(clippy::unwrap_used)]
                 write!(line, "{e}").unwrap();
             }
         }

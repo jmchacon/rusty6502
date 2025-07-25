@@ -219,6 +219,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "apu"
+version = "0.1.0"
+dependencies = [
+ "chip",
+ "color-eyre",
+ "memory",
+]
+
+[[package]]
 name = "arboard"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2019,9 +2028,9 @@ checksum = "7943c866cc5cd64cbc25b2e01621d07fa8eb2a1a23160ee81ce38704e97b8ecf"
 
 [[package]]
 name = "itoa"
-version = "1.0.15"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+checksum = "b1a46d1a171d865aa5f83f92695765caa047a9b4cbae2cbf37dbd613a793fd4c"
 
 [[package]]
 name = "jiff"
@@ -2380,6 +2389,17 @@ dependencies = [
  "env_logger",
  "nes_pal",
  "nes_pal_gui",
+]
+
+[[package]]
+name = "nesram"
+version = "0.1.0"
+dependencies = [
+ "apu",
+ "color-eyre",
+ "ines",
+ "memory",
+ "ppu",
 ]
 
 [[package]]
@@ -2788,6 +2808,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5a7c30837279ca13e7c867e9e40053bc68740f988cb07f7ca6df43cc734b585"
 dependencies = [
  "zerovec",
+]
+
+[[package]]
+name = "ppu"
+version = "0.1.0"
+dependencies = [
+ "chip",
+ "color-eyre",
+ "memory",
 ]
 
 [[package]]
