@@ -17,7 +17,7 @@ jobs:
       matrix:
         toolchain: [stable, beta]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
       - name: Cache git folder
@@ -28,7 +28,7 @@ jobs:
           path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: 'SingleStepTests/65x02'
           path: 'SingleStepTests'
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / stable / minimal-versions
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
       - name: Cache git folder
@@ -72,7 +72,7 @@ jobs:
           path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: 'SingleStepTests/65x02'
           path: 'SingleStepTests'
@@ -102,7 +102,7 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
       - name: Cache git folder
@@ -113,7 +113,7 @@ jobs:
           path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: 'SingleStepTests/65x02'
           path: 'SingleStepTests'
@@ -136,7 +136,7 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / beta / coverage
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: true
       - name: Cache git folder
@@ -147,7 +147,7 @@ jobs:
           path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: 'SingleStepTests/65x02'
           path: 'SingleStepTests'
