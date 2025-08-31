@@ -2766,7 +2766,10 @@ version = "0.1.0"
 dependencies = [
  "chip",
  "color-eyre",
+ "irq",
  "memory",
+ "rand",
+ "rusty6502",
 ]
 
 [[package]]

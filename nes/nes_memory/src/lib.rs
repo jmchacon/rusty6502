@@ -27,21 +27,21 @@ pub trait Mapper {
 }
 
 /// The implementation for all memory on an NES.
-pub struct NESMemory {
+pub struct NESMemory<'a> {
     _nes: NES,
     _cart_ram: bool,
     apu: APU,
-    ppu: PPU,
+    ppu: PPU<'a>,
     mapper: Box<dyn Mapper>,
     ram: [u8; 0x0800],
     _last_read: RefCell<u8>,
     oam_dma: bool,
 }
 
-impl NESMemory {
+impl<'a> NESMemory<'a> {
     /// Construct a new `NESMemory`
     #[must_use]
-    pub fn new(nes: NES, cart_ram: bool, apu: APU, ppu: PPU, mapper: Box<dyn Mapper>) -> Self {
+    pub fn new(nes: NES, cart_ram: bool, apu: APU, ppu: PPU<'a>, mapper: Box<dyn Mapper>) -> Self {
         Self {
             _nes: nes,
             _cart_ram: cart_ram,
@@ -81,7 +81,7 @@ impl NESMemory {
 // TODO(jchacon): Figure out how to handle this. Trap here and have PPU just provide
 //                an interface to writing the OAM bits?
 
-impl Memory for NESMemory {
+impl Memory for NESMemory<'_> {
     fn read(&self, addr: u16) -> u8 {
         let mut ret = 0x00;
         if addr < 0x2000 {
