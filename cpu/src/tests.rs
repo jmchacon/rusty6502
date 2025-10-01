@@ -2195,6 +2195,7 @@ macro_rules! rom_test {
                     fn $name() -> Result<()> {
                         let r = $rom_test;
                         let res = panic::catch_unwind(|| { $rom(&r, false) });
+
                         // So this returns either an Err (for a panic/assert) or OK() wrapping an error for
                         // an actual error. Both of these we want a rerun in debug mode. This is done
                         // because debug mode can have more expensive things to emit which we don't want
@@ -2779,6 +2780,7 @@ macro_rules! coverage_opcodes_test {
                     #[test]
                     fn $name() -> Result<()> {
                         let res = panic::catch_unwind(|| { $cov(false) });
+
                         // So this returns either an Err (for a panic/assert) or OK() wrapping an error for
                         // an actual error. Both of these we want a rerun in debug mode. This is done
                         // because debug mode can have more expensive things to emit which we don't want
