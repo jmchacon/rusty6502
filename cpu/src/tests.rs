@@ -2194,8 +2194,17 @@ macro_rules! rom_test {
                     #[test]
                     fn $name() -> Result<()> {
                         let r = $rom_test;
-                        let res = panic::catch_unwind(|| {$rom(&r, false)});
-                        if res.is_err() {
+                        let res = panic::catch_unwind(|| { $rom(&r, false) });
+                        // So this returns either an Err (for a panic/assert) or OK() wrapping an error for
+                        // an actual error. Both of these we want a rerun in debug mode. This is done
+                        // because debug mode can have more expensive things to emit which we don't want
+                        // to bother when it's passing.
+                        let is_err = match res {
+                          Err(_) | Ok(Err(_)) => true,
+                          _ => false,
+                        };
+                        if is_err {
+                            println!("First run failed. Rerunning in debug mode\n");
                             return $rom(&r, true)
                         }
                         Ok(())
@@ -2769,8 +2778,17 @@ macro_rules! coverage_opcodes_test {
                 $(
                     #[test]
                     fn $name() -> Result<()> {
-                        let res = panic::catch_unwind(|| {$cov(false)});
-                        if res.is_err() {
+                        let res = panic::catch_unwind(|| { $cov(false) });
+                        // So this returns either an Err (for a panic/assert) or OK() wrapping an error for
+                        // an actual error. Both of these we want a rerun in debug mode. This is done
+                        // because debug mode can have more expensive things to emit which we don't want
+                        // to bother when it's passing.
+                        let is_err = match res {
+                          Err(_) | Ok(Err(_)) => true,
+                          _ => false,
+                        };
+                        if is_err {
+                            println!("First run failed. Rerunning in debug mode\n");
                             return $cov(true)
                         }
                         Ok(())
@@ -2809,9 +2827,12 @@ macro_rules! coverage_opcodes_test {
                             .join($path);
                         println!("tests base path: {}", path.display());
 
+                        // Test we see valid files.
+
                         for i in 0..=255 {
                             println!("Opening: {:?}", path.join(format!("{i:02x}.json")));
                             let mut file = File::open(path.join(format!("{i:02x}.json")))?;
+
                             let mut s = String::new();
                             file.read_to_string(&mut s)?;
                             if s.is_empty() {
@@ -2885,12 +2906,10 @@ macro_rules! coverage_opcodes_test {
                                                 // more cycles than is actually possible on a 6502
                                                 // so just insert those in if we're full. If not
                                                 // leave this as it's confusing otherwise.
-                                               // if bus.len() == 8 {
                                                     let l = bus.last().unwrap().clone();
                                                     bus.push(l.clone());
                                                     bus.push(l.clone());
                                                     bus.push(l.clone());
- //                                               }
 
                                                 // If we halted that's fine. The checks below will
                                                 // verify state. But set CPU back to running so the
