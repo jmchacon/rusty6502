@@ -46,7 +46,7 @@ jobs:
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
-          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests/65x02"
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
   # https://twitter.com/alcuadrado/status/1571291687837732873
   update:
     runs-on: ubuntu-latest
