@@ -75,7 +75,7 @@ clap-num = "1.1.1"
 color-eyre = { version = "0.6.5", default-features = false }
 cpu_proc_macros = { path = "./cpu_proc_macros", version = "~0.1" }
 eframe = "0.26.0"
-egui = "0.26.0"
+egui = "0.32.3"
 ines = { path = "./nes/ines", version = "~0.1" }
 io = { path = "./io", version = "~0.1" }
 irq = { path = "./irq", version = "~0.1" }
