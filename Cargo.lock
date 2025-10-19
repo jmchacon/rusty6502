@@ -651,7 +651,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "eframe",
- "egui",
+ "egui 0.32.3",
  "env_logger",
  "ines",
  "nes_chr",
@@ -1019,6 +1019,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ecolor"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94bdf37f8d5bd9aa7f753573fdda9cf7343afa73dd28d7bfe9593bd9798fc07e"
+dependencies = [
+ "emath 0.32.3",
+]
+
+[[package]]
 name = "eframe"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1027,7 +1036,7 @@ dependencies = [
  "ahash",
  "bytemuck",
  "document-features",
- "egui",
+ "egui 0.26.2",
  "egui-wgpu",
  "egui-winit",
  "egui_glow",
@@ -1072,6 +1081,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d5d0306cd61ca75e29682926d71f2390160247f135965242e904a636f51c0dc"
+dependencies = [
+ "ahash",
+ "bitflags 2.9.1",
+ "emath 0.32.3",
+ "epaint 0.32.3",
+ "nohash-hasher",
+ "profiling",
+ "smallvec",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1080,8 +1105,8 @@ dependencies = [
  "ahash",
  "bytemuck",
  "document-features",
- "egui",
- "epaint",
+ "egui 0.26.2",
+ "epaint 0.26.2",
  "log",
  "profiling",
  "thiserror 2.0.17",
@@ -1120,7 +1145,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "668c0d4f726cc33838f0915f6b8c00af0ca0910e975ab58cf34b3e39c614552c"
 dependencies = [
  "bytemuck",
- "egui",
+ "egui 0.26.2",
  "glow",
  "log",
  "memoffset",
@@ -2061,7 +2086,7 @@ version = "0.1.0"
 dependencies = [
  "color-eyre",
  "eframe",
- "egui",
+ "egui 0.32.3",
  "env_logger",
  "monitor",
  "rusty6502",
@@ -2163,7 +2188,7 @@ name = "nes_pal_gui"
 version = "0.1.0"
 dependencies = [
  "eframe",
- "egui",
+ "egui 0.32.3",
  "nes_pal",
 ]
 
@@ -2174,7 +2199,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "eframe",
- "egui",
+ "egui 0.32.3",
  "env_logger",
  "nes_pal",
  "nes_pal_gui",
