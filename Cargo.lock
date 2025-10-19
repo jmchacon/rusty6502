@@ -651,7 +651,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "eframe",
- "egui 0.32.3",
+ "egui",
  "env_logger",
  "ines",
  "nes_chr",
@@ -1019,15 +1019,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ecolor"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94bdf37f8d5bd9aa7f753573fdda9cf7343afa73dd28d7bfe9593bd9798fc07e"
-dependencies = [
- "emath 0.32.3",
-]
-
-[[package]]
 name = "eframe"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1036,7 +1027,7 @@ dependencies = [
  "ahash",
  "bytemuck",
  "document-features",
- "egui 0.26.2",
+ "egui",
  "egui-wgpu",
  "egui-winit",
  "egui_glow",
@@ -1081,22 +1072,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "egui"
-version = "0.32.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d5d0306cd61ca75e29682926d71f2390160247f135965242e904a636f51c0dc"
-dependencies = [
- "ahash",
- "bitflags 2.9.1",
- "emath 0.32.3",
- "epaint 0.32.3",
- "nohash-hasher",
- "profiling",
- "smallvec",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "egui-wgpu"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1105,8 +1080,8 @@ dependencies = [
  "ahash",
  "bytemuck",
  "document-features",
- "egui 0.26.2",
- "epaint 0.26.2",
+ "egui",
+ "epaint",
  "log",
  "profiling",
  "thiserror 2.0.17",
@@ -1145,7 +1120,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "668c0d4f726cc33838f0915f6b8c00af0ca0910e975ab58cf34b3e39c614552c"
 dependencies = [
  "bytemuck",
- "egui 0.26.2",
+ "egui",
  "glow",
  "log",
  "memoffset",
@@ -2086,7 +2061,7 @@ version = "0.1.0"
 dependencies = [
  "color-eyre",
  "eframe",
- "egui 0.32.3",
+ "egui",
  "env_logger",
  "monitor",
  "rusty6502",
@@ -2188,7 +2163,7 @@ name = "nes_pal_gui"
 version = "0.1.0"
 dependencies = [
  "eframe",
- "egui 0.32.3",
+ "egui",
  "nes_pal",
 ]
 
@@ -2199,7 +2174,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "eframe",
- "egui 0.32.3",
+ "egui",
  "env_logger",
  "nes_pal",
  "nes_pal_gui",
@@ -3133,18 +3108,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha1"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3bf829a2d51ab4a5ddf1352d8470c140cadc8301b2ae1789db023f01cedd6ba"
-dependencies = [
- "cfg-if",
- "cpufeatures",
- "digest",
->>>>>>> 9aa7363 (Bump syn from 2.0.104 to 2.0.106 (#234))
-]
-
-[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3400,17 +3363,6 @@ dependencies = [
  "quick-error",
  "weezl",
  "zune-jpeg",
-]
-
-[[package]]
-name = "thiserror-impl"
-version = "2.0.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ff15c8ecd7de3849db632e14d18d2571fa09dfc5ed93479bc4485c7a517c913"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.106",
 ]
 
 [[package]]
