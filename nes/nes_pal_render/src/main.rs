@@ -55,7 +55,7 @@ fn main() -> Result<()> {
     let res = eframe::run_native(
         "NES PAL file renderer",
         options,
-        Box::new(|cc| Box::new(MyApp::new(cc, colors))),
+        Box::new(|cc| Ok(Box::new(MyApp::new(cc, colors)))),
     );
 
     if let Err(e) = res {
@@ -96,7 +96,7 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::GRAY))
+            .frame(egui::Frame::NONE.fill(egui::Color32::GRAY))
             .show(ctx, |ui| {
                 for t in &self.textures {
                     ui.label(t.name());

@@ -38,7 +38,7 @@ fn main() -> Result<()> {
     let _ret = eframe::run_native(
         "egui example: global font style",
         options,
-        Box::new(|cc| Box::new(MyApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(MyApp::new(cc)))),
     );
 
     // The command channel.
@@ -168,7 +168,7 @@ impl MyApp {
 impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::BLACK))
+            .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
             .show(ctx, content);
     }
 }
