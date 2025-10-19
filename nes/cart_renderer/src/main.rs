@@ -7,7 +7,7 @@ use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
 use egui::{
     ahash::{HashMap, HashMapExt},
-    FontFamily, FontId, TextStyle, TextureHandle, TextureOptions, Ui,
+    FontFamily, FontId, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui,
 };
 use nes_chr::Tile;
 use nes_pal::{parse_pal, Color};
@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     let res = eframe::run_native(
         "NES file CHR renderer",
         options,
-        Box::new(|cc| Box::new(MyApp::new(cc, colors, tiles))),
+        Box::new(|cc| Ok(Box::new(MyApp::new(cc, colors, tiles)))),
     );
 
     if let Err(e) = res {
@@ -476,13 +476,15 @@ impl MyApp {
 
         // If a color picker button has been pressed the modal dialog is up
         // so this window is inactive.
-        ui.set_enabled(button.is_none());
+        if !button.is_none() {
+            ui.disable();
+        }
 
         // The combo box for determining which palette to display.
         egui::ComboBox::from_label(String::from("Palette"))
             .selected_text(self.pals[*selected_pal].name())
             .show_ui(ui, |ui| {
-                ui.style_mut().wrap = Some(false);
+                ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
                 for i in 0..self.pals.len() {
                     ui.selectable_value(selected_pal, i, self.pals[i].name());
                 }
@@ -527,7 +529,7 @@ impl MyApp {
         egui::ComboBox::from_label(format!("CHR set ({TILE_MULTIPLIER_X}x magnified)",))
             .selected_text(format!("{selected_chr}"))
             .show_ui(ui, |ui| {
-                ui.style_mut().wrap = Some(false);
+                ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
                 for i in 0..self.tiles.len() {
                     ui.selectable_value(selected_chr, i, format!("{i}"));
                 }
@@ -808,7 +810,7 @@ impl eframe::App for MyApp {
 
         // Always show the main window.
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::GRAY))
+            .frame(egui::Frame::NONE.fill(egui::Color32::GRAY))
             .show(ctx, |ui| self.main_ui(ui));
         ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(ctx.used_size()));
         ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(ctx.used_size()));
