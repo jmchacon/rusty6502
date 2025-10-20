@@ -184,10 +184,10 @@ impl<'a> PPU<'a> {
         self.ppumask = 0x00;
         self.ppustatus = 0x00;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Randomize VBL on power up (on reset it's simply left alone)
-        if rng.gen::<f64>() > 0.5 {
+        if rng.random::<f64>() > 0.5 {
             self.ppustatus |= PPU_VBL_MASK;
         }
 
