@@ -4873,21 +4873,21 @@ macro_rules! cpu_nmos_power_reset {
                 return Err(eyre!("cannot power on except from an off state"));
             }
 
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
 
             // This is always set and clears the rest.
             self.p = P_S1;
 
             // Randomize decimal mode
-            if rng.gen::<f64>() > 0.5 {
+            if rng.random::<f64>() > 0.5 {
                 self.p |= P_DECIMAL;
             }
 
             // Randomize register contents
-            self.a = rng.gen();
-            self.x = rng.gen();
-            self.y = rng.gen();
-            self.s = rng.gen();
+            self.a = rng.random();
+            self.x = rng.random();
+            self.y = rng.random();
+            self.s = rng.random();
 
             self.state = State::On;
 
@@ -4991,10 +4991,10 @@ macro_rules! cpu_nmos_power_reset {
                             self.p |= P_INTERRUPT;
 
                             // On NMOS D is random after reset.
-                            let mut rng = rand::thread_rng();
+                            let mut rng = rand::rng();
                             self.p &= !P_DECIMAL;
 
-                            if rng.gen::<f64>() > 0.5 {
+                            if rng.random::<f64>() > 0.5 {
                                 self.p |= P_DECIMAL;
                             }
                             Ok(OpState::Processing)
@@ -5124,17 +5124,17 @@ macro_rules! cpu_cmos_ricoh_power_reset {
                 return Err(eyre!("cannot power on except from an off state"));
             }
 
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
 
             // This is always set and clears the rest.
             // This includes D which is always off.
             self.p = P_S1;
 
             // Randomize register contents
-            self.a = rng.gen();
-            self.x = rng.gen();
-            self.y = rng.gen();
-            self.s = rng.gen();
+            self.a = rng.random();
+            self.x = rng.random();
+            self.y = rng.random();
+            self.s = rng.random();
 
             self.state = State::On;
 
