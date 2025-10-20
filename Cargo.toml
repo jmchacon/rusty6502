@@ -65,7 +65,7 @@ debug = true
 debug = true
 
 [workspace.dependencies]
-ahash = "0.8.11"
+ahash = "0.8.12"
 apu = { path = "./nes/apu", version = "~0.1" }
 assemble = { path = "./assemble", version = "~0.1" }
 c64basic = { path = "./c64basic", version = "~0.1" }
