@@ -114,7 +114,7 @@ impl CPUDebug for Debug<CPUState> {
         let mut mem = false;
         if let Some(n) = self.full_dump_every_n {
             *self.count.borrow_mut() += 1;
-            if (*self.count.borrow() % n) == 0 {
+            if (*self.count.borrow()).is_multiple_of(n) {
                 mem = true;
             }
         }
