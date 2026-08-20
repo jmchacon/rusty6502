@@ -22,7 +22,7 @@ jobs:
           submodules: true
       - name: Cache git folder
         id: cache-git
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           enableCrossOsArchive: true
           path: SingleStepTests
@@ -66,7 +66,7 @@ jobs:
           submodules: true
       - name: Cache git folder
         id: cache-git
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           enableCrossOsArchive: true
           path: SingleStepTests
@@ -107,7 +107,7 @@ jobs:
           submodules: true
       - name: Cache git folder
         id: cache-git
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           enableCrossOsArchive: true
           path: SingleStepTests
@@ -141,7 +141,7 @@ jobs:
           submodules: true
       - name: Cache git folder
         id: cache-git
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           enableCrossOsArchive: true
           path: SingleStepTests
