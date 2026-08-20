@@ -174,7 +174,7 @@ jobs:
           # so this ref is one level back.
           SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
