@@ -147,7 +147,7 @@ impl Display for NES {
         writeln!(f, "NES: {}", self.cart_style)?;
         writeln!(f, "prg segments: {}", self.prg.len())?;
         writeln!(f, "chr segments: {}", self.chr.len())?;
-        writeln!(f, "nametable_mirror: {}", &self.nametable_mirror)?;
+        writeln!(f, "nametable_mirror: {}", self.nametable_mirror)?;
         writeln!(f, "battery: {}", self.battery)?;
         writeln!(
             f,

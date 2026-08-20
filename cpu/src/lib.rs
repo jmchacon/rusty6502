@@ -1100,7 +1100,7 @@ pub trait CPU<'a>: Chip + Send {
             }
             AddressMode::AbsoluteIndirectX => {
                 #[allow(clippy::unwrap_used)]
-                write!(out, "{opcode} (${ov2:02X}{ov1:02X},X)",).unwrap();
+                write!(out, "{opcode} (${ov2:02X}{ov1:02X},X)").unwrap();
                 count += 1;
             }
             AddressMode::Implied | AddressMode::NOPCmos => {

@@ -526,7 +526,7 @@ impl MyApp {
 
         // A combo box to select which CHR page to display.
         // Also indicate how much we've magnified (not currently changeable except by compilation)
-        egui::ComboBox::from_label(format!("CHR set ({TILE_MULTIPLIER_X}x magnified)",))
+        egui::ComboBox::from_label(format!("CHR set ({TILE_MULTIPLIER_X}x magnified)"))
             .selected_text(format!("{selected_chr}"))
             .show_ui(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);

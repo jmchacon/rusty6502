@@ -62,7 +62,7 @@ fn main() -> Result<()> {
     let mut bytes = read(filename)?;
 
     // The load addr is the first 2 bytes followed by the data.
-    let mut addr = (usize::from(bytes[1]) << 8) + usize::from(bytes[0]);
+    let addr = (usize::from(bytes[1]) << 8) + usize::from(bytes[0]);
     println!("Addr is {addr:#06X} start_pc is {start_pc:#06X}");
 
     // Trim these bytes off. Yes this isn't efficient but it's 2 bytes also.
@@ -79,9 +79,8 @@ fn main() -> Result<()> {
     }
 
     // Copy everything over.
-    for b in &bytes {
+    for (addr, b) in ((usize::from(bytes[1]) << 8) + usize::from(bytes[0])..).zip(bytes.iter()) {
         block[addr] = *b;
-        addr += 1;
     }
 
     // Now setup our startup function
