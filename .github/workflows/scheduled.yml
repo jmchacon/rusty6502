@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     name: ubuntu / nightly
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - name: Cache git folder
@@ -28,7 +28,7 @@ jobs:
           path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: 'SingleStepTests/65x02'
           path: 'SingleStepTests'
@@ -56,7 +56,7 @@ jobs:
     # Unfortunately, hashFiles only works in if on steps, so we reepeat it.
     # if: hashFiles('Cargo.lock') != ''
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - name: Cache git folder
@@ -67,7 +67,7 @@ jobs:
           path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: 'SingleStepTests/65x02'
           path: 'SingleStepTests'

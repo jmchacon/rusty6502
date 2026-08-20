@@ -13,7 +13,7 @@ jobs:
   sanitizers:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - name: Cache git folder
@@ -24,7 +24,7 @@ jobs:
           path: SingleStepTests
           key: git-folder2
       - if: steps.cache-git.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: 'SingleStepTests/65x02'
           path: 'SingleStepTests'
@@ -78,7 +78,7 @@ jobs:
   miri:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: true
       - run: |
@@ -121,7 +121,7 @@ jobs:
   #loom:
   #  runs-on: ubuntu-latest
   #  steps:
-  #    - uses: actions/checkout@v6
+  #    - uses: actions/checkout@v7
   #      with:
   #        submodules: true
   #    - name: Install stable
