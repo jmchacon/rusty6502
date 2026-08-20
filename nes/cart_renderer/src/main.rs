@@ -5,13 +5,11 @@
 //! 4 colors (background and 1-3) from it.
 use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
-use egui::{
-    ahash::{HashMap, HashMapExt},
-    FontFamily, FontId, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui,
-};
+use egui::{FontFamily, FontId, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui};
 use nes_chr::Tile;
 use nes_pal::{parse_pal, Color};
 use nes_pal_gui::texture_from_palette;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use std::fs::read;
 use std::path::Path;
@@ -257,8 +255,7 @@ impl MyApp {
     fn new(cc: &eframe::CreationContext<'_>, datas: Vec<Data>, tiles: Vec<Vec<Tile>>) -> Self {
         use FontFamily::{Monospace, Proportional};
 
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.text_styles = [
+        let text_styles: BTreeMap<_, _> = [
             (TextStyle::Heading, FontId::new(25.0, Proportional)),
             (TextStyle::Body, FontId::new(16.0, Proportional)),
             (TextStyle::Monospace, FontId::new(12.0, Monospace)),
@@ -266,7 +263,8 @@ impl MyApp {
             (TextStyle::Small, FontId::new(8.0, Proportional)),
         ]
         .into();
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx
+            .all_styles_mut(move |style| style.text_styles = text_styles.clone());
 
         // Create the various textures we need later on.
         //
@@ -802,17 +800,23 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = egui::Context::default();
+
         // If a color picker button has been selected display the dialog.
         if let Some(bidx) = self.button {
-            egui::Window::new("Color picker").show(ctx, |ui| self.color_picker(bidx, ui));
+            egui::Window::new("Color picker").show(&ctx, |ui| self.color_picker(bidx, ui));
         }
 
         // Always show the main window.
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::GRAY))
-            .show(ctx, |ui| self.main_ui(ui));
-        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(ctx.used_size()));
-        ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(ctx.used_size()));
+            .show(ui, |ui| self.main_ui(ui));
+        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(
+            ctx.globally_used_rect().size(),
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(
+            ctx.globally_used_rect().size(),
+        ));
     }
 }
