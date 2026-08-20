@@ -3239,7 +3239,6 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "rustversion",
  "syn 2.0.108",
 ]
 
