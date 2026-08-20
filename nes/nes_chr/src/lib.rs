@@ -28,7 +28,7 @@ impl Default for Tile {
 /// # Errors
 /// If the supplied data is not 8KB aligned this will return an error.
 pub fn map_chr_rom(data: &[u8]) -> Result<Vec<Tile>> {
-    if data.len() % 8_192 != 0 {
+    if !data.len().is_multiple_of(8_192) {
         return Err(eyre!("Length of data must be units of 8KB"));
     }
 

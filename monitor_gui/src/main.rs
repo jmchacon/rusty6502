@@ -7,7 +7,7 @@ use eframe::egui;
 use color_eyre::eyre::Result;
 use monitor::{cpu_loop, input_loop};
 use rusty6502::prelude::*;
-use std::{io, io::Write, sync::mpsc::channel, thread, time};
+use std::{collections::BTreeMap, io, io::Write, sync::mpsc::channel, thread, time};
 
 struct Runner {
     h: std::thread::JoinHandle<Result<()>>,
@@ -127,7 +127,7 @@ fn content(ui: &mut egui::Ui) {
         egui::TextEdit::multiline(&mut s)
             .font(heading2())
             .margin(egui::Vec2 { x: 0.0, y: 0.0 })
-            .frame(false)
+            .frame(egui::Frame::NONE)
             .text_color(egui::Color32::DARK_GREEN),
     );
 }
@@ -148,8 +148,7 @@ impl MyApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         use FontFamily::{Monospace, Proportional};
 
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.text_styles = [
+        let text_styles: BTreeMap<_, _> = [
             (TextStyle::Heading, FontId::new(25.0, Proportional)),
             (heading2(), FontId::new(22.0, Proportional)),
             (heading3(), FontId::new(19.0, Proportional)),
@@ -159,16 +158,16 @@ impl MyApp {
             (TextStyle::Small, FontId::new(8.0, Proportional)),
         ]
         .into();
-        cc.egui_ctx.set_style(style);
-
+        cc.egui_ctx
+            .all_styles_mut(move |style| style.text_styles = text_styles.clone());
         Self
     }
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
-            .show(ctx, content);
+            .show(ui, content);
     }
 }

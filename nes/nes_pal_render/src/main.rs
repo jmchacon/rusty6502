@@ -1,7 +1,7 @@
 //! `nes_pal_render` reads a given PAL file and then displays a 16x4 grid displaying the palette.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
 
-use std::{fs::read, path::Path};
+use std::{collections::BTreeMap, fs::read, path::Path};
 
 use ::egui::{FontFamily, FontId, TextStyle};
 use clap::Parser;
@@ -73,8 +73,7 @@ impl MyApp {
     fn new(cc: &eframe::CreationContext<'_>, datas: Vec<Data>) -> Self {
         use FontFamily::{Monospace, Proportional};
 
-        let mut style = (*cc.egui_ctx.style()).clone();
-        style.text_styles = [
+        let text_styles: BTreeMap<_, _> = [
             (TextStyle::Heading, FontId::new(25.0, Proportional)),
             (TextStyle::Body, FontId::new(16.0, Proportional)),
             (TextStyle::Monospace, FontId::new(12.0, Monospace)),
@@ -82,7 +81,8 @@ impl MyApp {
             (TextStyle::Small, FontId::new(8.0, Proportional)),
         ]
         .into();
-        cc.egui_ctx.set_style(style);
+        cc.egui_ctx
+            .all_styles_mut(move |style| style.text_styles = text_styles.clone());
 
         let mut textures = Vec::new();
 
@@ -94,10 +94,10 @@ impl MyApp {
 }
 
 impl eframe::App for MyApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::GRAY))
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 for t in &self.textures {
                     ui.label(t.name());
                     ui.image(t);
