@@ -972,6 +972,14 @@ pub trait CPU<'a>: Chip + Send {
     /// ram returns a reference to the Memory implementation.
     fn ram(&self) -> Rc<RefCell<dyn Memory>>;
 
+    /// `in_rdy` indicates if the CPU is now in read mode (phi1 is 0, R/W is 1) after RDY.
+    /// This is used after asserting RDY to indicate the CPU has finally halted.
+    /// The proper way to validate this is to assert rdy from another connected
+    /// chip. Then let the CPU `tick` and `tick_done`. At that point reading
+    /// if true will indicate the CPU is now halted as the last instruction was
+    /// a read.
+    fn in_rdy(&self) -> bool;
+
     /// pc returns the current PC value.
     fn pc(&self) -> u16;
 
@@ -5077,6 +5085,10 @@ macro_rules! cpu_impl {
             self.ram.clone()
         }
 
+        fn in_rdy(&self) -> bool {
+            self.state == State::RDY
+        }
+
         // pc returns the current PC value.
         fn pc(&self) -> u16 {
             self.pc.0
@@ -5551,17 +5563,6 @@ macro_rules! chip_impl_nmos {
                     }
                 }
 
-                // If RDY is held high and we didn't just process a write we move into
-                // the RDY state. It'll keep rereading this last address but nothing else
-                // until RDY drops.
-                if let Some(rdy) = self.rdy {
-                    if rdy.raised()
-                        && self.cpu_ram().borrow().last_action.borrow().0 != LastBusAction::Write
-                    {
-                        self.state = State::RDY;
-                    }
-                }
-
                 Ok(())
             }
 
@@ -5574,6 +5575,17 @@ macro_rules! chip_impl_nmos {
             /// # Errors
             /// Bad internal state will result in errors.
             fn tick_done(&mut self) -> Result<()> {
+                // If RDY is held high and we didn't just process a write we move into
+                // the RDY state. It'll keep rereading this last address but nothing else
+                // until RDY drops.
+                if let Some(rdy) = self.rdy {
+                    if rdy.raised()
+                        && self.cpu_ram().borrow().last_action.borrow().0 != LastBusAction::Write
+                    {
+                        self.state = State::RDY;
+                    }
+                }
+
                 if self.state == State::RDY {
                     return Ok(());
                 }
@@ -5795,17 +5807,6 @@ macro_rules! chip_impl_cmos {
                     }
                 }
 
-                // If RDY is held high and we didn't just process a write we move into
-                // the RDY state. It'll keep rereading this last address but nothing else
-                // until RDY drops.
-                if let Some(rdy) = self.rdy {
-                    if rdy.raised()
-                        && self.cpu_ram().borrow().last_action.borrow().0 != LastBusAction::Write
-                    {
-                        self.state = State::RDY;
-                    }
-                }
-
                 Ok(())
             }
 
@@ -5818,6 +5819,17 @@ macro_rules! chip_impl_cmos {
             /// # Errors
             /// Bad internal state will result in errors.
             fn tick_done(&mut self) -> Result<()> {
+                // If RDY is held high and we didn't just process a write we move into
+                // the RDY state. It'll keep rereading this last address but nothing else
+                // until RDY drops.
+                if let Some(rdy) = self.rdy {
+                    if rdy.raised()
+                        && self.cpu_ram().borrow().last_action.borrow().0 != LastBusAction::Write
+                    {
+                        self.state = State::RDY;
+                    }
+                }
+
                 if self.state == State::RDY {
                     return Ok(());
                 }
