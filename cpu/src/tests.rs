@@ -114,7 +114,7 @@ impl CPUDebug for Debug<CPUState> {
         let mut mem = false;
         if let Some(n) = self.full_dump_every_n {
             *self.count.borrow_mut() += 1;
-            if (*self.count.borrow() % n) == 0 {
+            if (*self.count.borrow()).is_multiple_of(n) {
                 mem = true;
             }
         }
@@ -832,7 +832,10 @@ fn flags_test() {
     f = Flags::default();
 
     f |= b | carry;
-    assert!(!f == (P_NEGATIVE | P_OVERFLOW | P_DECIMAL | P_INTERRUPT | P_ZERO));
+    assert_eq!(
+        !f,
+        (P_NEGATIVE | P_OVERFLOW | P_DECIMAL | P_INTERRUPT | P_ZERO)
+    );
 
     f = Flags::default();
     println!("Flags: {f} - debug - {f:?}");
@@ -2728,7 +2731,7 @@ struct Cycles(u16, u8, LastBusAction);
 
 impl fmt::Display for Cycles {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({:04X}, {:02X}, {})", &self.0, &self.1, &self.2)
+        write!(f, "({:04X}, {:02X}, {})", &self.0, &self.1, self.2)
     }
 }
 
