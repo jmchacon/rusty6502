@@ -21,7 +21,7 @@ use nmos_opcodes::{NMOS_OPCODES, NMOS_OPCODES_VALUES};
 use thiserror::Error;
 
 use color_eyre::eyre::{eyre, ErrReport, Result};
-use rand::Rng;
+use rand::RngExt;
 use strum_macros::{Display, EnumIter, EnumString};
 
 use cpu_proc_macros::cpu_base_struct;
