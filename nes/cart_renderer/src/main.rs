@@ -836,6 +836,7 @@ impl MyApp {
 
 impl eframe::App for MyApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Logic copied from https://github.com/emilk/egui/discussions/2858 information.
         match self.render_stage {
             // Give it 2 frames to layout and initialize so we can get the size.
             Stage::PreRender(mut pre_render_cycle) => {
