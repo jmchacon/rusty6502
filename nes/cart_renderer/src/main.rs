@@ -5,7 +5,7 @@
 //! 4 colors (background and 1-3) from it.
 use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
-use egui::{FontFamily, FontId, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui};
+use egui::{FontFamily, FontId, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui, Vec2};
 use nes_chr::Tile;
 use nes_pal::{parse_pal, Color};
 use nes_pal_gui::texture_from_palette;
@@ -80,8 +80,17 @@ struct Data {
     filename: String,
     colors: Vec<Color>,
 }
+enum Stage {
+    PreRender(isize),
+    FirstRender(Vec2),
+    FirstResize(Vec2),
+    Initialized(Vec2),
+}
 
 struct MyApp {
+    // The stage of rendering so we can resize correctly.
+    render_stage: Stage,
+
     // The parsed tile data from the NES file.
     tiles: Vec<Vec<Tile>>,
 
@@ -323,6 +332,7 @@ impl MyApp {
         );
 
         Self {
+            render_stage: Stage::PreRender(2_isize),
             tiles,
             left,
             left_image: None,
@@ -361,6 +371,7 @@ impl MyApp {
         const NUM_PER_ROW: usize = 16;
 
         let Self {
+            render_stage: _,
             tiles: _,
             left: _,
             left_image: _,
@@ -445,6 +456,7 @@ impl MyApp {
     #[allow(clippy::too_many_lines)]
     fn main_ui(&mut self, ui: &mut Ui) {
         let Self {
+            render_stage: _,
             tiles: _,
             left,
             left_image,
@@ -797,26 +809,57 @@ impl MyApp {
             }
         }
     }
-}
 
-impl eframe::App for MyApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = egui::Context::default();
+    // Used for initial frames to get full layout figured out.
+    fn pre_render(&mut self, ctx: &eframe::egui::Context) {
+        egui::Window::new("pre_render")
+            .title_bar(false)
+            .fixed_pos((0.0, 0.0))
+            .show(ctx, |ui| {
+                self.render(ui);
+            });
+    }
 
+    // The actual UI itself.
+    fn render(&mut self, ui: &mut egui::Ui) {
         // If a color picker button has been selected display the dialog.
         if let Some(bidx) = self.button {
-            egui::Window::new("Color picker").show(&ctx, |ui| self.color_picker(bidx, ui));
+            egui::Window::new("Color picker").show(ui.ctx(), |ui| self.color_picker(bidx, ui));
         }
 
         // Always show the main window.
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::GRAY))
             .show(ui, |ui| self.main_ui(ui));
-        ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(
-            ctx.globally_used_rect().size(),
-        ));
-        ctx.send_viewport_cmd(egui::ViewportCommand::MaxInnerSize(
-            ctx.globally_used_rect().size(),
-        ));
+    }
+}
+
+impl eframe::App for MyApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        match self.render_stage {
+            // Give it 2 frames to layout and initialize so we can get the size.
+            Stage::PreRender(mut pre_render_cycle) => {
+                self.pre_render(ui.ctx());
+                pre_render_cycle -= 1;
+                if pre_render_cycle > 0 {
+                    self.render_stage = Stage::PreRender(pre_render_cycle);
+                } else {
+                    self.render_stage = Stage::FirstRender(ui.ctx().globally_used_rect().size());
+                }
+            }
+            // Now do a render and then a resize to correctly shape the final window.
+            Stage::FirstRender(size) => {
+                self.render(ui);
+                self.render_stage = Stage::FirstResize(size);
+            }
+            Stage::FirstResize(size) => {
+                ui.ctx()
+                    .send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                self.render_stage = Stage::Initialized(size);
+            }
+            Stage::Initialized(_size) => {
+                self.render(ui);
+            }
+        }
     }
 }
