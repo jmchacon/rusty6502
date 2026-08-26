@@ -398,12 +398,12 @@ impl MyApp {
             single_title: _,
         } = self;
 
-        let clrs: &Vec<TextureHandle>;
-        unsafe {
-            // SAFETY: Unwrap is fine since it's based on selected_pal which
-            //         is constrained via the combo box in the main UI.
-            clrs = colors_per_pal.get(selected_pal).unwrap_unchecked();
-        }
+        let Some(cpl) = colors_per_pal.get(selected_pal) else {
+            // This can't fail since it's based on selected_pal which
+            // is constrained via the combo box in the main UI.
+            panic!("Invalid PAL lookup");
+        };
+        let clrs = cpl;
 
         // Create a 16 x 4 set of colors where each entry is a distinct button
         // rather than just a pallete displayed in the main UI. This way any
@@ -490,49 +490,71 @@ impl MyApp {
             ui.disable();
         }
 
-        // The combo box for determining which palette to display.
-        egui::ComboBox::from_label(String::from("Palette"))
-            .selected_text(self.pals[*selected_pal].name())
-            .show_ui(ui, |ui| {
-                ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                for i in 0..self.pals.len() {
-                    ui.selectable_value(selected_pal, i, self.pals[i].name());
-                }
+        // Make the top area which is the palette box and the buttons for it.
+        egui::Panel::top("palette panel").show(ui, |ui| {
+            // The combo box for determining which palette to display.
+            egui::ComboBox::from_label(String::from("Palette"))
+                .selected_text(self.pals[*selected_pal].name())
+                .show_ui(ui, |ui| {
+                    ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+                    for i in 0..self.pals.len() {
+                        ui.selectable_value(selected_pal, i, self.pals[i].name());
+                    }
+                });
+            ui.end_row();
+
+            // We already created textures for each PAL so just index and display it.
+            // Now..we want this to look good so it takes a bit of fiddling:
+            //
+            // Stick it in a vertical centered which makes the whole palette image
+            // centered. The construct a fill color around it which is black and
+            // then set to 45% alpha which on NTSC or PAL shows the edge more
+            // distinctly.
+            //
+            // This could try and use stroke/etc to create a border but that is
+            // harder to pull off as the whole bounding box for this image is
+            // the entire centered frame (which includes the image) and not just
+            // the image itself.
+            ui.vertical_centered(|ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::BLACK)
+                    .multiply_with_opacity(0.45)
+                    .show(ui, |ui| {
+                        ui.image(&self.pals[*selected_pal]);
+                    });
             });
-        ui.end_row();
+            ui.separator();
 
-        // We already created textures for each PAL so just index and display it.
-        ui.image(&self.pals[*selected_pal]);
-        ui.separator();
+            // Create a new box with 4 buttons for each of the colors.
+            ui.horizontal(|ui| {
+                // Chop this into the same number of columns and then they get
+                // equally spaced across the frame.
+                ui.columns(NUM_COLORS, |columns| {
+                    for i in 0..NUM_COLORS {
+                        columns[i].vertical_centered(|ui| {
+                            // 4 buttons spaced across the bottom of the palette showing each color
+                            // they're selected.
+                            let Some(cpl) = self.colors_per_pal.get(selected_pal) else {
+                                // This can't fail since it's based on selected_pal which
+                                // is constrained via the combo box in the main UI.
+                                panic!("Invalid PAL lookup");
+                            };
+                            let text = &cpl[colors[i]];
 
-        // Create a new box with 4 buttons for each of the colors.
-        ui.horizontal(|ui| {
-            for i in 0..NUM_COLORS {
-                // 4 buttons spaced across the bottom of the palette showing each color
-                // they're selected.
-
-                let text: &TextureHandle;
-                // SAFETY: All of these below are restricted to selected_pal range
-                //         which is handled in the combo box above so we can just unwrap.
-                unsafe {
-                    text = &self.colors_per_pal.get(selected_pal).unwrap_unchecked()[colors[i]];
-                }
-
-                if ui
-                    .add(egui::Button::image_and_text(text, BUTTONS[i]))
-                    .clicked()
-                {
-                    *button = Some(i);
-                    *dialog_selected = colors[i];
-                }
-                // Space them out a bit so they stretch across the palette.
-                // Determined emperically by adjusting until it lines up visually.
-                // TODO(jchacon): Should be a way to auto lay this out?
-                ui.add_space(78.0);
-            }
+                            if ui
+                                .add(egui::Button::image_and_text(text, BUTTONS[i]))
+                                .clicked()
+                            {
+                                *button = Some(i);
+                                *dialog_selected = colors[i];
+                            }
+                        });
+                    }
+                });
+            });
+            ui.end_row();
+            ui.separator();
         });
-        ui.end_row();
-        ui.separator();
 
         // A combo box to select which CHR page to display.
         // Also indicate how much we've magnified (not currently changeable except by compilation)
@@ -612,24 +634,18 @@ impl MyApp {
             }
             if !*hover_locked {
                 if let Some(hp) = i.pointer.hover_pos() {
-                    // SAFETY: The unwrap is fine since setup ensures left/right image
-                    //         always have a value.
-                    #[allow(clippy::unwrap_used)]
-                    let left_tile = Self::tile_num(
-                        left_image.as_ref().unwrap().rect,
-                        hp,
-                        TILE_X_TOTAL_F,
-                        TILE_Y_TOTAL_F,
-                        TILES_PER_ROW_F,
-                    );
-                    #[allow(clippy::unwrap_used)]
-                    let right_tile = Self::tile_num(
-                        right_image.as_ref().unwrap().rect,
-                        hp,
-                        TILE_X_TOTAL_F,
-                        TILE_Y_TOTAL_F,
-                        TILES_PER_ROW_F,
-                    );
+                    let Some(r) = left_image.as_ref() else {
+                        panic!("left image invalid?");
+                    };
+                    let rect = r.rect;
+                    let left_tile =
+                        Self::tile_num(rect, hp, TILE_X_TOTAL_F, TILE_Y_TOTAL_F, TILES_PER_ROW_F);
+                    let Some(r) = right_image.as_ref() else {
+                        panic!("right image invalid?");
+                    };
+                    let rect = r.rect;
+                    let right_tile =
+                        Self::tile_num(rect, hp, TILE_X_TOTAL_F, TILE_Y_TOTAL_F, TILES_PER_ROW_F);
                     match (left_tile, right_tile) {
                         (None, None) => *hovered = None,
                         (None, Some(mut t)) => {
@@ -641,10 +657,15 @@ impl MyApp {
                         }
                         (Some(_), Some(_)) => panic!("Hovering over both images at once?"),
                     }
+                    // We have to clear each time or it'll just make a long string as we hover.
+                    // If this is blank (not on a tile) then leave the last one as the tile
+                    // is left also.
+                    let orig = single_title.clone();
                     single_title.clear();
                     if let Some(hp) = hovered {
-                        #[allow(clippy::unwrap_used)]
-                        write!(single_title, "# {hp}").unwrap();
+                        write!(single_title, "# {hp}").unwrap_or_else(|_| panic!("write error"));
+                    } else if !orig.is_empty() {
+                        write!(single_title, "{orig}").unwrap_or_else(|_| panic!("write error"));
                     }
                 }
             }
@@ -840,6 +861,7 @@ impl eframe::App for MyApp {
         match self.render_stage {
             // Give it 2 frames to layout and initialize so we can get the size.
             Stage::PreRender(mut pre_render_cycle) => {
+                ui.ctx().request_discard("pre_render");
                 self.pre_render(ui.ctx());
                 pre_render_cycle -= 1;
                 if pre_render_cycle > 0 {
@@ -850,10 +872,12 @@ impl eframe::App for MyApp {
             }
             // Now do a render and then a resize to correctly shape the final window.
             Stage::FirstRender(size) => {
+                ui.ctx().request_discard(r"render");
                 self.render(ui);
                 self.render_stage = Stage::FirstResize(size);
             }
             Stage::FirstResize(size) => {
+                ui.ctx().request_discard("first_resize");
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 self.render_stage = Stage::Initialized(size);
