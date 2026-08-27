@@ -709,6 +709,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             // NOTE: Spec says exponent mode can go to 64 and theoretically
             //       the max value is 2^64*7 which is nuts.
             //       No one needs multi-exabyte ROMs....
+            // So we cap PRG at 1G and CHR at 512M.
 
             // Blocks or exponent mode.
             let prg_size = if prg_msb == ROM_EXPONENT_MODE {
