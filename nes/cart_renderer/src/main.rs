@@ -208,6 +208,7 @@ const RIGHT_BUFFER_F: f32 = 1.0;
 
 // By default this is only 128 pixels wide which is hard to see on any modern display
 // so we'll upsize by 2x in each direction.
+// The exploded tile in the middle is 8x.
 // TODO(jchacon): Should this be configurable at runtime?
 const SINGLE_TILE_MULTIPLIER_X: usize = 8;
 const TILE_MULTIPLIER_X: usize = 2;
@@ -224,6 +225,10 @@ const TILE_X_TOTAL_F: f32 = (LEFT_BUFFER_F + TILE_X_F + RIGHT_BUFFER_F) * TILE_M
 const SINGLE_TILE_Y_TOTAL: usize = TILE_Y * SINGLE_TILE_MULTIPLIER_Y;
 const TILE_Y_TOTAL: usize = (TOP_BUFFER + TILE_Y + BOTTOM_BUFFER) * TILE_MULTIPLIER_Y;
 const TILE_Y_TOTAL_F: f32 = (TOP_BUFFER_F + TILE_Y_F + BOTTOM_BUFFER_F) * TILE_MULTIPLIER_Y_F;
+
+// We know the cast is safe since it's constrained to small values.
+#[allow(clippy::cast_possible_truncation)]
+const SINGLE_TILE_IMAGE_BUFFER: f32 = 12.5 * ((SINGLE_TILE_MULTIPLIER_X as u8) as f32);
 
 const TILE_LINE_SIZE: usize = TILE_X_TOTAL * TILES_PER_ROW;
 const TILE_HEIGHT_SIZE: usize = TILE_Y_TOTAL * ROWS_OF_TILES;
@@ -606,14 +611,14 @@ impl MyApp {
             ui.add_space(10.0);
 
             *left_image = Some(ui.image(&*left));
-            ui.add_space(100.0);
+            // Space so they fill the space equally.
+            // Determined emperically as a function of the multiplying size.
+            ui.add_space(SINGLE_TILE_IMAGE_BUFFER);
             ui.vertical(|ui| {
                 ui.heading(&*single_title);
                 ui.image(&*single);
             });
-            // Space so they fill the space equally. Determined emperically.
-            // TODO(jchacon): Should be a way to auto lay this out?
-            ui.add_space(100.0);
+            ui.add_space(SINGLE_TILE_IMAGE_BUFFER);
             *right_image = Some(ui.image(&*right));
             ui.add_space(10.0);
         });
