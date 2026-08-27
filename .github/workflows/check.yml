@@ -73,6 +73,23 @@ jobs:
       # intentionally no target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
       - name: cargo hack
         run: cargo hack --feature-powerset check
+  shear:
+    runs-on: ubuntu-latest
+    name: ubuntu / stable / shear
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+      - name: Install cargo-shead
+        run: cargo binstall --no-confirm cargo-shear
+      - run: |
+          cargo shear --deny-warnings
+          cargo shear --check-test-targets
+
   msrv:
     runs-on: ubuntu-latest
     # we use a matrix here just because env can't be used in job names
