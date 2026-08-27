@@ -34,9 +34,11 @@ pub fn map_chr_rom(data: &[u8]) -> Result<Vec<Tile>> {
 
     let mut ret = Vec::new();
 
-    // Each tile consumes 16 bytes to represent it.
+    // Each tile in data consumes 16 bytes to represent it.
     // It's 2 bit planes so you need the the first bit from X and the
     // 2nd from X+8 OR'd with it. So process in chunks of 16 for each tile.
+    // The Tile is just 8x8 of 2 bits per byte representing the attribute entry
+    // to use for this pixel.
     for i in 0..data.len() / 16 {
         let mut tile = Tile::default();
 
