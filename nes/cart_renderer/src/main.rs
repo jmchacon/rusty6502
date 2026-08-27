@@ -5,7 +5,10 @@
 //! 4 colors (background and 1-3) from it.
 use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
-use egui::{FontFamily, FontId, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui, Vec2};
+use egui::{
+    FontFamily, FontId, Pos2, Rect, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui,
+    Vec2,
+};
 use nes_chr::Tile;
 use nes_pal::{parse_pal, Color};
 use nes_pal_gui::texture_from_palette;
@@ -627,36 +630,32 @@ impl MyApp {
                 return;
             }
 
-            // If we're hovering over something and we pressed this frame lock
-            // it into place.
-            if !*hover_locked && i.pointer.primary_pressed() && hovered.is_some() {
-                *hover_locked = true;
-            }
-            if !*hover_locked {
-                if let Some(hp) = i.pointer.hover_pos() {
-                    let Some(r) = left_image.as_ref() else {
-                        panic!("left image invalid?");
-                    };
-                    let rect = r.rect;
-                    let left_tile =
-                        Self::tile_num(rect, hp, TILE_X_TOTAL_F, TILE_Y_TOTAL_F, TILES_PER_ROW_F);
-                    let Some(r) = right_image.as_ref() else {
-                        panic!("right image invalid?");
-                    };
-                    let rect = r.rect;
-                    let right_tile =
-                        Self::tile_num(rect, hp, TILE_X_TOTAL_F, TILE_Y_TOTAL_F, TILES_PER_ROW_F);
-                    match (left_tile, right_tile) {
-                        (None, None) => *hovered = None,
-                        (None, Some(mut t)) => {
-                            t += TILES_PER_IMAGE;
-                            *hovered = Some(t);
-                        }
-                        (Some(t), None) => {
-                            *hovered = Some(t);
-                        }
-                        (Some(_), Some(_)) => panic!("Hovering over both images at once?"),
-                    }
+            // Get the bounding boxes for both tile images so mapping to a tile
+            // can be done below.
+            let Some(r) = left_image.as_ref() else {
+                panic!("left image invalid?");
+            };
+            let left_rect = r.rect;
+            let Some(r) = right_image.as_ref() else {
+                panic!("right image invalid?");
+            };
+            let right_rect = r.rect;
+
+            if let Some(hp) = i.pointer.hover_pos() {
+                // If we're hovering over something and we pressed this frame lock
+                // it into place.
+                if !*hover_locked
+                    && i.pointer.primary_pressed()
+                    && hovered.is_some()
+                    && Self::hover_tile(left_rect, right_rect, None, hp).is_some()
+                {
+                    *hover_locked = true;
+                }
+                // If we aren't locked update the tile based on the one we're
+                // hovering over.
+                if !*hover_locked {
+                    *hovered = Self::hover_tile(left_rect, right_rect, *hovered, hp);
+
                     // We have to clear each time or it'll just make a long string as we hover.
                     // If this is blank (not on a tile) then leave the last one as the tile
                     // is left also.
@@ -672,6 +671,38 @@ impl MyApp {
         });
     }
 
+    fn hover_tile(
+        left_image: Rect,
+        right_image: Rect,
+        orig: Option<usize>,
+        hp: Pos2,
+    ) -> Option<usize> {
+        // See if the current hover position matches inside
+        // the left or right tile and compute into a tile number.
+        let left_tile = Self::tile_num(
+            left_image,
+            hp,
+            TILE_X_TOTAL_F,
+            TILE_Y_TOTAL_F,
+            TILES_PER_ROW_F,
+        );
+        let right_tile = Self::tile_num(
+            right_image,
+            hp,
+            TILE_X_TOTAL_F,
+            TILE_Y_TOTAL_F,
+            TILES_PER_ROW_F,
+        );
+        match (left_tile, right_tile) {
+            (None, None) => orig,
+            (None, Some(mut t)) => {
+                t += TILES_PER_IMAGE;
+                Some(t)
+            }
+            (Some(t), None) => Some(t),
+            (Some(_), Some(_)) => panic!("Hovering over both images at once?"),
+        }
+    }
     fn tile_num(
         window: egui::Rect,
         hover: egui::Pos2,
