@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader};
 use std::num::Wrapping;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::OnceLock;
+use std::sync::LazyLock;
 
 // Basic grammer:
 //
@@ -1738,7 +1738,7 @@ fn parse_label(label: &str) -> Result<String> {
         return Ok(label.into());
     }
 
-    if re().is_match(label) {
+    if RE.is_match(label) {
         Ok(label.into())
     } else {
         Err(eyre!(
@@ -1749,15 +1749,12 @@ fn parse_label(label: &str) -> Result<String> {
 
 const LABEL: &str = "^[a-zA-Z][a-zA-Z0-9_]+$";
 
-fn re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| match Regex::new(LABEL) {
-        Ok(re) => re,
-        Err(err) => {
-            panic!("Error parsing regex {LABEL} - {err}");
-        }
-    })
-}
+static RE: LazyLock<Regex> = LazyLock::new(|| match Regex::new(LABEL) {
+    Ok(re) => re,
+    Err(err) => {
+        panic!("Error parsing regex {LABEL} - {err}");
+    }
+});
 
 fn find_mode(v: TokenVal, operation: &Operation) -> AddressMode {
     match v {
