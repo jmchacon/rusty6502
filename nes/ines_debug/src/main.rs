@@ -6,7 +6,7 @@ use clap::Parser;
 
 use color_eyre::eyre::Result;
 
-/// `nes_pal_render` will load the given PAL file and render the color scheme.
+/// `ines_debug` will load the given NES file and print the data from it.
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {

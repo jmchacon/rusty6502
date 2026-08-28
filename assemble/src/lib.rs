@@ -1305,7 +1305,6 @@ fn op_output(oa: &mut OutputArgs, o: &mut Operation, cpu: &dyn CPU, line_num: us
     );
 
     // Grab the first entry in the bytes vec for the opcode value.
-    // TODO(jchacon): If > 1 pick one randomly.
     if o.mode == AddressMode::ZeroPageRelative {
         // BBR/BBS are special. This is actually the vector offsets based on the first opval value.
         // We know this is fine since we range checked it above.

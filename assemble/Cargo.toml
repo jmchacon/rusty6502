@@ -10,3 +10,6 @@ rusty6502  = { workspace = true }
 
 color-eyre = { workspace = true }
 regex = { workspace = true }
+
+[lib]
+doctest = false

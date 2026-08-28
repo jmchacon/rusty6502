@@ -11,3 +11,7 @@ authors.workspace = true
 eframe = { workspace = true }
 egui = { workspace = true }
 nes_pal = { workspace = true }
+
+[lib]
+test = false
+doctest = false

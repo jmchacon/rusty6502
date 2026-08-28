@@ -5,7 +5,10 @@
 //! 4 colors (background and 1-3) from it.
 use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
-use egui::{FontFamily, FontId, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui, Vec2};
+use egui::{
+    FontFamily, FontId, Pos2, Rect, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui,
+    Vec2,
+};
 use nes_chr::Tile;
 use nes_pal::{parse_pal, Color};
 use nes_pal_gui::texture_from_palette;
@@ -94,6 +97,9 @@ struct MyApp {
     // The parsed tile data from the NES file.
     tiles: Vec<Vec<Tile>>,
 
+    // Details about the palette image
+    palette: Option<egui::Response>,
+
     // The left side CHR tileset (first 256)
     left: TextureHandle,
 
@@ -159,7 +165,11 @@ struct MyApp {
     // If button 1 was clicked hovering is locked. Cleared on button 3.
     hover_locked: bool,
 
+    // The tile location for the large middle tile from the tileset.
     single_title: String,
+
+    // If non-blank is the hover text displayed over the palette.
+    palette_hover: String,
 }
 
 const PALETTE_SQ_X: usize = 40;
@@ -205,6 +215,7 @@ const RIGHT_BUFFER_F: f32 = 1.0;
 
 // By default this is only 128 pixels wide which is hard to see on any modern display
 // so we'll upsize by 2x in each direction.
+// The exploded tile in the middle is 8x.
 // TODO(jchacon): Should this be configurable at runtime?
 const SINGLE_TILE_MULTIPLIER_X: usize = 8;
 const TILE_MULTIPLIER_X: usize = 2;
@@ -221,6 +232,10 @@ const TILE_X_TOTAL_F: f32 = (LEFT_BUFFER_F + TILE_X_F + RIGHT_BUFFER_F) * TILE_M
 const SINGLE_TILE_Y_TOTAL: usize = TILE_Y * SINGLE_TILE_MULTIPLIER_Y;
 const TILE_Y_TOTAL: usize = (TOP_BUFFER + TILE_Y + BOTTOM_BUFFER) * TILE_MULTIPLIER_Y;
 const TILE_Y_TOTAL_F: f32 = (TOP_BUFFER_F + TILE_Y_F + BOTTOM_BUFFER_F) * TILE_MULTIPLIER_Y_F;
+
+// We know the cast is safe since it's constrained to small values.
+#[allow(clippy::cast_possible_truncation)]
+const SINGLE_TILE_IMAGE_BUFFER: f32 = 12.5 * ((SINGLE_TILE_MULTIPLIER_X as u8) as f32);
 
 const TILE_LINE_SIZE: usize = TILE_X_TOTAL * TILES_PER_ROW;
 const TILE_HEIGHT_SIZE: usize = TILE_Y_TOTAL * ROWS_OF_TILES;
@@ -334,6 +349,7 @@ impl MyApp {
         Self {
             render_stage: Stage::PreRender(2_isize),
             tiles,
+            palette: None,
             left,
             left_image: None,
             right,
@@ -362,6 +378,7 @@ impl MyApp {
             last_hovered: None,
             hover_locked: false,
             single_title: String::with_capacity(16),
+            palette_hover: String::with_capacity(4),
         }
     }
 
@@ -373,6 +390,7 @@ impl MyApp {
         let Self {
             render_stage: _,
             tiles: _,
+            palette: _,
             left: _,
             left_image: _,
             right: _,
@@ -396,14 +414,15 @@ impl MyApp {
             last_hovered: _,
             hover_locked: _,
             single_title: _,
+            palette_hover: _,
         } = self;
 
-        let clrs: &Vec<TextureHandle>;
-        unsafe {
-            // SAFETY: Unwrap is fine since it's based on selected_pal which
-            //         is constrained via the combo box in the main UI.
-            clrs = colors_per_pal.get(selected_pal).unwrap_unchecked();
-        }
+        let Some(cpl) = colors_per_pal.get(selected_pal) else {
+            // This can't fail since it's based on selected_pal which
+            // is constrained via the combo box in the main UI.
+            panic!("Invalid PAL lookup");
+        };
+        let clrs = cpl;
 
         // Create a 16 x 4 set of colors where each entry is a distinct button
         // rather than just a pallete displayed in the main UI. This way any
@@ -412,11 +431,13 @@ impl MyApp {
             ui.horizontal(|ui| {
                 for i in 0..NUM_PER_ROW {
                     let color = row * NUM_PER_ROW + i;
-                    if ui.add(egui::Button::image(&clrs[color])).clicked() {
+                    let br = ui.add(egui::Button::image(&clrs[color]));
+                    if br.clicked() {
                         // Just record so we can track this on every redraw. It's not
                         // used until Select is pressed later on.
                         *dialog_selected = color;
                     }
+                    br.on_hover_text_at_pointer(format!("{color:#04X}"));
                 }
             });
             ui.end_row();
@@ -458,6 +479,7 @@ impl MyApp {
         let Self {
             render_stage: _,
             tiles: _,
+            palette,
             left,
             left_image,
             right,
@@ -481,6 +503,7 @@ impl MyApp {
             last_hovered,
             hover_locked,
             single_title,
+            palette_hover,
         } = self;
         *frame_count += 1;
 
@@ -490,49 +513,75 @@ impl MyApp {
             ui.disable();
         }
 
-        // The combo box for determining which palette to display.
-        egui::ComboBox::from_label(String::from("Palette"))
-            .selected_text(self.pals[*selected_pal].name())
-            .show_ui(ui, |ui| {
-                ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                for i in 0..self.pals.len() {
-                    ui.selectable_value(selected_pal, i, self.pals[i].name());
-                }
+        // Make the top area which is the palette box and the buttons for it.
+        egui::Panel::top("palette panel").show(ui, |ui| {
+            // The combo box for determining which palette to display.
+            egui::ComboBox::from_label(String::from("Palette"))
+                .selected_text(self.pals[*selected_pal].name())
+                .show_ui(ui, |ui| {
+                    ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+                    for i in 0..self.pals.len() {
+                        ui.selectable_value(selected_pal, i, self.pals[i].name());
+                    }
+                });
+            ui.end_row();
+
+            // We already created textures for each PAL so just index and display it.
+            // Now..we want this to look good so it takes a bit of fiddling:
+            //
+            // Stick it in a vertical centered which makes the whole palette image
+            // centered. The construct a fill color around it which is black and
+            // then set to 45% alpha which on NTSC or PAL shows the edge more
+            // distinctly.
+            //
+            // This could try and use stroke/etc to create a border but that is
+            // harder to pull off as the whole bounding box for this image is
+            // the entire centered frame (which includes the image) and not just
+            // the image itself.
+            ui.vertical_centered(|ui| {
+                egui::Frame::new()
+                    .fill(egui::Color32::BLACK)
+                    .multiply_with_opacity(0.45)
+                    .show(ui, |ui| {
+                        // Capture the response so we can use it below for hover.
+                        *palette = Some(
+                            ui.image(&self.pals[*selected_pal])
+                                .on_hover_text_at_pointer(palette_hover.as_str()),
+                        );
+                    });
             });
-        ui.end_row();
+            ui.separator();
 
-        // We already created textures for each PAL so just index and display it.
-        ui.image(&self.pals[*selected_pal]);
-        ui.separator();
+            // Create a new box with 4 buttons for each of the colors.
+            ui.horizontal(|ui| {
+                // Chop this into the same number of columns and then they get
+                // equally spaced across the frame.
+                ui.columns(NUM_COLORS, |columns| {
+                    for i in 0..NUM_COLORS {
+                        columns[i].vertical_centered(|ui| {
+                            // 4 buttons spaced across the bottom of the palette showing each color
+                            // they're selected.
+                            let Some(cpl) = self.colors_per_pal.get(selected_pal) else {
+                                // This can't fail since it's based on selected_pal which
+                                // is constrained via the combo box in the main UI.
+                                panic!("Invalid PAL lookup");
+                            };
+                            let text = &cpl[colors[i]];
 
-        // Create a new box with 4 buttons for each of the colors.
-        ui.horizontal(|ui| {
-            for i in 0..NUM_COLORS {
-                // 4 buttons spaced across the bottom of the palette showing each color
-                // they're selected.
-
-                let text: &TextureHandle;
-                // SAFETY: All of these below are restricted to selected_pal range
-                //         which is handled in the combo box above so we can just unwrap.
-                unsafe {
-                    text = &self.colors_per_pal.get(selected_pal).unwrap_unchecked()[colors[i]];
-                }
-
-                if ui
-                    .add(egui::Button::image_and_text(text, BUTTONS[i]))
-                    .clicked()
-                {
-                    *button = Some(i);
-                    *dialog_selected = colors[i];
-                }
-                // Space them out a bit so they stretch across the palette.
-                // Determined emperically by adjusting until it lines up visually.
-                // TODO(jchacon): Should be a way to auto lay this out?
-                ui.add_space(78.0);
-            }
+                            if ui
+                                .add(egui::Button::image_and_text(text, BUTTONS[i]))
+                                .clicked()
+                            {
+                                *button = Some(i);
+                                *dialog_selected = colors[i];
+                            }
+                        });
+                    }
+                });
+            });
+            ui.end_row();
+            ui.separator();
         });
-        ui.end_row();
-        ui.separator();
 
         // A combo box to select which CHR page to display.
         // Also indicate how much we've magnified (not currently changeable except by compilation)
@@ -581,14 +630,14 @@ impl MyApp {
             ui.add_space(10.0);
 
             *left_image = Some(ui.image(&*left));
-            ui.add_space(100.0);
+            // Space so they fill the space equally.
+            // Determined emperically as a function of the multiplying size.
+            ui.add_space(SINGLE_TILE_IMAGE_BUFFER);
             ui.vertical(|ui| {
                 ui.heading(&*single_title);
                 ui.image(&*single);
             });
-            // Space so they fill the space equally. Determined emperically.
-            // TODO(jchacon): Should be a way to auto lay this out?
-            ui.add_space(100.0);
+            ui.add_space(SINGLE_TILE_IMAGE_BUFFER);
             *right_image = Some(ui.image(&*right));
             ui.add_space(10.0);
         });
@@ -605,52 +654,98 @@ impl MyApp {
                 return;
             }
 
-            // If we're hovering over something and we pressed this frame lock
-            // it into place.
-            if !*hover_locked && i.pointer.primary_pressed() && hovered.is_some() {
-                *hover_locked = true;
-            }
-            if !*hover_locked {
-                if let Some(hp) = i.pointer.hover_pos() {
-                    // SAFETY: The unwrap is fine since setup ensures left/right image
-                    //         always have a value.
-                    #[allow(clippy::unwrap_used)]
-                    let left_tile = Self::tile_num(
-                        left_image.as_ref().unwrap().rect,
-                        hp,
-                        TILE_X_TOTAL_F,
-                        TILE_Y_TOTAL_F,
-                        TILES_PER_ROW_F,
-                    );
-                    #[allow(clippy::unwrap_used)]
-                    let right_tile = Self::tile_num(
-                        right_image.as_ref().unwrap().rect,
-                        hp,
-                        TILE_X_TOTAL_F,
-                        TILE_Y_TOTAL_F,
-                        TILES_PER_ROW_F,
-                    );
-                    match (left_tile, right_tile) {
-                        (None, None) => *hovered = None,
-                        (None, Some(mut t)) => {
-                            t += TILES_PER_IMAGE;
-                            *hovered = Some(t);
-                        }
-                        (Some(t), None) => {
-                            *hovered = Some(t);
-                        }
-                        (Some(_), Some(_)) => panic!("Hovering over both images at once?"),
-                    }
+            // Get the bounding boxes for both tile images so mapping to a tile
+            // can be done below.
+            let Some(r) = left_image.as_ref() else {
+                panic!("left image invalid?");
+            };
+            let left_rect = r.rect;
+            let Some(r) = right_image.as_ref() else {
+                panic!("right image invalid?");
+            };
+            let right_rect = r.rect;
+
+            let Some(pal) = palette.as_ref() else {
+                panic!("palette image invalid?");
+            };
+            let palette_rect = pal.rect;
+
+            if let Some(hp) = i.pointer.hover_pos() {
+                // Check if we're inside the palette box and if so tool tip the
+                // square we're over (hex value);
+                palette_hover.clear();
+                if let Some(t) = Self::tile_num(
+                    palette_rect,
+                    hp,
+                    nes_pal_gui::WIDTH_F,
+                    nes_pal_gui::HEIGHT_F,
+                    nes_pal_gui::NUM_PER_LINE_F,
+                ) {
+                    write!(palette_hover, "{t:#04X}").unwrap_or_else(|_| panic!("write error"));
+                }
+
+                // If we're hovering over something inside the tilesets
+                // and we pressed this frame lock it into place.
+                if !*hover_locked
+                    && i.pointer.primary_pressed()
+                    && hovered.is_some()
+                    && Self::hover_tile(left_rect, right_rect, None, hp).is_some()
+                {
+                    *hover_locked = true;
+                }
+
+                // If we aren't locked update the tile based on the one we're
+                // hovering over.
+                if !*hover_locked {
+                    *hovered = Self::hover_tile(left_rect, right_rect, *hovered, hp);
+
+                    // We have to clear each time or it'll just make a long string as we hover.
+                    // If this is blank (not on a tile) then leave the last one as the tile
+                    // is left also.
+                    let orig = single_title.clone();
                     single_title.clear();
                     if let Some(hp) = hovered {
-                        #[allow(clippy::unwrap_used)]
-                        write!(single_title, "# {hp}").unwrap();
+                        write!(single_title, "# {hp}").unwrap_or_else(|_| panic!("write error"));
+                    } else if !orig.is_empty() {
+                        write!(single_title, "{orig}").unwrap_or_else(|_| panic!("write error"));
                     }
                 }
             }
         });
     }
 
+    fn hover_tile(
+        left_image: Rect,
+        right_image: Rect,
+        orig: Option<usize>,
+        hp: Pos2,
+    ) -> Option<usize> {
+        // See if the current hover position matches inside
+        // the left or right tile and compute into a tile number.
+        let left_tile = Self::tile_num(
+            left_image,
+            hp,
+            TILE_X_TOTAL_F,
+            TILE_Y_TOTAL_F,
+            TILES_PER_ROW_F,
+        );
+        let right_tile = Self::tile_num(
+            right_image,
+            hp,
+            TILE_X_TOTAL_F,
+            TILE_Y_TOTAL_F,
+            TILES_PER_ROW_F,
+        );
+        match (left_tile, right_tile) {
+            (None, None) => orig,
+            (None, Some(mut t)) => {
+                t += TILES_PER_IMAGE;
+                Some(t)
+            }
+            (Some(t), None) => Some(t),
+            (Some(_), Some(_)) => panic!("Hovering over both images at once?"),
+        }
+    }
     fn tile_num(
         window: egui::Rect,
         hover: egui::Pos2,
@@ -840,6 +935,7 @@ impl eframe::App for MyApp {
         match self.render_stage {
             // Give it 2 frames to layout and initialize so we can get the size.
             Stage::PreRender(mut pre_render_cycle) => {
+                ui.ctx().request_discard("pre_render");
                 self.pre_render(ui.ctx());
                 pre_render_cycle -= 1;
                 if pre_render_cycle > 0 {
@@ -850,10 +946,12 @@ impl eframe::App for MyApp {
             }
             // Now do a render and then a resize to correctly shape the final window.
             Stage::FirstRender(size) => {
+                ui.ctx().request_discard(r"render");
                 self.render(ui);
                 self.render_stage = Stage::FirstResize(size);
             }
             Stage::FirstResize(size) => {
+                ui.ctx().request_discard("first_resize");
                 ui.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 self.render_stage = Stage::Initialized(size);
