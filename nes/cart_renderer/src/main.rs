@@ -97,6 +97,9 @@ struct MyApp {
     // The parsed tile data from the NES file.
     tiles: Vec<Vec<Tile>>,
 
+    // Details about the palette image
+    palette: Option<egui::Response>,
+
     // The left side CHR tileset (first 256)
     left: TextureHandle,
 
@@ -162,7 +165,11 @@ struct MyApp {
     // If button 1 was clicked hovering is locked. Cleared on button 3.
     hover_locked: bool,
 
+    // The tile location for the large middle tile from the tileset.
     single_title: String,
+
+    // If non-blank is the hover text displayed over the palette.
+    palette_hover: String,
 }
 
 const PALETTE_SQ_X: usize = 40;
@@ -342,6 +349,7 @@ impl MyApp {
         Self {
             render_stage: Stage::PreRender(2_isize),
             tiles,
+            palette: None,
             left,
             left_image: None,
             right,
@@ -370,6 +378,7 @@ impl MyApp {
             last_hovered: None,
             hover_locked: false,
             single_title: String::with_capacity(16),
+            palette_hover: String::with_capacity(4),
         }
     }
 
@@ -381,6 +390,7 @@ impl MyApp {
         let Self {
             render_stage: _,
             tiles: _,
+            palette: _,
             left: _,
             left_image: _,
             right: _,
@@ -404,6 +414,7 @@ impl MyApp {
             last_hovered: _,
             hover_locked: _,
             single_title: _,
+            palette_hover: _,
         } = self;
 
         let Some(cpl) = colors_per_pal.get(selected_pal) else {
@@ -420,11 +431,13 @@ impl MyApp {
             ui.horizontal(|ui| {
                 for i in 0..NUM_PER_ROW {
                     let color = row * NUM_PER_ROW + i;
-                    if ui.add(egui::Button::image(&clrs[color])).clicked() {
+                    let br = ui.add(egui::Button::image(&clrs[color]));
+                    if br.clicked() {
                         // Just record so we can track this on every redraw. It's not
                         // used until Select is pressed later on.
                         *dialog_selected = color;
                     }
+                    br.on_hover_text_at_pointer(format!("{color:#04X}"));
                 }
             });
             ui.end_row();
@@ -466,6 +479,7 @@ impl MyApp {
         let Self {
             render_stage: _,
             tiles: _,
+            palette,
             left,
             left_image,
             right,
@@ -489,6 +503,7 @@ impl MyApp {
             last_hovered,
             hover_locked,
             single_title,
+            palette_hover,
         } = self;
         *frame_count += 1;
 
@@ -528,7 +543,11 @@ impl MyApp {
                     .fill(egui::Color32::BLACK)
                     .multiply_with_opacity(0.45)
                     .show(ui, |ui| {
-                        ui.image(&self.pals[*selected_pal]);
+                        // Capture the response so we can use it below for hover.
+                        *palette = Some(
+                            ui.image(&self.pals[*selected_pal])
+                                .on_hover_text_at_pointer(palette_hover.as_str()),
+                        );
                     });
             });
             ui.separator();
@@ -646,9 +665,27 @@ impl MyApp {
             };
             let right_rect = r.rect;
 
+            let Some(pal) = palette.as_ref() else {
+                panic!("palette image invalid?");
+            };
+            let palette_rect = pal.rect;
+
             if let Some(hp) = i.pointer.hover_pos() {
-                // If we're hovering over something and we pressed this frame lock
-                // it into place.
+                // Check if we're inside the palette box and if so tool tip the
+                // square we're over (hex value);
+                palette_hover.clear();
+                if let Some(t) = Self::tile_num(
+                    palette_rect,
+                    hp,
+                    nes_pal_gui::WIDTH_F,
+                    nes_pal_gui::HEIGHT_F,
+                    nes_pal_gui::NUM_PER_LINE_F,
+                ) {
+                    write!(palette_hover, "{t:#04X}").unwrap_or_else(|_| panic!("write error"));
+                }
+
+                // If we're hovering over something inside the tilesets
+                // and we pressed this frame lock it into place.
                 if !*hover_locked
                     && i.pointer.primary_pressed()
                     && hovered.is_some()
@@ -656,6 +693,7 @@ impl MyApp {
                 {
                     *hover_locked = true;
                 }
+
                 // If we aren't locked update the tile based on the one we're
                 // hovering over.
                 if !*hover_locked {
