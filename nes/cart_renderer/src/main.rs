@@ -629,7 +629,8 @@ impl MyApp {
         ui.horizontal(|ui| {
             ui.add_space(10.0);
 
-            *left_image = Some(ui.image(&*left));
+            let hover = "Left button to lock\nRight button to clear";
+            *left_image = Some(ui.image(&*left).on_hover_text(hover));
             // Space so they fill the space equally.
             // Determined emperically as a function of the multiplying size.
             ui.add_space(SINGLE_TILE_IMAGE_BUFFER);
@@ -638,7 +639,7 @@ impl MyApp {
                 ui.image(&*single);
             });
             ui.add_space(SINGLE_TILE_IMAGE_BUFFER);
-            *right_image = Some(ui.image(&*right));
+            *right_image = Some(ui.image(&*right).on_hover_text(hover));
             ui.add_space(10.0);
         });
 
@@ -646,11 +647,6 @@ impl MyApp {
             // If we're not enabled this means the modal is up so we don't want
             // tile state changing because we overlap that portion.
             if !ui.is_enabled() {
-                return;
-            }
-            // If we were locked and hit the secondary button clear it.
-            if *hover_locked && i.pointer.secondary_pressed() {
-                *hover_locked = false;
                 return;
             }
 
@@ -682,6 +678,16 @@ impl MyApp {
                     nes_pal_gui::NUM_PER_LINE_F,
                 ) {
                     write!(palette_hover, "{t:#04X}").unwrap_or_else(|_| panic!("write error"));
+                }
+
+                // If we were locked and inside the tiles and hit the secondary
+                // button clear the lock and return (no other processing this frame).
+                if *hover_locked
+                    && i.pointer.secondary_pressed()
+                    && Self::hover_tile(left_rect, right_rect, None, hp).is_some()
+                {
+                    *hover_locked = false;
+                    return;
                 }
 
                 // If we're hovering over something inside the tilesets
