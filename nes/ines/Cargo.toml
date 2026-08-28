@@ -10,3 +10,6 @@ color-eyre = { workspace = true }
 
 strum_macros = { workspace = true }
 strum = { workspace = true }
+
+[lib]
+doctest = false

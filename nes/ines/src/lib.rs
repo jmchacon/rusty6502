@@ -8,7 +8,7 @@ use color_eyre::eyre::{eyre, Result};
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
-    sync::OnceLock,
+    sync::LazyLock,
 };
 use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumCount, EnumIter};
@@ -230,19 +230,14 @@ pub enum ConsoleType {
     FamicomNetworkSystem,
 }
 
-// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
-//                once LazyLock stablizes.
-fn console_type() -> &'static HashMap<u8, ConsoleType> {
-    static CONSOLE_TYPE: OnceLock<HashMap<u8, ConsoleType>> = OnceLock::new();
-    CONSOLE_TYPE.get_or_init(|| {
-        let mut m = HashMap::new();
-        for (idx, e) in ConsoleType::iter().enumerate() {
-            #[allow(clippy::cast_possible_truncation)]
-            m.insert(idx as u8, e);
-        }
-        m
-    })
-}
+static CONSOLE_TYPE: LazyLock<HashMap<u8, ConsoleType>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    for (idx, e) in ConsoleType::iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
+        m.insert(idx as u8, e);
+    }
+    m
+});
 
 /// CPU Timing for cart
 #[derive(Copy, Clone, Default, Debug, Display, EnumCount, EnumIter, PartialEq)]
@@ -261,19 +256,14 @@ pub enum CPUTiming {
     Dendy,
 }
 
-// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
-//                once LazyLock stablizes.
-fn cpu_timing() -> &'static HashMap<u8, CPUTiming> {
-    static CONSOLE_TYPE: OnceLock<HashMap<u8, CPUTiming>> = OnceLock::new();
-    CONSOLE_TYPE.get_or_init(|| {
-        let mut m = HashMap::new();
-        for (idx, e) in CPUTiming::iter().enumerate() {
-            #[allow(clippy::cast_possible_truncation)]
-            m.insert(idx as u8, e);
-        }
-        m
-    })
-}
+static CPU_TIMING: LazyLock<HashMap<u8, CPUTiming>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    for (idx, e) in CPUTiming::iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
+        m.insert(idx as u8, e);
+    }
+    m
+});
 
 /// Vs system PPU
 #[derive(Copy, Clone, Debug, Display, EnumCount, EnumIter, PartialEq)]
@@ -318,19 +308,14 @@ pub enum VsPPU {
     RC2C05_05,
 }
 
-// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
-//                once LazyLock stablizes.
-fn vs_ppu() -> &'static HashMap<u8, VsPPU> {
-    static CONSOLE_TYPE: OnceLock<HashMap<u8, VsPPU>> = OnceLock::new();
-    CONSOLE_TYPE.get_or_init(|| {
-        let mut m = HashMap::new();
-        for (idx, e) in VsPPU::iter().enumerate() {
-            #[allow(clippy::cast_possible_truncation)]
-            m.insert(idx as u8, e);
-        }
-        m
-    })
-}
+static VS_PPU: LazyLock<HashMap<u8, VsPPU>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    for (idx, e) in VsPPU::iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
+        m.insert(idx as u8, e);
+    }
+    m
+});
 
 /// Vs Hardware
 #[derive(Copy, Clone, Debug, Display, EnumCount, EnumIter, PartialEq)]
@@ -357,19 +342,14 @@ pub enum VsHardware {
     DualSystemRaidOnBungelingBay,
 }
 
-// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
-//                once LazyLock stablizes.
-fn vs_hw() -> &'static HashMap<u8, VsHardware> {
-    static CONSOLE_TYPE: OnceLock<HashMap<u8, VsHardware>> = OnceLock::new();
-    CONSOLE_TYPE.get_or_init(|| {
-        let mut m = HashMap::new();
-        for (idx, e) in VsHardware::iter().enumerate() {
-            #[allow(clippy::cast_possible_truncation)]
-            m.insert(idx as u8, e);
-        }
-        m
-    })
-}
+static VS_HW: LazyLock<HashMap<u8, VsHardware>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    for (idx, e) in VsHardware::iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
+        m.insert(idx as u8, e);
+    }
+    m
+});
 
 /// Game expected devices for cart
 #[derive(Copy, Clone, Debug, Display, EnumCount, EnumIter, PartialEq)]
@@ -552,19 +532,14 @@ pub enum ExpansionDevice {
     LGTVRemoteControl,
 }
 
-// TODO(jchacon): Replace all OnceLock with LazyLock (and get rid of the fn)
-//                once LazyLock stablizes.
-fn expansion_device() -> &'static HashMap<u8, ExpansionDevice> {
-    static CONSOLE_TYPE: OnceLock<HashMap<u8, ExpansionDevice>> = OnceLock::new();
-    CONSOLE_TYPE.get_or_init(|| {
-        let mut m = HashMap::new();
-        for (idx, e) in ExpansionDevice::iter().enumerate() {
-            #[allow(clippy::cast_possible_truncation)]
-            m.insert(idx as u8, e);
-        }
-        m
-    })
-}
+static EXPANSION_DEVICE: LazyLock<HashMap<u8, ExpansionDevice>> = LazyLock::new(|| {
+    let mut m = HashMap::new();
+    for (idx, e) in ExpansionDevice::iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)]
+        m.insert(idx as u8, e);
+    }
+    m
+});
 
 /// The NES file format used for this cart
 #[derive(Debug, Default, Display, PartialEq)]
@@ -734,6 +709,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             // NOTE: Spec says exponent mode can go to 64 and theoretically
             //       the max value is 2^64*7 which is nuts.
             //       No one needs multi-exabyte ROMs....
+            // So we cap PRG at 1G and CHR at 512M.
 
             // Blocks or exponent mode.
             let prg_size = if prg_msb == ROM_EXPONENT_MODE {
@@ -879,7 +855,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             let lookup = data[FLAGS_7_BYTE] & CONSOLE_TYPE_MASK;
             if lookup < 0x03 {
                 // This is fine to direct map since we know the map has this many entries.
-                nes.console_type = *console_type().get(&lookup).ok_or(eyre!("impossible"))?;
+                nes.console_type = *CONSOLE_TYPE.get(&lookup).ok_or(eyre!("impossible"))?;
             } else {
                 return Err(eyre!("Invalid console type 0x03 for INES1 format"));
             }
@@ -899,7 +875,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             if lookup == EXTENDED_CONSOLE {
                 // Entry 0x03 means used the extended list.
                 let lookup = data[SYSTEMS_BYTE] & SYSTEMS_MASK;
-                nes.console_type = if let Some(v) = console_type().get(&lookup) {
+                nes.console_type = if let Some(v) = CONSOLE_TYPE.get(&lookup) {
                     *v
                 } else {
                     return Err(eyre!("Illegal console system type: {}", data[SYSTEMS_BYTE]));
@@ -908,19 +884,19 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
                 // Under 3 are the same base consoles
 
                 // This is fine to direct map since we know the map has this many entries.
-                nes.console_type = *console_type().get(&lookup).ok_or(eyre!("impossible"))?;
+                nes.console_type = *CONSOLE_TYPE.get(&lookup).ok_or(eyre!("impossible"))?;
             }
 
             // Now if this is a Vs one we need to fill that in.
             if nes.console_type == ConsoleType::NintendoVsSystem {
                 let lookup = data[SYSTEMS_BYTE] & VS_PPU_TYPE_MASK;
-                nes.vs_ppu = if let Some(v) = vs_ppu().get(&lookup) {
+                nes.vs_ppu = if let Some(v) = VS_PPU.get(&lookup) {
                     Some(*v)
                 } else {
                     return Err(eyre!("Invalid Vs PPU type: {}", data[SYSTEMS_BYTE]));
                 };
                 let lookup = (data[SYSTEMS_BYTE] & VS_HARDWARE_TYPE_MASK) >> VS_HARDWARE_TYPE_SHIFT;
-                nes.vs_hw = if let Some(v) = vs_hw().get(&lookup) {
+                nes.vs_hw = if let Some(v) = VS_HW.get(&lookup) {
                     Some(*v)
                 } else {
                     return Err(eyre!("Invalid Vs Hardware type: {}", data[SYSTEMS_BYTE]));
@@ -950,7 +926,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             }
 
             let lookup = data[TIMING_BYTE];
-            nes.cpu_timing = if let Some(v) = cpu_timing().get(&lookup) {
+            nes.cpu_timing = if let Some(v) = CPU_TIMING.get(&lookup) {
                 *v
             } else {
                 return Err(eyre!("Invalid CPU timing byte: {}", data[TIMING_BYTE]));
@@ -985,7 +961,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             }
 
             let lookup = data[EXPANSION_DEVICE_BYTE];
-            let Some(v) = expansion_device().get(&lookup) else {
+            let Some(v) = EXPANSION_DEVICE.get(&lookup) else {
                 return Err(eyre!(
                     "Invalid expansion device value {}",
                     data[EXPANSION_DEVICE_BYTE]

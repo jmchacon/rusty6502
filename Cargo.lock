@@ -943,7 +943,6 @@ dependencies = [
 name = "cpu_proc_macros"
 version = "0.1.0"
 dependencies = [
- "proc-macro2",
  "quote",
  "syn 3.0.4",
 ]
@@ -2198,7 +2197,6 @@ dependencies = [
  "color-eyre",
  "ntest",
  "rusty6502",
- "strum",
  "strum_macros",
  "tempfile",
 ]
@@ -2312,6 +2310,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nes_memory"
+version = "0.1.0"
+dependencies = [
+ "apu",
+ "ines",
+ "memory",
+ "ppu",
+]
+
+[[package]]
 name = "nes_pal"
 version = "0.1.0"
 dependencies = [
@@ -2338,17 +2346,6 @@ dependencies = [
  "env_logger",
  "nes_pal",
  "nes_pal_gui",
-]
-
-[[package]]
-name = "nesram"
-version = "0.1.0"
-dependencies = [
- "apu",
- "color-eyre",
- "ines",
- "memory",
- "ppu",
 ]
 
 [[package]]

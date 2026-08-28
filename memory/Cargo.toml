@@ -5,4 +5,5 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 
-[dependencies]
+[lib]
+doctest = false
