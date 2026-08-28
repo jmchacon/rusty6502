@@ -4,10 +4,30 @@
 //! calloop which egui needs on *nix.
 use egui::{TextureHandle, TextureOptions};
 use nes_pal::Color;
-const WIDTH: usize = 40;
-const NUM_PER_LINE: usize = 16;
-const LINE_SIZE: usize = WIDTH * NUM_PER_LINE;
-const HEIGHT: usize = 40;
+
+/// Width of tile in pixels.
+pub const WIDTH: usize = 40;
+
+/// Width of tile in pixels floating point.
+pub const WIDTH_F: f32 = 40.0;
+
+/// Number of tiles per line.
+pub const NUM_PER_LINE: usize = 16;
+
+/// Number of tiles per line floating point.
+pub const NUM_PER_LINE_F: f32 = 16.0;
+
+/// Line size in pixels.
+pub const LINE_SIZE: usize = WIDTH * NUM_PER_LINE;
+
+/// Line size in pixels floating point.
+pub const LINE_SIZE_F: f32 = WIDTH_F * NUM_PER_LINE_F;
+
+/// Height of tile in pixels.
+pub const HEIGHT: usize = 40;
+
+/// Height of tile in pixels floating point.
+pub const HEIGHT_F: f32 = 40.0;
 const NUM_LINES: usize = 4;
 const ENTRIES_PER_PIXEL: usize = 3; // RGB
 const SIZE: usize = LINE_SIZE * HEIGHT * NUM_LINES * ENTRIES_PER_PIXEL;
