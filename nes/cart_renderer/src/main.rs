@@ -36,7 +36,15 @@ fn main() -> Result<()> {
     let args: Args = Args::parse();
 
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
-    let options = eframe::NativeOptions::default();
+
+    // The window is sized to exactly fit its content (see `Stage` below), so
+    // there's nothing sensible for the user to drag-resize it to. Resizing
+    // still happens programmatically via `ViewportCommand::InnerSize`, which
+    // is independent of this and unaffected by it.
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_resizable(false),
+        ..Default::default()
+    };
 
     if args.pal.is_empty() {
         return Err(eyre!("Must supply at least one PAL filename"));
