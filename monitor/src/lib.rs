@@ -1222,15 +1222,21 @@ fn reset(cpu: &mut dyn CPU, cpucommandresptx: &Sender<Result<CommandResponse>>) 
 //       for a single command and desync the response channel.
 fn advance(
     cpu: &mut dyn CPU,
-    ram: &mut [u8; MAX_SIZE],
+    wp_vals: &mut Vec<u8>,
     tick_pc: &mut u16,
     breakpoints: &Vec<Location>,
     watchpoints: &Vec<Location>,
     do_tick: bool,
 ) -> Result<StopReason> {
     if !watchpoints.is_empty() {
-        // If we have watchpoints get a memory snapshot.
-        cpu.ram().borrow().ram(ram);
+        // Snapshot just the watched locations (copying all of RAM per
+        // instruction is far too expensive for a few compares).
+        wp_vals.clear();
+        let cr = cpu.ram();
+        let cr = cr.borrow();
+        for w in watchpoints {
+            wp_vals.push(cr.read(w.addr));
+        }
     }
 
     if cpu.op_tick() == Tick::Reset {
@@ -1256,8 +1262,8 @@ fn advance(
     if !watchpoints.is_empty() {
         let cr = cpu.ram();
         let cr = cr.borrow();
-        for w in watchpoints {
-            if cr.read(w.addr) != ram[usize::from(w.addr)] {
+        for (w, old) in watchpoints.iter().zip(wp_vals.iter()) {
+            if cr.read(w.addr) != *old {
                 let mut pre = String::with_capacity(32);
                 let _ = cpu.disassemble(&mut pre, *tick_pc, &*cpu.ram().borrow(), false);
                 reason = StopReason::Watch(PC { addr: *tick_pc }, Location { addr: w.addr }, pre);
@@ -1269,22 +1275,14 @@ fn advance(
     Ok(reason)
 }
 
-// Struct {
-//  is_init
-//  running_ram_snapshot
-//  is_running
-//  debug
-//  ram
-//  tick_pc
-//  breakpoints
-//  watchpoints
-//  cpucommandresptx
 struct CPULoopState<'a> {
     is_init: bool,
     running_ram_snapshot: bool,
     is_running: bool,
     debug: Box<Debug>,
-    ram: [u8; MAX_SIZE],
+    // Scratch space for the pre instruction values of the watchpoint
+    // addresses (parallel to watchpoints).
+    wp_vals: Vec<u8>,
     tick_pc: u16,
     breakpoints: Vec<Location>,
     watchpoints: Vec<Location>,
@@ -1322,7 +1320,7 @@ pub fn cpu_loop(
         watchpoints: vec![],
         tick_pc: 0,
         debug: debug.clone(),
-        ram: [0; MAX_SIZE],
+        wp_vals: vec![],
         cpucommandresptx,
     };
 
@@ -1330,7 +1328,7 @@ pub fn cpu_loop(
         if state.is_running {
             let reason = match advance(
                 cpu,
-                &mut state.ram,
+                &mut state.wp_vals,
                 &mut state.tick_pc,
                 &state.breakpoints,
                 &state.watchpoints,
@@ -1448,6 +1446,11 @@ fn cpu_run(cpu: &mut dyn CPU, state: &mut CPULoopState, ram: bool) -> Result<()>
     }
     state.running_ram_snapshot = ram;
     state.is_running = true;
+    if !ram {
+        // Drop any RAM buffer left from an earlier snapshotting command or
+        // every per instruction state clone below copies 64k for nothing.
+        std::cell::RefCell::<_>::borrow_mut(&state.debug.state).ram = None;
+    }
     cpu.set_debug(Some(state.debug.clone()));
     *std::cell::RefCell::<_>::borrow_mut(&state.debug.full) = state.running_ram_snapshot;
     cpu.debug();
@@ -1534,7 +1537,7 @@ fn cpu_step(cpu: &mut dyn CPU, state: &mut CPULoopState, capture_ram: bool) -> R
     }
     let mut reason = match advance(
         cpu,
-        &mut state.ram,
+        &mut state.wp_vals,
         &mut state.tick_pc,
         &state.breakpoints,
         &state.watchpoints,
@@ -1549,7 +1552,7 @@ fn cpu_step(cpu: &mut dyn CPU, state: &mut CPULoopState, capture_ram: bool) -> R
     if !capture_ram {
         // Reset RAM to clear as we might have copied before this time and
         // future ones should start clean.
-        std::cell::RefCell::<_>::borrow_mut(&state.debug.state).ram = [0; MAX_SIZE];
+        std::cell::RefCell::<_>::borrow_mut(&state.debug.state).ram = None;
     }
     // The closure assumes run. Since we're doing single step only change
     // that when returned or things go off contract.
@@ -1596,11 +1599,11 @@ fn cpu_step_n(cpu: &mut dyn CPU, state: &mut CPULoopState, stepn: StepN) -> Resu
 
     // Reset RAM to clear as we might have copied before this time and
     // future ones should start clean.
-    std::cell::RefCell::<_>::borrow_mut(&state.debug.state).ram = [0; MAX_SIZE];
+    std::cell::RefCell::<_>::borrow_mut(&state.debug.state).ram = None;
     for i in 0..stepn.reps {
         let reason = match advance(
             cpu,
-            &mut state.ram,
+            &mut state.wp_vals,
             &mut state.tick_pc,
             &state.breakpoints,
             &state.watchpoints,
@@ -1680,7 +1683,7 @@ fn cpu_tick(cpu: &mut dyn CPU, state: &mut CPULoopState, capture_ram: bool) -> R
     }
     let mut reason = match advance(
         cpu,
-        &mut state.ram,
+        &mut state.wp_vals,
         &mut state.tick_pc,
         &state.breakpoints,
         &state.watchpoints,
@@ -1695,7 +1698,7 @@ fn cpu_tick(cpu: &mut dyn CPU, state: &mut CPULoopState, capture_ram: bool) -> R
     if !capture_ram {
         // Reset RAM to clear as we might have copied before this time and
         // future ones should start clean.
-        std::cell::RefCell::<_>::borrow_mut(&state.debug.state).ram = [0; MAX_SIZE];
+        std::cell::RefCell::<_>::borrow_mut(&state.debug.state).ram = None;
     }
 
     // The closure assumes run. Since we're doing single step only change

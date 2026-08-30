@@ -71,7 +71,8 @@ pub fn cpu_base_struct(args: TokenStream, input: TokenStream) -> TokenStream {
                 .parse2(quote! {
                   #[doc = " If set `debug` will be passed a raw `CPUState` on each instruction."]
                   #[doc = " The boolean returns indicates whether to include a full memory dump (slow)"]
-                  #[doc = " or just to fill in the current PC values so dissembly can function."]
+                  #[doc = " or just to fill in the current PC values so dissembly can function"]
+                  #[doc = " (the latter only when the state already holds a RAM buffer)."]
                   debug: Option<Box<dyn CPUDebug>>
                 })
                 .unwrap(),

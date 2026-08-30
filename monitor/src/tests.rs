@@ -1704,7 +1704,7 @@ fn step_tests() -> Result<()> {
             "Disassembly wrong. Should be '{expected}' and got {st}"
         );
         assert!(
-            st.state.ram[0xFFFF] == 0x00,
+            st.state.ram.is_none(),
             "Didn't get blank RAM as expected. Got {st}"
         );
     } else {
@@ -1760,7 +1760,7 @@ fn step_tests() -> Result<()> {
             "Disassembly wrong. Should be '{expected}' and got {st}"
         );
         assert!(
-            st.state.ram[0xFFFF] == 0x00,
+            st.state.ram.is_none(),
             "Didn't get blank RAM as expected. Got {st}"
         );
     } else {
@@ -1841,7 +1841,7 @@ fn step_tests() -> Result<()> {
             "Reason incorrect. Should be Step and got {st}"
         );
         assert!(
-            st.state.ram[0x0200] == 0x01,
+            st.state.ram.as_ref().is_some_and(|r| r[0x0200] == 0x01),
             "Didn't get back written RAM from step"
         );
     } else {
@@ -1898,7 +1898,7 @@ fn step_tests() -> Result<()> {
             "PC wrong. Should be 0x0406. Got {st}"
         );
         assert!(
-            st.state.ram[0xFFFF] == 0x00,
+            st.state.ram.is_none(),
             "Didn't get blank RAM as expected. Got {st}"
         );
     } else {
@@ -1978,7 +1978,7 @@ fn step_tests() -> Result<()> {
             "PC wrong. Should be 0x0409. Got {st}"
         );
         assert!(
-            st.state.ram[0x0200] == 0x01,
+            st.state.ram.as_ref().is_some_and(|r| r[0x0200] == 0x01),
             "Didn't get set RAM as expected. Got {st}"
         );
     } else {

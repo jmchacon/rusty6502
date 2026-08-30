@@ -80,8 +80,9 @@ impl Debug<CPUState> {
                     // Late bind disassembly since this is expensive to
                     // generate the String. So only do it on actual dumps.
                     let pc = self.state[i].borrow().pc;
-                    let r = &self.state[i].borrow().ram;
-                    _ = cpu.disassemble(&mut s, pc, r, false);
+                    if let Some(r) = &self.state[i].borrow().ram {
+                        _ = cpu.disassemble(&mut s, pc, &**r, false);
+                    }
                 }
                 self.state[i].borrow_mut().dis = s;
                 #[allow(clippy::unwrap_used)]
@@ -94,8 +95,9 @@ impl Debug<CPUState> {
                 // Late bind disassembly since this is expensive to
                 // generate the String. So only do it on actual dumps.
                 let pc = self.state[i].borrow().pc;
-                let r = &self.state[i].borrow().ram;
-                _ = cpu.disassemble(&mut s, pc, r, false);
+                if let Some(r) = &self.state[i].borrow().ram {
+                    _ = cpu.disassemble(&mut s, pc, &**r, false);
+                }
             }
             self.state[i].borrow_mut().dis = s;
             #[allow(clippy::unwrap_used)]
@@ -108,6 +110,12 @@ impl Debug<CPUState> {
 impl CPUDebug for Debug<CPUState> {
     fn get_debug(&self) -> (Rc<RefCell<CPUState>>, bool) {
         let ret = Rc::clone(&self.state[*self.cur.borrow()]);
+
+        // Make sure a RAM buffer exists so the partial (non full) fills
+        // happen and the late bound disassembly in dump() works.
+        ret.borrow_mut()
+            .ram
+            .get_or_insert_with(|| Box::new([0; MAX_SIZE]));
 
         // Now roll the circular buffer portion of this.
         self.roll_buffer();
@@ -256,7 +264,9 @@ fn shallow_cpustate() {
     let mut shallow = CPUState::default();
     cpustate.a = 0x01;
     cpustate.s = 0xCC;
-    cpustate.ram[0x1234] = 0x56;
+    let mut ram = Box::new([0; MAX_SIZE]);
+    ram[0x1234] = 0x56;
+    cpustate.ram = Some(ram);
     cpustate.shallow_copy(&mut shallow);
     assert!(
         shallow.a == 0x01,
@@ -271,10 +281,8 @@ fn shallow_cpustate() {
         shallow.s
     );
     assert!(
-        shallow.ram[0x1234] != cpustate.ram[0x1234],
-        "RAM wrong should be different - orig: {:02X} new {:02X}",
-        cpustate.ram[0x1234],
-        shallow.ram[0x1234],
+        shallow.ram.is_none(),
+        "RAM wrong - shallow copy shouldn't have copied the RAM buffer"
     );
 }
 
