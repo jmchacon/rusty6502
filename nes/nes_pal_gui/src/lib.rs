@@ -28,7 +28,12 @@ pub const HEIGHT: usize = 40;
 
 /// Height of tile in pixels floating point.
 pub const HEIGHT_F: f32 = 40.0;
-const NUM_LINES: usize = 4;
+
+/// Number of lines in a palette texture.
+pub const NUM_LINES: usize = 4;
+
+/// Number of lines in a palette texture floating point.
+pub const NUM_LINES_F: f32 = 4.0;
 const ENTRIES_PER_PIXEL: usize = 3; // RGB
 const SIZE: usize = LINE_SIZE * HEIGHT * NUM_LINES * ENTRIES_PER_PIXEL;
 

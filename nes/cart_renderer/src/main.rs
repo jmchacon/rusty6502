@@ -4,16 +4,15 @@
 //! Colors can be selected by choosing a palette and then assigning the
 //! 4 colors (background and 1-3) from it.
 use clap::Parser;
-use color_eyre::eyre::{eyre, Result};
+use color_eyre::eyre::{eyre, Result, WrapErr};
 use egui::{
-    FontFamily, FontId, Pos2, Rect, TextStyle, TextWrapMode, TextureHandle, TextureOptions, Ui,
-    Vec2,
+    Color32, FontFamily, FontId, Pos2, Rect, TextStyle, TextWrapMode, TextureHandle,
+    TextureOptions, Ui, Vec2,
 };
 use nes_chr::Tile;
 use nes_pal::{parse_pal, Color};
 use nes_pal_gui::texture_from_palette;
-use std::collections::{BTreeMap, HashMap};
-use std::fmt::Write;
+use std::collections::BTreeMap;
 use std::fs::read;
 use std::path::Path;
 
@@ -45,7 +44,7 @@ fn main() -> Result<()> {
 
     let mut colors = Vec::new();
     for f in &args.pal {
-        let bytes: Vec<u8> = read(f)?;
+        let bytes: Vec<u8> = read(f).wrap_err_with(|| format!("reading {f}"))?;
         let c = parse_pal(&bytes)?;
         let p = Path::new(f)
             .file_name()
@@ -56,7 +55,7 @@ fn main() -> Result<()> {
         });
     }
 
-    let bytes = read(args.filename)?;
+    let bytes = read(&args.filename).wrap_err_with(|| format!("reading {}", args.filename))?;
 
     // Parse the NES file and then for each CHR ROM make this a processed
     // Tile Vec we keep. Each 8k block equates to 2x256 set of tiles.
@@ -122,51 +121,29 @@ struct MyApp {
     pals: Vec<TextureHandle>,
 
     // Per PAL (indexed from `pal`) provide a 40x40 block texture of each color.
-    colors_per_pal: HashMap<usize, Vec<TextureHandle>>,
+    colors_per_pal: Vec<Vec<TextureHandle>>,
 
-    // The current PAL texture handle used to display the palette in use. Index
-    // is into `pals`.
-    selected_pal: usize,
-
-    // The index of the selected CHR block we're viewing
-    selected_chr: usize,
+    // Which palette/CHR page/colors are selected, what's hovered, and enough
+    // history to know when a redraw is needed.
+    selection: Selection,
 
     // If a color button is pressed and then if so which one.
     button: Option<usize>,
-
-    // For each color the index into the current PAL palette it should be using.
-    colors: [usize; 4],
 
     // If displaying the modal selection dialog which color is currently picked.
     dialog_selected: usize,
 
     // The input we setup to change the tile texture each frame.
-    data: Box<[u8]>,
+    data: Box<[Color32]>,
 
     // The tile data when we display a large single tile between the panels.
-    tile_data: Box<[u8]>,
+    tile_data: Box<[Color32]>,
 
     // The original color data parsed from each PAL file.
     color_source: Vec<Data>,
 
-    // If any of these are different from selected_XXX then the tile texture
-    // should get redrawn to update.
-    last_selected_pal: usize,
-    last_selected_chr: usize,
-    last_colors: [usize; 4],
-
     // Number of frames we've done.
     frame_count: usize,
-
-    // The tile we most recently hovered over.
-    hovered: Option<usize>,
-
-    // The previous hovered tile. Used to trigger image redraws once this differs
-    // from hovered.
-    last_hovered: Option<usize>,
-
-    // If button 1 was clicked hovering is locked. Cleared on button 3.
-    hover_locked: bool,
 
     // The tile location for the large middle tile from the tileset.
     single_title: String,
@@ -178,16 +155,61 @@ struct MyApp {
 const PALETTE_SQ_X: usize = 40;
 const PALETTE_SQ_Y: usize = 40;
 
-const PALETTE_SQ_XY: usize = PALETTE_SQ_X * PALETTE_SQ_Y;
-const BYTES_PER_PIXEL: usize = 3;
-const PALETTE_SQ_SIZE: usize = PALETTE_SQ_XY * BYTES_PER_PIXEL;
-
 const NUM_COLORS: usize = 4;
 
 // The common NTSC and PAL palettes have black as the last entry
 // and white as the one on the beginning of the last row so default to those.
 const DEFAULT_BACKGROUND: usize = 0x3F;
 const DEFAULT_FOREGROUND: usize = 0x30;
+
+// Which palette/CHR page/colors are currently selected, what tile is
+// hovered, and the previous frame's values (used to detect changes that
+// require a redraw).
+struct Selection {
+    // The current PAL texture handle used to display the palette in use.
+    // Index is into `MyApp::pals`.
+    pal: usize,
+
+    // The index of the selected CHR block we're viewing.
+    chr: usize,
+
+    // For each color the index into the current PAL palette it should be using.
+    colors: [usize; NUM_COLORS],
+
+    // The tile we most recently hovered over.
+    hovered: Option<usize>,
+
+    // If button 1 was clicked hovering is locked. Cleared on button 3.
+    hover_locked: bool,
+
+    // If any of these are different from the field above then the tile
+    // texture should get redrawn to update.
+    last_pal: usize,
+    last_chr: usize,
+    last_colors: [usize; NUM_COLORS],
+    last_hovered: Option<usize>,
+}
+
+impl Selection {
+    fn new() -> Self {
+        Self {
+            pal: 0,
+            chr: 0,
+            colors: [
+                DEFAULT_BACKGROUND,
+                DEFAULT_FOREGROUND,
+                DEFAULT_FOREGROUND,
+                DEFAULT_FOREGROUND,
+            ],
+            hovered: None,
+            hover_locked: false,
+            last_pal: 0,
+            last_chr: 0,
+            last_colors: [0; NUM_COLORS],
+            last_hovered: None,
+        }
+    }
+}
 
 // All the data used to build up the math needed to operate with the tiles
 // we display. Each tile is 8x8 but we want a 1 pixel border around each one.
@@ -198,38 +220,27 @@ const DEFAULT_FOREGROUND: usize = 0x30;
 //
 // The single tile varieties are there for displaying the 8x tile selected during
 // hover over.
-#[derive(Default, Debug)]
+#[derive(Debug)]
 struct TileDrawData {
     tile_x: usize,
-    tile_x_f: f32,
     tile_y: usize,
-    tile_y_f: f32,
     tiles_per_row: usize,
-    tiles_per_row_f: f32,
     row_of_tiles: usize,
     top_buffer: usize,
-    top_buffer_f: f32,
     bottom_buffer: usize,
-    bottom_buffer_f: f32,
     left_buffer: usize,
-    left_buffer_f: f32,
     right_buffer: usize,
-    right_buffer_f: f32,
     single_tile_multiplier_x: usize,
     tile_multiplier_x: usize,
-    tile_multiplier_x_f: f32,
 
     single_tile_multiplier_y: usize,
     tile_multiplier_y: usize,
-    tile_multiplier_y_f: f32,
 
     // Single tile has no border since we want to just see it blown up exactly.
     single_tile_x_total: usize,
     tile_x_total: usize,
-    tile_x_total_f: f32,
     single_tile_y_total: usize,
     tile_y_total: usize,
-    tile_y_total_f: f32,
 
     single_tile_image_buffer: f32,
 
@@ -243,69 +254,60 @@ struct TileDrawData {
 }
 
 impl TileDrawData {
-    fn new() -> Self {
+    fn default() -> Self {
         let mut s = Self {
             tile_x: 8,
-            tile_x_f: 8.0,
             tile_y: 8,
-            tile_y_f: 8.0,
             tiles_per_row: 16,
-            tiles_per_row_f: 16.0,
             row_of_tiles: 16,
             top_buffer: 1,
-            top_buffer_f: 1.0,
             bottom_buffer: 1,
-            bottom_buffer_f: 1.0,
             left_buffer: 1,
-            left_buffer_f: 1.0,
             right_buffer: 1,
-            right_buffer_f: 1.0,
             single_tile_multiplier_x: 8,
             tile_multiplier_x: 2,
-            tile_multiplier_x_f: 2.0,
             single_tile_multiplier_y: 8,
             tile_multiplier_y: 2,
-            tile_multiplier_y_f: 2.0,
             tiles_per_image: 256,
-            ..TileDrawData::default()
+            single_tile_x_total: 0,
+            tile_x_total: 0,
+            single_tile_y_total: 0,
+            tile_y_total: 0,
+            single_tile_image_buffer: 0.0,
+            tile_line_size: 0,
+            tile_height_size: 0,
+            tile_layout_size: 0,
+            single_tile_layout_size: 0,
         };
         s.single_tile_x_total = s.tile_x * s.single_tile_multiplier_x;
         s.tile_x_total = (s.left_buffer + s.tile_x + s.right_buffer) * s.tile_multiplier_x;
-        s.tile_x_total_f =
-            (s.left_buffer_f + s.tile_x_f + s.right_buffer_f) * s.tile_multiplier_x_f;
         s.single_tile_y_total = s.tile_y * s.single_tile_multiplier_y;
         s.tile_y_total = (s.top_buffer + s.tile_y + s.bottom_buffer) * s.tile_multiplier_y;
-        s.tile_y_total_f =
-            (s.top_buffer_f + s.tile_y_f + s.bottom_buffer_f) * s.tile_multiplier_y_f;
+
         // We know the cast is safe since it's constrained to small values.
         #[allow(clippy::cast_possible_truncation)]
         let buf = 12.5 * f32::from(s.single_tile_multiplier_x as u8);
         s.single_tile_image_buffer = buf;
         s.tile_line_size = s.tile_x_total * s.tiles_per_row;
         s.tile_height_size = s.tile_y_total * s.row_of_tiles;
-        s.tile_layout_size = s.tile_line_size * s.tile_height_size * BYTES_PER_PIXEL;
-        s.single_tile_layout_size = s.single_tile_x_total * s.single_tile_y_total * BYTES_PER_PIXEL;
+        // Pixel counts (one `Color32` per pixel), not byte counts.
+        s.tile_layout_size = s.tile_line_size * s.tile_height_size;
+        s.single_tile_layout_size = s.single_tile_x_total * s.single_tile_y_total;
         s
     }
 
-    fn _update_multiplier(&mut self, tile_multiplier: usize, tile_multiplier_f: f32) {
+    fn _update_multiplier(&mut self, tile_multiplier: usize) {
         self.tile_multiplier_x = tile_multiplier;
-        self.tile_multiplier_x_f = tile_multiplier_f;
         self.tile_multiplier_y = tile_multiplier;
-        self.tile_multiplier_y_f = tile_multiplier_f;
 
         self.tile_x_total =
             (self.left_buffer + self.tile_x + self.right_buffer) * self.tile_multiplier_x;
-        self.tile_x_total_f =
-            (self.left_buffer_f + self.tile_x_f + self.right_buffer_f) * self.tile_multiplier_x_f;
         self.tile_y_total =
             (self.top_buffer + self.tile_y + self.bottom_buffer) * self.tile_multiplier_y;
-        self.tile_y_total_f =
-            (self.top_buffer_f + self.tile_y_f + self.bottom_buffer_f) * self.tile_multiplier_y_f;
 
         self.tile_line_size = self.tile_x_total * self.tiles_per_row;
         self.tile_height_size = self.tile_y_total * self.row_of_tiles;
-        self.tile_layout_size = self.tile_line_size * self.tile_height_size * BYTES_PER_PIXEL;
+        self.tile_layout_size = self.tile_line_size * self.tile_height_size;
     }
 
     fn _update_single_tile_multiplier(&mut self, single_tile_multiplier: usize) {
@@ -314,8 +316,7 @@ impl TileDrawData {
 
         self.single_tile_x_total = self.tile_x * self.single_tile_multiplier_x;
         self.single_tile_y_total = self.tile_y * self.single_tile_multiplier_y;
-        self.single_tile_layout_size =
-            self.single_tile_x_total * self.single_tile_y_total * BYTES_PER_PIXEL;
+        self.single_tile_layout_size = self.single_tile_x_total * self.single_tile_y_total;
 
         // We know the cast is safe since it's constrained to small values.
         #[allow(clippy::cast_possible_truncation)]
@@ -336,10 +337,10 @@ struct ChrTiles<'a> {
     selected_pal: &'a usize,
     selected_chr: &'a usize,
     colors: &'a [usize; NUM_COLORS],
-    data: &'a mut Box<[u8]>,
-    color_source: &'a Vec<Data>,
+    data: &'a mut [Color32],
+    color_source: &'a [Data],
     hovered: Option<usize>,
-    tile_data: &'a mut Box<[u8]>,
+    tile_data: &'a mut [Color32],
 }
 
 // When drawing a given tile all the data needed to make that happen.
@@ -350,7 +351,15 @@ struct DrawData<'a> {
     tile_line_size: usize,
     tile: &'a Tile,
     colors: &'a [usize],
-    color_source: &'a Vec<Data>,
+    color_source: &'a [Data],
+    selected_pal: usize,
+}
+
+// The color-selection state needed to render any tile, bundled up so the
+// single-tile redraw helpers don't need a long parameter list.
+struct PalContext<'a> {
+    colors: &'a [usize; NUM_COLORS],
+    color_source: &'a [Data],
     selected_pal: usize,
 }
 
@@ -374,55 +383,48 @@ impl MyApp {
         // pals: For each PAL file a 16x4 texture with a block for each color
         // colors_per_pal: For each index of pals a texture with that color block.
         let mut pals = Vec::new();
-        let mut colors_per_pal = HashMap::new();
+        let mut colors_per_pal = Vec::new();
 
-        for (i, d) in datas.iter().enumerate() {
+        for d in &datas {
             pals.push(texture_from_palette(cc, &d.filename, &d.colors));
+            let mut per_pal = Vec::with_capacity(d.colors.len());
             for (ci, c) in d.colors.iter().enumerate() {
-                let mut data: [u8; PALETTE_SQ_SIZE] = [0; PALETTE_SQ_SIZE];
-                for xy in 0..PALETTE_SQ_XY {
-                    let start = xy * BYTES_PER_PIXEL;
-                    data[start] = c.r;
-                    data[start + 1] = c.g;
-                    data[start + 2] = c.b;
-                }
-
-                let im = egui::ColorImage::from_rgb([PALETTE_SQ_X, PALETTE_SQ_Y], &data);
+                let im = egui::ColorImage::filled(
+                    [PALETTE_SQ_X, PALETTE_SQ_Y],
+                    Color32::from_rgb(c.r, c.g, c.b),
+                );
                 let text = cc.egui_ctx.load_texture(
                     format!("Color: {ci}"),
                     egui::ImageData::Color(im.into()),
                     TextureOptions::default(),
                 );
-                colors_per_pal
-                    .entry(i)
-                    .and_modify(|v: &mut Vec<TextureHandle>| v.push(text.clone()))
-                    .or_insert(vec![text]);
+                per_pal.push(text);
             }
+            colors_per_pal.push(per_pal);
         }
 
-        let tdd = TileDrawData::new();
+        let tdd = TileDrawData::default();
         // Fill in the initial set of tiles layout with all white.
         // Additional tiles can always be used later with a combo box to select but we need a
         // base texture to update on every draw. i.e. the first update will select the actual
         // correct entries for this.
-        let data = vec![egui::Color32::WHITE.r(); tdd.tile_layout_size].into_boxed_slice();
-        let im = egui::ColorImage::from_rgb([tdd.tile_line_size, tdd.tile_height_size], &data);
+        let data = vec![Color32::WHITE; tdd.tile_layout_size].into_boxed_slice();
+        let im = egui::ColorImage::new([tdd.tile_line_size, tdd.tile_height_size], data.to_vec());
         let left = cc.egui_ctx.load_texture(
             "Left CHR Tiles",
             egui::ImageData::Color(im.into()),
             TextureOptions::default(),
         );
-        let im = egui::ColorImage::from_rgb([tdd.tile_line_size, tdd.tile_height_size], &data);
+        let im = egui::ColorImage::new([tdd.tile_line_size, tdd.tile_height_size], data.to_vec());
         let right = cc.egui_ctx.load_texture(
             "Right CHR Tiles",
             egui::ImageData::Color(im.into()),
             TextureOptions::default(),
         );
-        let tile_data =
-            vec![egui::Color32::WHITE.r(); tdd.single_tile_layout_size].into_boxed_slice();
-        let im = egui::ColorImage::from_rgb(
+        let tile_data = vec![Color32::WHITE; tdd.single_tile_layout_size].into_boxed_slice();
+        let im = egui::ColorImage::new(
             [tdd.single_tile_x_total, tdd.single_tile_y_total],
-            &tile_data,
+            tile_data.to_vec(),
         );
         let single = cc.egui_ctx.load_texture(
             "Single tile",
@@ -442,26 +444,13 @@ impl MyApp {
             single,
             pals,
             colors_per_pal,
-            selected_pal: 0,
-            selected_chr: 0,
+            selection: Selection::new(),
             button: None,
-            colors: [
-                DEFAULT_BACKGROUND,
-                DEFAULT_FOREGROUND,
-                DEFAULT_FOREGROUND,
-                DEFAULT_FOREGROUND,
-            ],
             dialog_selected: 0,
             data,
             tile_data,
             color_source: datas,
-            last_selected_pal: 0,
-            last_selected_chr: 0,
-            last_colors: [0; NUM_COLORS],
             frame_count: 0,
-            hovered: None,
-            last_hovered: None,
-            hover_locked: false,
             single_title: String::with_capacity(16),
             palette_hover: String::with_capacity(4),
         }
@@ -473,51 +462,23 @@ impl MyApp {
         const NUM_PER_ROW: usize = 16;
 
         let Self {
-            render_stage: _,
-            tile_draw_data: _,
-            tiles: _,
-            palette: _,
-            left: _,
-            left_image: _,
-            right: _,
-            right_image: _,
-            single: _,
-            pals: _,
             colors_per_pal,
-            selected_pal,
-            selected_chr: _,
+            selection,
             button,
-            colors,
             dialog_selected,
-            data: _,
-            tile_data: _,
-            color_source: _,
-            last_selected_pal: _,
-            last_selected_chr: _,
-            last_colors: _,
-            frame_count: _,
-            hovered: _,
-            last_hovered: _,
-            hover_locked: _,
-            single_title: _,
-            palette_hover: _,
+            ..
         } = self;
 
-        let Some(cpl) = colors_per_pal.get(selected_pal) else {
-            // This can't fail since it's based on selected_pal which
-            // is constrained via the combo box in the main UI.
-            panic!("Invalid PAL lookup");
-        };
-        let clrs = cpl;
+        let clrs = &colors_per_pal[selection.pal];
 
         // Create a 16 x 4 set of colors where each entry is a distinct button
         // rather than just a pallete displayed in the main UI. This way any
         // selection is each to use to show newly selected.
-        for row in 0..clrs.len() / NUM_PER_ROW {
+        for (row, chunk) in clrs.chunks(NUM_PER_ROW).enumerate() {
             ui.horizontal(|ui| {
-                for i in 0..NUM_PER_ROW {
+                for (i, texture) in chunk.iter().enumerate() {
                     let color = row * NUM_PER_ROW + i;
-                    let br = ui.add(egui::Button::image(&clrs[color]));
+                    let br = ui.add(egui::Button::image(texture));
                     if br.clicked() {
                         // Just record so we can track this on every redraw. It's not
                         // used until Select is pressed later on.
@@ -536,7 +497,7 @@ impl MyApp {
             ui.image(&clrs[*dialog_selected]);
             ui.add_space(100.0);
             if ui.button("Select").clicked() {
-                colors[bidx] = *dialog_selected;
+                selection.colors[bidx] = *dialog_selected;
                 *button = None;
             }
             if ui.button("Cancel").clicked() {
@@ -563,40 +524,29 @@ impl MyApp {
     #[allow(clippy::too_many_lines)]
     fn main_ui(&mut self, ui: &mut Ui) {
         let Self {
-            render_stage: _,
             tile_draw_data,
-            tiles: _,
             palette,
             left,
             left_image,
             right,
             right_image,
             single,
-            pals: _,
-            colors_per_pal: _,
-            selected_pal,
-            selected_chr,
+            selection,
             button,
-            colors,
             dialog_selected,
             data,
             tile_data,
             color_source,
-            last_selected_pal,
-            last_selected_chr,
-            last_colors,
             frame_count,
-            hovered,
-            last_hovered,
-            hover_locked,
             single_title,
             palette_hover,
+            ..
         } = self;
         *frame_count += 1;
 
         // If a color picker button has been pressed the modal dialog is up
         // so this window is inactive.
-        if !button.is_none() {
+        if button.is_some() {
             ui.disable();
         }
 
@@ -604,11 +554,11 @@ impl MyApp {
         egui::Panel::top("palette panel").show(ui, |ui| {
             // The combo box for determining which palette to display.
             egui::ComboBox::from_label(String::from("Palette"))
-                .selected_text(self.pals[*selected_pal].name())
+                .selected_text(self.pals[selection.pal].name())
                 .show_ui(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
                     for i in 0..self.pals.len() {
-                        ui.selectable_value(selected_pal, i, self.pals[i].name());
+                        ui.selectable_value(&mut selection.pal, i, self.pals[i].name());
                     }
                 });
             ui.end_row();
@@ -632,7 +582,7 @@ impl MyApp {
                     .show(ui, |ui| {
                         // Capture the response so we can use it below for hover.
                         *palette = Some(
-                            ui.image(&self.pals[*selected_pal])
+                            ui.image(&self.pals[selection.pal])
                                 .on_hover_text_at_pointer(palette_hover.as_str()),
                         );
                     });
@@ -648,19 +598,14 @@ impl MyApp {
                         columns[i].vertical_centered(|ui| {
                             // 4 buttons spaced across the bottom of the palette showing each color
                             // they're selected.
-                            let Some(cpl) = self.colors_per_pal.get(selected_pal) else {
-                                // This can't fail since it's based on selected_pal which
-                                // is constrained via the combo box in the main UI.
-                                panic!("Invalid PAL lookup");
-                            };
-                            let text = &cpl[colors[i]];
+                            let text = &self.colors_per_pal[selection.pal][selection.colors[i]];
 
                             if ui
                                 .add(egui::Button::image_and_text(text, BUTTONS[i]))
                                 .clicked()
                             {
                                 *button = Some(i);
-                                *dialog_selected = colors[i];
+                                *dialog_selected = selection.colors[i];
                             }
                         });
                     }
@@ -676,11 +621,11 @@ impl MyApp {
             "CHR set ({}x magnified)",
             tile_draw_data.tile_multiplier_x
         ))
-        .selected_text(format!("{selected_chr}"))
+        .selected_text(format!("{}", selection.chr))
         .show_ui(ui, |ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
             for i in 0..self.tiles.len() {
-                ui.selectable_value(selected_chr, i, format!("{i}"));
+                ui.selectable_value(&mut selection.chr, i, format!("{i}"));
             }
         });
         ui.end_row();
@@ -688,32 +633,50 @@ impl MyApp {
         // Fill in the selected tile data based on the selected color data
         // from the selected PAL palette data. Only do this when we change
         // relevant data (or this is the first frame).
-        if *frame_count == 1
-            || *last_selected_pal != *selected_pal
-            || *last_selected_chr != *selected_chr
-            || *last_colors != *colors
-            || *last_hovered != *hovered
-        {
-            *last_selected_pal = *selected_pal;
-            *last_selected_chr = *selected_chr;
-            *last_colors = *colors;
-            *last_hovered = *hovered;
+        let full_redraw = *frame_count == 1
+            || selection.last_pal != selection.pal
+            || selection.last_chr != selection.chr
+            || selection.last_colors != selection.colors;
+
+        if full_redraw {
+            selection.last_pal = selection.pal;
+            selection.last_chr = selection.chr;
+            selection.last_colors = selection.colors;
+            selection.last_hovered = selection.hovered;
             Self::create_chr_tiles(
                 &mut ChrTiles {
                     tiles: &self.tiles,
                     left,
                     right,
                     single,
-                    selected_pal,
-                    selected_chr,
-                    colors,
+                    selected_pal: &selection.pal,
+                    selected_chr: &selection.chr,
+                    colors: &selection.colors,
                     data,
                     color_source,
-                    hovered: *hovered,
+                    hovered: selection.hovered,
                     tile_data,
                 },
                 tile_draw_data,
             );
+        } else if selection.last_hovered != selection.hovered {
+            // Only the hovered tile moved: touch just the (at most 2) boxes
+            // that actually changed instead of re-rendering and re-uploading
+            // all 512 tiles.
+            let chr = &self.tiles[selection.chr];
+            let pal = PalContext {
+                colors: &selection.colors,
+                color_source,
+                selected_pal: selection.pal,
+            };
+            if let Some(prev) = selection.last_hovered {
+                Self::redraw_hover_box(prev, &chr[prev], false, left, right, &pal, tile_draw_data);
+            }
+            if let Some(cur) = selection.hovered {
+                Self::redraw_hover_box(cur, &chr[cur], true, left, right, &pal, tile_draw_data);
+                Self::redraw_single_preview(single, &chr[cur], &pal, tile_draw_data, tile_data);
+            }
+            selection.last_hovered = selection.hovered;
         }
 
         // Every frame show the current tilesets with some separation.
@@ -762,52 +725,49 @@ impl MyApp {
             if let Some(hp) = i.pointer.hover_pos() {
                 // Check if we're inside the palette box and if so tool tip the
                 // square we're over (hex value);
-                palette_hover.clear();
-                if let Some(t) = Self::tile_num(
+                *palette_hover = Self::tile_num(
                     palette_rect,
                     hp,
-                    nes_pal_gui::WIDTH_F,
-                    nes_pal_gui::HEIGHT_F,
                     nes_pal_gui::NUM_PER_LINE_F,
-                ) {
-                    write!(palette_hover, "{t:#04X}").unwrap_or_else(|_| panic!("write error"));
-                }
+                    nes_pal_gui::NUM_LINES_F,
+                )
+                .map_or_else(String::new, |t| format!("{t:#04X}"));
 
                 // If we were locked and inside the tiles and hit the secondary
                 // button clear the lock and return (no other processing this frame).
-                if *hover_locked
+                if selection.hover_locked
                     && i.pointer.secondary_pressed()
                     && Self::hover_tile(tile_draw_data, left_rect, right_rect, None, hp).is_some()
                 {
-                    *hover_locked = false;
+                    selection.hover_locked = false;
                     return;
                 }
 
                 // If we're hovering over something inside the tilesets
                 // and we pressed this frame lock it into place.
-                if !*hover_locked
+                if !selection.hover_locked
                     && i.pointer.primary_pressed()
-                    && hovered.is_some()
+                    && selection.hovered.is_some()
                     && Self::hover_tile(tile_draw_data, left_rect, right_rect, None, hp).is_some()
                 {
-                    *hover_locked = true;
+                    selection.hover_locked = true;
                 }
 
                 // If we aren't locked update the tile based on the one we're
                 // hovering over.
-                if !*hover_locked {
-                    *hovered =
-                        Self::hover_tile(tile_draw_data, left_rect, right_rect, *hovered, hp);
+                if !selection.hover_locked {
+                    selection.hovered = Self::hover_tile(
+                        tile_draw_data,
+                        left_rect,
+                        right_rect,
+                        selection.hovered,
+                        hp,
+                    );
 
-                    // We have to clear each time or it'll just make a long string as we hover.
-                    // If this is blank (not on a tile) then leave the last one as the tile
-                    // is left also.
-                    let orig = single_title.clone();
-                    single_title.clear();
-                    if let Some(hp) = hovered {
-                        write!(single_title, "# {hp}").unwrap_or_else(|_| panic!("write error"));
-                    } else if !orig.is_empty() {
-                        write!(single_title, "{orig}").unwrap_or_else(|_| panic!("write error"));
+                    // If nothing is hovered, leave the title showing whatever
+                    // tile was last hovered instead of blanking it out.
+                    if let Some(hp) = selection.hovered {
+                        *single_title = format!("# {hp}");
                     }
                 }
             }
@@ -821,38 +781,30 @@ impl MyApp {
         orig: Option<usize>,
         hp: Pos2,
     ) -> Option<usize> {
-        // See if the current hover position matches inside
-        // the left or right tile and compute into a tile number.
-        let left_tile = Self::tile_num(
-            left_image,
-            hp,
-            tile_draw_data.tile_x_total_f,
-            tile_draw_data.tile_y_total_f,
-            tile_draw_data.tiles_per_row_f,
+        // See if the current hover position matches inside the left or right
+        // tile and compute into a tile number. These counts are always tiny
+        // (currently 16), so the precision loss `as f32` warns about can't
+        // actually happen here.
+        #[allow(clippy::cast_precision_loss)]
+        let (num_cols, num_rows) = (
+            tile_draw_data.tiles_per_row as f32,
+            tile_draw_data.row_of_tiles as f32,
         );
-        let right_tile = Self::tile_num(
-            right_image,
-            hp,
-            tile_draw_data.tile_x_total_f,
-            tile_draw_data.tile_y_total_f,
-            tile_draw_data.tiles_per_row_f,
-        );
+        let left_tile = Self::tile_num(left_image, hp, num_cols, num_rows);
+        let right_tile = Self::tile_num(right_image, hp, num_cols, num_rows);
+        // The left and right rects are disjoint, so at most one of these is
+        // ever `Some`; prefer the left one if that ever changes.
         match (left_tile, right_tile) {
+            (Some(t), _) => Some(t),
+            (None, Some(t)) => Some(t + tile_draw_data.tiles_per_image),
             (None, None) => orig,
-            (None, Some(mut t)) => {
-                t += tile_draw_data.tiles_per_image;
-                Some(t)
-            }
-            (Some(t), None) => Some(t),
-            (Some(_), Some(_)) => panic!("Hovering over both images at once?"),
         }
     }
     fn tile_num(
         window: egui::Rect,
         hover: egui::Pos2,
-        tile_x: f32,
-        tile_y: f32,
-        num_per_row: f32,
+        num_cols: f32,
+        num_rows: f32,
     ) -> Option<usize> {
         let min = window.min;
         let max = window.max;
@@ -862,15 +814,20 @@ impl MyApp {
             return None;
         }
 
-        // 10.0-330.0 , 269.3-589.3
-        // loc 242.7, 537.3
-        let x_tile = hover.x - min.x; // 242.7 - 10.0 == 232.7
-        let y_tile = hover.y - min.y; // 537.3 - 330.0 == 207.3
-        let tx = (x_tile / tile_x).floor(); // 12
-        let ty = (y_tile / tile_y).floor(); // 9
+        // The image is scaled (uniformly, preserving aspect ratio) to fit
+        // whatever space egui gave it, so derive each tile's on-screen size
+        // from the rendered rect rather than assuming a fixed points-per-texel
+        // ratio. Otherwise this drifts as soon as the window is resized.
+        let tile_x = window.width() / num_cols;
+        let tile_y = window.height() / num_rows;
+
+        let x_tile = hover.x - min.x;
+        let y_tile = hover.y - min.y;
+        let tx = (x_tile / tile_x).floor();
+        let ty = (y_tile / tile_y).floor();
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        Some((tx + (ty * num_per_row)) as usize)
+        Some((tx + (ty * num_cols)) as usize)
     }
 
     // `create_chr_tiles` does all of the heavy lifting to take the 256 tiles
@@ -883,20 +840,27 @@ impl MyApp {
         let colors = chrtiles.colors;
         let color_source = chrtiles.color_source;
 
-        // Mass fill the slice with white. We can just use one index here
-        // since white is the same value for all 3.
-        chrtiles.data.fill(egui::Color32::WHITE.r());
+        // Mass fill the slice with white.
+        chrtiles.data.fill(Color32::WHITE);
+
+        let image_size = [
+            tile_draw_data.tile_line_size,
+            tile_draw_data.tile_height_size,
+        ];
 
         // Once we get over 256 tiles we move to the other image.
         let mut do_left = true;
 
-        for (mut loc, t) in tiles[*selected_chr].iter().enumerate() {
-            let orig = loc;
+        for (orig, t) in tiles[*selected_chr].iter().enumerate() {
+            let mut loc = orig;
             if loc >= tile_draw_data.tiles_per_image {
-                // Reset to all WHITE again so hover from left side doesn't
-                // carry over.
                 if do_left {
-                    chrtiles.data.fill(egui::Color32::WHITE.r());
+                    // The left image is complete, upload it and reset to all
+                    // WHITE again so hover from the left side doesn't carry
+                    // over into the right image.
+                    let im = egui::ColorImage::new(image_size, chrtiles.data.to_vec());
+                    chrtiles.left.set(im, TextureOptions::default());
+                    chrtiles.data.fill(Color32::WHITE);
                     do_left = false;
                 }
                 loc -= tile_draw_data.tiles_per_image;
@@ -906,14 +870,11 @@ impl MyApp {
             // first pixel.
             let row_start_base = loc / tile_draw_data.tiles_per_row
                 * tile_draw_data.tile_y_total
-                * tile_draw_data.tile_line_size
-                * BYTES_PER_PIXEL;
+                * tile_draw_data.tile_line_size;
 
             // Now move N boxes over to find the box start pixel.
-            let box_start_base = row_start_base
-                + tile_draw_data.tile_x_total
-                    * (loc % tile_draw_data.tiles_per_row)
-                    * BYTES_PER_PIXEL;
+            let box_start_base =
+                row_start_base + tile_draw_data.tile_x_total * (loc % tile_draw_data.tiles_per_row);
 
             // Now also adjust it N pixels down and over to account for buffers.
             // This way the painting below just deals with correct offsets into
@@ -921,46 +882,32 @@ impl MyApp {
             let box_start = box_start_base
                 + (tile_draw_data.top_buffer
                     * tile_draw_data.tile_multiplier_y
-                    * tile_draw_data.tile_line_size
-                    * BYTES_PER_PIXEL)
-                + (tile_draw_data.left_buffer * tile_draw_data.tile_multiplier_x * BYTES_PER_PIXEL);
+                    * tile_draw_data.tile_line_size)
+                + (tile_draw_data.left_buffer * tile_draw_data.tile_multiplier_x);
 
             // Using box_start_base fill in GREY on each row if this is the tile
             // be hovered over. The rest of the tile painting below will write over the
             // rest so this just becomes our outline.
             if chrtiles.hovered == Some(orig) {
                 for y in 0..tile_draw_data.tile_y_total {
-                    let row = box_start_base + y * tile_draw_data.tile_line_size * BYTES_PER_PIXEL;
+                    let row = box_start_base + y * tile_draw_data.tile_line_size;
                     for x in 0..tile_draw_data.tile_x_total {
-                        chrtiles.data[row + x * BYTES_PER_PIXEL] = egui::Color32::GRAY.r();
-                        chrtiles.data[row + x * BYTES_PER_PIXEL + 1] = egui::Color32::GRAY.g();
-                        chrtiles.data[row + x * BYTES_PER_PIXEL + 2] = egui::Color32::GRAY.b();
+                        chrtiles.data[row + x] = Color32::GRAY;
                     }
                 }
 
                 // Draw in the 8x tile in between the 2 CHR images.
-                Self::draw_a_tile(
-                    &DrawData {
-                        box_start: 0,
-                        mult_x: tile_draw_data.single_tile_multiplier_x,
-                        mult_y: tile_draw_data.single_tile_multiplier_y,
-                        tile_line_size: tile_draw_data.single_tile_x_total,
-                        tile: t,
+                Self::redraw_single_preview(
+                    chrtiles.single,
+                    t,
+                    &PalContext {
                         colors,
                         color_source,
                         selected_pal: *selected_pal,
                     },
-                    chrtiles.tile_data,
                     tile_draw_data,
-                );
-                let im = egui::ColorImage::from_rgb(
-                    [
-                        tile_draw_data.single_tile_x_total,
-                        tile_draw_data.single_tile_y_total,
-                    ],
                     chrtiles.tile_data,
                 );
-                chrtiles.single.set(im, TextureOptions::default());
             }
 
             // For each actual tile use the offsets computed above to just iterate
@@ -979,32 +926,26 @@ impl MyApp {
                 chrtiles.data,
                 tile_draw_data,
             );
+        }
 
-            let im = egui::ColorImage::from_rgb(
-                [
-                    tile_draw_data.tile_line_size,
-                    tile_draw_data.tile_height_size,
-                ],
-                chrtiles.data,
-            );
-
-            if do_left {
-                chrtiles.left.set(im, TextureOptions::default());
-            } else {
-                chrtiles.right.set(im, TextureOptions::default());
-            }
+        // Upload whichever image was last being filled in (the other one was
+        // already uploaded above when we crossed over to it).
+        let im = egui::ColorImage::new(image_size, chrtiles.data.to_vec());
+        if do_left {
+            chrtiles.left.set(im, TextureOptions::default());
+        } else {
+            chrtiles.right.set(im, TextureOptions::default());
         }
     }
 
-    fn draw_a_tile(draw_data: &DrawData, data: &mut [u8], tile_draw_data: &TileDrawData) {
+    fn draw_a_tile(draw_data: &DrawData, data: &mut [Color32], tile_draw_data: &TileDrawData) {
         for y in 0..tile_draw_data.tile_y {
             for yi in 0..draw_data.mult_y {
                 // Finally for each line adjust by the row we're on for each line.
-                let y_off = draw_data.box_start
-                    + (y * draw_data.mult_y + yi) * draw_data.tile_line_size * BYTES_PER_PIXEL;
+                let y_off =
+                    draw_data.box_start + (y * draw_data.mult_y + yi) * draw_data.tile_line_size;
                 for x in 0..tile_draw_data.tile_x {
-                    // Each x start has to be adjusted by RGB to get the final entry.
-                    let start = x * draw_data.mult_x * BYTES_PER_PIXEL;
+                    let start = x * draw_data.mult_x;
 
                     // Now lookup the tile data which is in range 0..NUM_COLORS
                     // Index that into colors to get the PAL entry.
@@ -1012,16 +953,108 @@ impl MyApp {
                     let td = draw_data.tile.data[y * tile_draw_data.tile_y + x];
                     let col = draw_data.colors[usize::from(td)];
                     let color = &draw_data.color_source[draw_data.selected_pal].colors[col];
+                    let pixel = Color32::from_rgb(color.r, color.g, color.b);
 
                     for i in 0..draw_data.mult_x {
-                        let off = i * BYTES_PER_PIXEL;
-                        data[y_off + off + start] = color.r;
-                        data[y_off + off + start + 1] = color.g;
-                        data[y_off + off + start + 2] = color.b;
+                        data[y_off + start + i] = pixel;
                     }
                 }
             }
         }
+    }
+
+    // Redraws the big single-tile preview shown between the 2 CHR images
+    // and uploads it. Shared by the full redraw path and the hover-only
+    // fast path.
+    fn redraw_single_preview(
+        single: &mut TextureHandle,
+        tile: &Tile,
+        pal: &PalContext,
+        tile_draw_data: &TileDrawData,
+        tile_data: &mut [Color32],
+    ) {
+        Self::draw_a_tile(
+            &DrawData {
+                box_start: 0,
+                mult_x: tile_draw_data.single_tile_multiplier_x,
+                mult_y: tile_draw_data.single_tile_multiplier_y,
+                tile_line_size: tile_draw_data.single_tile_x_total,
+                tile,
+                colors: pal.colors,
+                color_source: pal.color_source,
+                selected_pal: pal.selected_pal,
+            },
+            tile_data,
+            tile_draw_data,
+        );
+        let im = egui::ColorImage::new(
+            [
+                tile_draw_data.single_tile_x_total,
+                tile_draw_data.single_tile_y_total,
+            ],
+            tile_data.to_vec(),
+        );
+        single.set(im, TextureOptions::default());
+    }
+
+    // Redraws just the box for tile `orig` (with its 1px separator border,
+    // grey when `highlighted`) and uploads only that region via
+    // `set_partial`. Used when the only thing that changed since last frame
+    // is which tile is hovered, so we don't have to re-render and re-upload
+    // all 512 tiles for a single tile's border to change color.
+    fn redraw_hover_box(
+        orig: usize,
+        tile: &Tile,
+        highlighted: bool,
+        left: &mut TextureHandle,
+        right: &mut TextureHandle,
+        pal: &PalContext,
+        tile_draw_data: &TileDrawData,
+    ) {
+        let mut loc = orig;
+        let texture = if loc >= tile_draw_data.tiles_per_image {
+            loc -= tile_draw_data.tiles_per_image;
+            right
+        } else {
+            left
+        };
+
+        let fill = if highlighted {
+            Color32::GRAY
+        } else {
+            Color32::WHITE
+        };
+        let mut scratch = vec![fill; tile_draw_data.tile_x_total * tile_draw_data.tile_y_total];
+
+        Self::draw_a_tile(
+            &DrawData {
+                box_start: (tile_draw_data.top_buffer
+                    * tile_draw_data.tile_multiplier_y
+                    * tile_draw_data.tile_x_total)
+                    + (tile_draw_data.left_buffer * tile_draw_data.tile_multiplier_x),
+                mult_x: tile_draw_data.tile_multiplier_x,
+                mult_y: tile_draw_data.tile_multiplier_y,
+                tile_line_size: tile_draw_data.tile_x_total,
+                tile,
+                colors: pal.colors,
+                color_source: pal.color_source,
+                selected_pal: pal.selected_pal,
+            },
+            &mut scratch,
+            tile_draw_data,
+        );
+
+        let row = loc / tile_draw_data.tiles_per_row;
+        let col = loc % tile_draw_data.tiles_per_row;
+        let pos = [
+            col * tile_draw_data.tile_x_total,
+            row * tile_draw_data.tile_y_total,
+        ];
+        let im = egui::ColorImage::new(
+            [tile_draw_data.tile_x_total, tile_draw_data.tile_y_total],
+            scratch,
+        );
+        texture.set_partial(pos, im, TextureOptions::default());
     }
 
     // Used for initial frames to get full layout figured out.
