@@ -359,6 +359,65 @@ struct PalContext<'a> {
     selected_pal: usize,
 }
 
+// The palette panel's state, bundled up so `render_palette_panel` doesn't
+// need a long parameter list (see `main_ui`'s `let Self { .. } = self;`
+// destructure doc for why this can't just be a `&mut self` method).
+struct PalettePanel<'a> {
+    pals: &'a [TextureHandle],
+    colors_per_pal: &'a [Vec<TextureHandle>],
+    selection: &'a mut Selection,
+    palette: &'a mut Option<egui::Response>,
+    palette_hover: &'a mut String,
+    button: &'a mut Option<usize>,
+    dialog_selected: &'a mut usize,
+}
+
+// The state needed to render the left/preview/right image row, bundled up
+// for the same reason as `PalettePanel`.
+struct ImageRow<'a> {
+    left: &'a TextureHandle,
+    left_image: &'a mut Option<egui::Response>,
+    right: &'a TextureHandle,
+    right_image: &'a mut Option<egui::Response>,
+    single: &'a mut TextureHandle,
+    single_title: &'a mut String,
+    tile_draw_data: &'a mut TileDrawData,
+    tile_data: &'a mut Box<[Color32]>,
+    tiles: &'a [Vec<Tile>],
+    selection: &'a Selection,
+    color_source: &'a [Data],
+    column_size: Vec2,
+    render_stage: &'a mut Stage,
+    remeasure_generation: &'a mut usize,
+}
+
+// The state needed to redraw the CHR tile textures, bundled up for the same
+// reason as `PalettePanel`.
+struct RedrawTiles<'a> {
+    render_stage: &'a Stage,
+    tiles: &'a [Vec<Tile>],
+    selection: &'a mut Selection,
+    left: &'a mut TextureHandle,
+    right: &'a mut TextureHandle,
+    single: &'a mut TextureHandle,
+    data: &'a mut [Color32],
+    tile_data: &'a mut [Color32],
+    color_source: &'a [Data],
+    tile_draw_data: &'a TileDrawData,
+}
+
+// The state needed to interpret pointer input against the tile images,
+// bundled up for the same reason as `PalettePanel`.
+struct HoverInput<'a> {
+    left_image: &'a Option<egui::Response>,
+    right_image: &'a Option<egui::Response>,
+    palette: &'a Option<egui::Response>,
+    palette_hover: &'a mut String,
+    selection: &'a mut Selection,
+    tile_draw_data: &'a TileDrawData,
+    single_title: &'a mut String,
+}
+
 impl MyApp {
     /// Builds the app from already-loaded palette and CHR tile data (see
     /// [`load_pal`] and [`load_cart`]).
@@ -521,7 +580,6 @@ impl MyApp {
     // |   first |  8x | 2nd   |
     // |    128  | tile|  128  |
     // _________________________
-    #[allow(clippy::too_many_lines)]
     fn main_ui(&mut self, ui: &mut Ui) {
         let Self {
             tile_draw_data,
@@ -548,15 +606,97 @@ impl MyApp {
             ui.disable();
         }
 
+        Self::render_palette_panel(
+            ui,
+            &mut PalettePanel {
+                pals: &self.pals,
+                colors_per_pal: &self.colors_per_pal,
+                selection,
+                palette,
+                palette_hover,
+                button,
+                dialog_selected,
+            },
+        );
+
+        Self::render_chr_controls(
+            ui,
+            self.tiles.len(),
+            selection,
+            tile_draw_data,
+            data,
+            &mut self.render_stage,
+            &mut self.remeasure_generation,
+        );
+
+        // Fill in the selected tile data based on the selected color data
+        // from the selected PAL palette data. Only do this when we change
+        // relevant data (or this is a `PreRender` warm-up cycle -- covers
+        // both the very first frame and a magnification change, both of
+        // which reset `render_stage` to `Stage::PreRender` specifically to
+        // force this).
+        Self::redraw_tiles(&mut RedrawTiles {
+            render_stage: &self.render_stage,
+            tiles: &self.tiles,
+            selection,
+            left,
+            right,
+            single,
+            data,
+            tile_data,
+            color_source,
+            tile_draw_data,
+        });
+
+        // Every frame show the current tilesets with some separation.
+        // The above only redraws the textures on actual changes so this is
+        // fast since the GPU already has the images generally.
+        self.single_tile_column_size = Self::render_image_row(
+            ui,
+            &mut ImageRow {
+                left: &*left,
+                left_image,
+                right: &*right,
+                right_image,
+                single,
+                single_title,
+                tile_draw_data,
+                tile_data,
+                tiles: &self.tiles,
+                selection: &*selection,
+                color_source,
+                column_size: self.single_tile_column_size,
+                render_stage: &mut self.render_stage,
+                remeasure_generation: &mut self.remeasure_generation,
+            },
+        );
+
+        Self::handle_hover_input(
+            ui,
+            &mut HoverInput {
+                left_image: &*left_image,
+                right_image: &*right_image,
+                palette: &*palette,
+                palette_hover,
+                selection,
+                tile_draw_data: &*tile_draw_data,
+                single_title,
+            },
+        );
+    }
+
+    // Renders the top palette panel: the palette selector combo, the
+    // palette image, and the 4 color-selection buttons.
+    fn render_palette_panel(ui: &mut Ui, p: &mut PalettePanel) {
         // Make the top area which is the palette box and the buttons for it.
         egui::Panel::top("palette panel").show(ui, |ui| {
             // The combo box for determining which palette to display.
             egui::ComboBox::from_label(String::from("Palette"))
-                .selected_text(self.pals[selection.pal].name())
+                .selected_text(p.pals[p.selection.pal].name())
                 .show_ui(ui, |ui| {
                     ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                    for i in 0..self.pals.len() {
-                        ui.selectable_value(&mut selection.pal, i, self.pals[i].name());
+                    for i in 0..p.pals.len() {
+                        ui.selectable_value(&mut p.selection.pal, i, p.pals[i].name());
                     }
                 });
             ui.end_row();
@@ -583,12 +723,12 @@ impl MyApp {
                         // space") since the palette itself shouldn't grow with
                         // the CHR magnification -- only its centering within
                         // the now-wider/narrower panel should change.
-                        *palette = Some(
+                        *p.palette = Some(
                             ui.add(
-                                egui::Image::new(&self.pals[selection.pal])
+                                egui::Image::new(&p.pals[p.selection.pal])
                                     .fit_to_original_size(1.0),
                             )
-                            .on_hover_text_at_pointer(palette_hover.as_str()),
+                            .on_hover_text_at_pointer(p.palette_hover.as_str()),
                         );
                     });
             });
@@ -603,14 +743,14 @@ impl MyApp {
                         columns[i].vertical_centered(|ui| {
                             // 4 buttons spaced across the bottom of the palette showing each color
                             // they're selected.
-                            let text = &self.colors_per_pal[selection.pal][selection.colors[i]];
+                            let text = &p.colors_per_pal[p.selection.pal][p.selection.colors[i]];
 
                             if ui
                                 .add(egui::Button::image_and_text(text, BUTTONS[i]))
                                 .clicked()
                             {
-                                *button = Some(i);
-                                *dialog_selected = selection.colors[i];
+                                *p.button = Some(i);
+                                *p.dialog_selected = p.selection.colors[i];
                             }
                         });
                     }
@@ -619,22 +759,33 @@ impl MyApp {
             ui.end_row();
             ui.separator();
         });
+    }
 
+    // Renders the "CHR set" and "Magnification" combo boxes. Picking a
+    // magnification resizes `data` to match the new tile size and forces a
+    // full redraw plus a window resize, since the old buffer and window
+    // size no longer fit.
+    fn render_chr_controls(
+        ui: &mut Ui,
+        num_chr: usize,
+        selection: &mut Selection,
+        tile_draw_data: &mut TileDrawData,
+        data: &mut Box<[Color32]>,
+        render_stage: &mut Stage,
+        remeasure_generation: &mut usize,
+    ) {
         // A combo box to select which CHR page to display.
         egui::ComboBox::from_label("CHR set")
             .selected_text(format!("{}", selection.chr))
             .show_ui(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-                for i in 0..self.tiles.len() {
+                for i in 0..num_chr {
                     ui.selectable_value(&mut selection.chr, i, format!("{i}"));
                 }
             });
         ui.end_row();
 
-        // A combo box to pick the CHR tile magnification (1x-4x). Selecting
-        // a value resizes `data` to match the new tile size and forces a
-        // full redraw plus a window resize, since the old buffer and window
-        // size no longer fit.
+        // A combo box to pick the CHR tile magnification (1x-4x).
         egui::ComboBox::from_label("Magnification")
             .selected_text(format!("{}x", tile_draw_data.tile_multiplier_x))
             .show_ui(ui, |ui| {
@@ -644,77 +795,95 @@ impl MyApp {
                         tile_draw_data.update_multiplier(m);
                         *data = vec![Color32::WHITE; tile_draw_data.tile_layout_size]
                             .into_boxed_slice();
-                        self.render_stage = Stage::PreRender(2_isize);
-                        self.remeasure_generation += 1;
+                        *render_stage = Stage::PreRender(2_isize);
+                        *remeasure_generation += 1;
                     }
                 }
             });
         ui.end_row();
+    }
 
-        // Fill in the selected tile data based on the selected color data
-        // from the selected PAL palette data. Only do this when we change
-        // relevant data (or this is a `PreRender` warm-up cycle -- covers
-        // both the very first frame and a magnification change, both of
-        // which reset `render_stage` to `Stage::PreRender` specifically to
-        // force this).
-        let full_redraw = matches!(self.render_stage, Stage::PreRender(_))
-            || selection.last_pal != selection.pal
-            || selection.last_chr != selection.chr
-            || selection.last_colors != selection.colors;
+    // Redraws either all 512 CHR tiles (`full_redraw`, needed on a
+    // `PreRender` warm-up cycle or whenever the selected palette/CHR
+    // page/colors change) or, if only the hovered tile moved, just the (at
+    // most 2) boxes that actually changed -- avoiding re-rendering and
+    // re-uploading all 512 tiles for a hover.
+    fn redraw_tiles(r: &mut RedrawTiles) {
+        let full_redraw = matches!(r.render_stage, Stage::PreRender(_))
+            || r.selection.last_pal != r.selection.pal
+            || r.selection.last_chr != r.selection.chr
+            || r.selection.last_colors != r.selection.colors;
 
         if full_redraw {
-            selection.last_pal = selection.pal;
-            selection.last_chr = selection.chr;
-            selection.last_colors = selection.colors;
-            selection.last_hovered = selection.hovered;
+            r.selection.last_pal = r.selection.pal;
+            r.selection.last_chr = r.selection.chr;
+            r.selection.last_colors = r.selection.colors;
+            r.selection.last_hovered = r.selection.hovered;
             Self::create_chr_tiles(
                 &mut ChrTiles {
-                    tiles: &self.tiles,
-                    left,
-                    right,
-                    single,
-                    selected_pal: &selection.pal,
-                    selected_chr: &selection.chr,
-                    colors: &selection.colors,
-                    data,
-                    color_source,
-                    hovered: selection.hovered,
-                    tile_data,
+                    tiles: r.tiles,
+                    left: r.left,
+                    right: r.right,
+                    single: r.single,
+                    selected_pal: &r.selection.pal,
+                    selected_chr: &r.selection.chr,
+                    colors: &r.selection.colors,
+                    data: r.data,
+                    color_source: r.color_source,
+                    hovered: r.selection.hovered,
+                    tile_data: r.tile_data,
                 },
-                tile_draw_data,
+                r.tile_draw_data,
             );
-        } else if selection.last_hovered != selection.hovered {
-            // Only the hovered tile moved: touch just the (at most 2) boxes
-            // that actually changed instead of re-rendering and re-uploading
-            // all 512 tiles.
-            let chr = &self.tiles[selection.chr];
+        } else if r.selection.last_hovered != r.selection.hovered {
+            let chr = &r.tiles[r.selection.chr];
             let pal = PalContext {
-                colors: &selection.colors,
-                color_source,
-                selected_pal: selection.pal,
+                colors: &r.selection.colors,
+                color_source: r.color_source,
+                selected_pal: r.selection.pal,
             };
-            if let Some(prev) = selection.last_hovered {
-                Self::redraw_hover_box(prev, &chr[prev], false, left, right, &pal, tile_draw_data);
+            if let Some(prev) = r.selection.last_hovered {
+                Self::redraw_hover_box(
+                    prev,
+                    &chr[prev],
+                    false,
+                    r.left,
+                    r.right,
+                    &pal,
+                    r.tile_draw_data,
+                );
             }
-            if let Some(cur) = selection.hovered {
-                Self::redraw_hover_box(cur, &chr[cur], true, left, right, &pal, tile_draw_data);
+            if let Some(cur) = r.selection.hovered {
+                Self::redraw_hover_box(
+                    cur,
+                    &chr[cur],
+                    true,
+                    r.left,
+                    r.right,
+                    &pal,
+                    r.tile_draw_data,
+                );
             }
             // Keep the preview showing something real (tile 0) rather than
             // blank once hover is cleared, instead of leaving it stuck on
             // whatever was last hovered.
             Self::redraw_single_preview(
-                single,
-                &chr[selection.hovered.unwrap_or(0)],
+                r.single,
+                &chr[r.selection.hovered.unwrap_or(0)],
                 &pal,
-                tile_draw_data,
-                tile_data,
+                r.tile_draw_data,
+                r.tile_data,
             );
-            selection.last_hovered = selection.hovered;
+            r.selection.last_hovered = r.selection.hovered;
         }
+    }
 
-        // Every frame show the current tilesets with some separation.
-        // The above only redraws the textures on actual changes so this is
-        // fast since the GPU already has the images generally.
+    // Renders the left/right CHR images plus the centered preview column
+    // (heading, preview image, its own magnification combo, and the "Edit"
+    // button) between them. Returns the preview column's measured size for
+    // next frame's centering (see `single_tile_column_size`'s field doc).
+    fn render_image_row(ui: &mut Ui, r: &mut ImageRow) -> Vec2 {
+        let mut new_column_size = r.column_size;
         ui.horizontal(|ui| {
             ui.add_space(10.0);
 
@@ -733,9 +902,9 @@ impl MyApp {
             // fires), making click-driven state changes gated on `hovered`
             // impossible, even with the pointer squarely on the image.
             let hover = "Left button to lock\nRight button to clear";
-            *left_image = Some(
+            *r.left_image = Some(
                 ui.add(
-                    egui::Image::new(&*left)
+                    egui::Image::new(r.left)
                         .fit_to_original_size(1.0)
                         .sense(Sense::click()),
                 )
@@ -748,25 +917,28 @@ impl MyApp {
             // axes) and doesn't depend on `PreRender` measurement state
             // that's still converging -- which was clipping `right_image`.
             let middle_response = ui.allocate_ui_with_layout(
-                self.single_tile_column_size,
+                r.column_size,
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    ui.heading(&*single_title);
-                    ui.add(egui::Image::new(&*single).fit_to_original_size(1.0));
+                    ui.heading(&*r.single_title);
+                    ui.add(egui::Image::new(&*r.single).fit_to_original_size(1.0));
 
                     // The single-tile preview's own magnification, plus a not
                     // yet implemented "Edit" button.
                     ui.horizontal(|ui| {
                         egui::ComboBox::from_id_salt("single tile magnification")
-                            .selected_text(format!("{}x", tile_draw_data.single_tile_multiplier_x))
+                            .selected_text(format!(
+                                "{}x",
+                                r.tile_draw_data.single_tile_multiplier_x
+                            ))
                             .show_ui(ui, |ui| {
                                 for m in 1..=16 {
-                                    let selected = tile_draw_data.single_tile_multiplier_x == m;
+                                    let selected = r.tile_draw_data.single_tile_multiplier_x == m;
                                     if ui.selectable_label(selected, format!("{m}x")).clicked() {
-                                        tile_draw_data.update_single_tile_multiplier(m);
-                                        *tile_data = vec![
+                                        r.tile_draw_data.update_single_tile_multiplier(m);
+                                        *r.tile_data = vec![
                                             Color32::WHITE;
-                                            tile_draw_data.single_tile_layout_size
+                                            r.tile_draw_data.single_tile_layout_size
                                         ]
                                         .into_boxed_slice();
                                         // A targeted redraw of just the
@@ -775,20 +947,20 @@ impl MyApp {
                                         // redraw of all 512 CHR tiles, which
                                         // this doesn't affect.
                                         let pal = PalContext {
-                                            colors: &selection.colors,
-                                            color_source,
-                                            selected_pal: selection.pal,
+                                            colors: &r.selection.colors,
+                                            color_source: r.color_source,
+                                            selected_pal: r.selection.pal,
                                         };
-                                        let preview_idx = selection.hovered.unwrap_or(0);
+                                        let preview_idx = r.selection.hovered.unwrap_or(0);
                                         Self::redraw_single_preview(
-                                            single,
-                                            &self.tiles[selection.chr][preview_idx],
+                                            r.single,
+                                            &r.tiles[r.selection.chr][preview_idx],
                                             &pal,
-                                            tile_draw_data,
-                                            tile_data,
+                                            r.tile_draw_data,
+                                            r.tile_data,
                                         );
-                                        self.render_stage = Stage::PreRender(2_isize);
-                                        self.remeasure_generation += 1;
+                                        *r.render_stage = Stage::PreRender(2_isize);
+                                        *r.remeasure_generation += 1;
                                     }
                                 }
                             });
@@ -797,10 +969,10 @@ impl MyApp {
                     });
                 },
             );
-            self.single_tile_column_size = middle_response.response.rect.size();
-            *right_image = Some(
+            new_column_size = middle_response.response.rect.size();
+            *r.right_image = Some(
                 ui.add(
-                    egui::Image::new(&*right)
+                    egui::Image::new(r.right)
                         .fit_to_original_size(1.0)
                         .sense(Sense::click()),
                 )
@@ -808,7 +980,12 @@ impl MyApp {
             );
             ui.add_space(10.0);
         });
+        new_column_size
+    }
 
+    // Interprets pointer input against the palette/CHR images: palette
+    // hover text, hover-lock set/clear, and tracking which tile is hovered.
+    fn handle_hover_input(ui: &mut Ui, h: &mut HoverInput) {
         ui.input(|i| {
             // If we're not enabled this means the modal is up so we don't want
             // tile state changing because we overlap that portion.
@@ -818,18 +995,18 @@ impl MyApp {
 
             // Get the bounding boxes for both tile images so mapping to a tile
             // can be done below.
-            let Some(r) = left_image.as_ref() else {
+            let Some(r) = h.left_image.as_ref() else {
                 panic!("left image invalid?");
             };
             let left_rect = r.rect;
             let left_hovered = r.hovered();
-            let Some(r) = right_image.as_ref() else {
+            let Some(r) = h.right_image.as_ref() else {
                 panic!("right image invalid?");
             };
             let right_rect = r.rect;
             let right_hovered = r.hovered();
 
-            let Some(pal) = palette.as_ref() else {
+            let Some(pal) = h.palette.as_ref() else {
                 panic!("palette image invalid?");
             };
             let palette_rect = pal.rect;
@@ -837,7 +1014,7 @@ impl MyApp {
             if let Some(hp) = i.pointer.hover_pos() {
                 // Check if we're inside the palette box and if so tool tip the
                 // square we're over (hex value);
-                *palette_hover = Self::tile_num(
+                *h.palette_hover = Self::tile_num(
                     palette_rect,
                     hp,
                     nes_pal_gui::NUM_PER_LINE_F,
@@ -858,41 +1035,41 @@ impl MyApp {
 
                 // If we were locked and inside the tiles and hit the secondary
                 // button clear the lock and return (no other processing this frame).
-                if selection.hover_locked
+                if h.selection.hover_locked
                     && over_tiles
                     && i.pointer.secondary_pressed()
-                    && Self::hover_tile(tile_draw_data, left_rect, right_rect, None, hp).is_some()
+                    && Self::hover_tile(h.tile_draw_data, left_rect, right_rect, None, hp).is_some()
                 {
-                    selection.hover_locked = false;
+                    h.selection.hover_locked = false;
                     return;
                 }
 
                 // If we're hovering over something inside the tilesets
                 // and we pressed this frame lock it into place.
-                if !selection.hover_locked
+                if !h.selection.hover_locked
                     && over_tiles
                     && i.pointer.primary_pressed()
-                    && selection.hovered.is_some()
-                    && Self::hover_tile(tile_draw_data, left_rect, right_rect, None, hp).is_some()
+                    && h.selection.hovered.is_some()
+                    && Self::hover_tile(h.tile_draw_data, left_rect, right_rect, None, hp).is_some()
                 {
-                    selection.hover_locked = true;
+                    h.selection.hover_locked = true;
                 }
 
                 // If we aren't locked update the tile based on the one we're
                 // hovering over.
-                if !selection.hover_locked {
-                    selection.hovered = Self::hover_tile(
-                        tile_draw_data,
+                if !h.selection.hover_locked {
+                    h.selection.hovered = Self::hover_tile(
+                        h.tile_draw_data,
                         left_rect,
                         right_rect,
-                        selection.hovered,
+                        h.selection.hovered,
                         hp,
                     );
 
                     // If nothing is hovered, leave the title showing whatever
                     // tile was last hovered instead of blanking it out.
-                    if let Some(hp) = selection.hovered {
-                        *single_title = format!("# {hp}");
+                    if let Some(hp) = h.selection.hovered {
+                        *h.single_title = format!("# {hp}");
                     }
                 }
             }
