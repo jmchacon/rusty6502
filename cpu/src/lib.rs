@@ -1428,7 +1428,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick7 => {
                 // Compute the new PC from the 2nd vector component and the previous val read.
-                let addr = (u16::from(self.ram().borrow().read(vec + 1)) << 8) | u16::from(self.op_val());
+                let addr =
+                    (u16::from(self.ram().borrow().read(vec + 1)) << 8) | u16::from(self.op_val());
                 self.pc_mut(addr);
 
                 // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
@@ -1863,7 +1864,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick5 => {
                 // Read high byte, shift over and add op_val which has the low byte.
-                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8) | u16::from(self.op_val());
+                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
+                    | u16::from(self.op_val());
                 self.op_addr_mut(addr);
                 match mode {
                     // For a store we're done as op_addr now contains the destination address.
@@ -1921,7 +1923,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick4 => {
                 // Compute effective address and then add Y to it (possibly wrongly).
-                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8) | u16::from(self.op_val());
+                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
+                    | u16::from(self.op_val());
                 self.op_addr_mut(addr);
                 // Add Y but do it in a way which won't page wrap (if needed).
                 #[allow(clippy::cast_possible_truncation)]
@@ -2471,7 +2474,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick3 => {
                 // Read PCH and assemble the PC
-                let addr = (u16::from(self.ram().borrow().read(self.pc())) << 8) | u16::from(self.op_val());
+                let addr = (u16::from(self.ram().borrow().read(self.pc())) << 8)
+                    | u16::from(self.op_val());
                 self.op_addr_mut(addr);
                 self.pc_mut(self.op_addr());
                 Ok(OpState::Done)
@@ -2539,7 +2543,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 Ok(OpState::Processing)
             }
             Tick::Tick6 => {
-                let addr = (u16::from(self.ram().borrow().read(self.pc())) << 8) | u16::from(self.op_val());
+                let addr = (u16::from(self.ram().borrow().read(self.pc())) << 8)
+                    | u16::from(self.op_val());
                 self.pc_mut(addr);
                 Ok(OpState::Done)
             }
@@ -6703,7 +6708,8 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
             }
             Tick::Tick4 => {
                 // Read high byte, shift over and add op_val which has the low byte.
-                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8) | u16::from(self.op_val());
+                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
+                    | u16::from(self.op_val());
                 self.op_addr_mut(addr);
                 if *mode == InstructionMode::Load {
                     Ok(OpState::Processing)
