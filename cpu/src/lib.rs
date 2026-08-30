@@ -970,7 +970,7 @@ pub trait CPU<'a>: Chip + Send {
     fn reset(&mut self) -> Result<OpState>;
 
     /// ram returns a reference to the Memory implementation.
-    fn ram(&self) -> Rc<RefCell<dyn Memory>>;
+    fn ram(&self) -> &RefCell<dyn Memory>;
 
     /// pc returns the current PC value.
     fn pc(&self) -> u16;
@@ -1422,14 +1422,15 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 Ok(OpState::Processing)
             }
             Tick::Tick6 => {
-                self.op_val_mut(self.ram().borrow().read(vec));
+                let val = self.ram().borrow().read(vec);
+                self.op_val_mut(val);
                 Ok(OpState::Processing)
             }
             Tick::Tick7 => {
                 // Compute the new PC from the 2nd vector component and the previous val read.
-                self.pc_mut(
-                    (u16::from(self.ram().borrow().read(vec + 1)) << 8) | u16::from(self.op_val()),
-                );
+                let addr =
+                    (u16::from(self.ram().borrow().read(vec + 1)) << 8) | u16::from(self.op_val());
+                self.pc_mut(addr);
 
                 // If we didn't previously skip an interrupt from processing make sure we execute the first instruction of
                 // a handler before firing again.
@@ -1653,7 +1654,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                let val = self.ram().borrow().read(self.pc());
+                self.op_val_mut(val);
                 self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 self.op_addr_mut(self.op_addr() | u16::from(self.op_val()) << 8);
                 match mode {
@@ -1664,7 +1666,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick4 => {
                 // For load and RMW we read the value
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 match mode {
                     // For a load we're now done.
                     &InstructionMode::Load => Ok(OpState::Done),
@@ -1714,7 +1717,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                let val = self.ram().borrow().read(self.pc());
+                self.op_val_mut(val);
                 self.op_addr_mut(self.op_addr() | u16::from(self.op_val()) << 8);
                 // Add reg but do it in a way which won't page wrap (if needed).
                 let a = (self.op_addr() & 0xFF00)
@@ -1740,7 +1744,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                     // Advance the PC since we didn't earlier as down below CMOS
                     // can reread this value.
                     self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
-                    self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                    let val = self.ram().borrow().read(self.op_addr());
+                    self.op_val_mut(val);
                     if mode == &InstructionMode::Rmw {
                         return Ok(OpState::Processing);
                     }
@@ -1770,7 +1775,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             Tick::Tick5 => {
                 // So get the correct value in now for both loads (extra cycle for fixup)
                 // and RMW (which always gets here minimum).
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
 
                 // For a load we're done.
                 // Otherwise RMW overflow always advances.
@@ -1846,7 +1852,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick4 => {
                 // Read effective addr low byte
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 // Now increment (with ZP rollover) for next read.
                 // There is no truncation since we know this is always
                 // a u8 so within ZP.
@@ -1857,10 +1864,9 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick5 => {
                 // Read high byte, shift over and add op_val which has the low byte.
-                self.op_addr_mut(
-                    (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
-                        | u16::from(self.op_val()),
-                );
+                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
+                    | u16::from(self.op_val());
+                self.op_addr_mut(addr);
                 match mode {
                     // For a store we're done as op_addr now contains the destination address.
                     InstructionMode::Store => Ok(OpState::Done),
@@ -1868,7 +1874,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 }
             }
             Tick::Tick6 => {
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 match mode {
                     // For a load we're done as we've loaded the value.
                     InstructionMode::Load => Ok(OpState::Done),
@@ -1906,7 +1913,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick3 => {
                 // Read from the ZP addr to start building our pointer.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 // Setup op_addr for next read and handle ZP wrapping.
                 #[allow(clippy::cast_possible_truncation)]
                 let a = u16::from((Wrapping(self.op_addr() as u8) + Wrapping(1)).0);
@@ -1915,10 +1923,9 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick4 => {
                 // Compute effective address and then add Y to it (possibly wrongly).
-                self.op_addr_mut(
-                    (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
-                        | u16::from(self.op_val()),
-                );
+                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
+                    | u16::from(self.op_val());
+                self.op_addr_mut(addr);
                 // Add Y but do it in a way which won't page wrap (if needed).
                 #[allow(clippy::cast_possible_truncation)]
                 let a = (self.op_addr() & 0xFF00)
@@ -1935,7 +1942,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 // Save op_val so we know if this needed fixing.
                 let t = self.op_val();
                 // Even with an incorrect op_addr we still read from it.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
 
                 // Check old opVal to see if it's non-zero. If so it means the Y addition
                 // crosses a page boundary and we'll have to fixup.
@@ -1959,7 +1967,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick6 => {
                 // Optional (on load) in case adding Y went past a page boundary.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 match mode {
                     InstructionMode::Rmw => Ok(OpState::Processing),
                     _ => Ok(OpState::Done),
@@ -1996,7 +2005,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 }
             }
             Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 match mode {
                     // For a load we're now done since the value is loaded.
                     &InstructionMode::Load => Ok(OpState::Done),
@@ -2059,7 +2069,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick4 => {
                 // Now read from the final address.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 // If we're load we're now done.
                 if mode == &InstructionMode::Load {
                     Ok(OpState::Done)
@@ -2463,10 +2474,9 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick3 => {
                 // Read PCH and assemble the PC
-                self.op_addr_mut(
-                    (u16::from(self.ram().borrow().read(self.pc())) << 8)
-                        | u16::from(self.op_val()),
-                );
+                let addr = (u16::from(self.ram().borrow().read(self.pc())) << 8)
+                    | u16::from(self.op_val());
+                self.op_addr_mut(addr);
                 self.pc_mut(self.op_addr());
                 Ok(OpState::Done)
             }
@@ -2486,7 +2496,8 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
             }
             Tick::Tick4 => {
                 // Read the low byte of the pointer and stash it in op_val if NMOS
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 Ok(OpState::Processing)
             }
             Tick::Tick5 => {
@@ -2532,10 +2543,9 @@ trait CPUInternal<'a>: Chip + CPU<'a> {
                 Ok(OpState::Processing)
             }
             Tick::Tick6 => {
-                self.pc_mut(
-                    (u16::from(self.ram().borrow().read(self.pc())) << 8)
-                        | u16::from(self.op_val()),
-                );
+                let addr = (u16::from(self.ram().borrow().read(self.pc())) << 8)
+                    | u16::from(self.op_val());
+                self.pc_mut(addr);
                 Ok(OpState::Done)
             }
         }
@@ -5073,8 +5083,8 @@ macro_rules! cpu_impl {
         }
 
         /// ram returns a reference to the Memory implementation.
-        fn ram(&self) -> Rc<RefCell<dyn Memory>> {
-            self.ram.clone()
+        fn ram(&self) -> &RefCell<dyn Memory> {
+            &*self.ram
         }
 
         // pc returns the current PC value.
@@ -6686,7 +6696,8 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
             }
             Tick::Tick3 => {
                 // Read effective addr low byte
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 // Now increment (with ZP rollover) for next read.
                 // There is no truncation since we know this is always
                 // 0-255.
@@ -6697,10 +6708,9 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
             }
             Tick::Tick4 => {
                 // Read high byte, shift over and add op_val which has the low byte.
-                self.op_addr_mut(
-                    (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
-                        | u16::from(self.op_val()),
-                );
+                let addr = (u16::from(self.ram().borrow().read(self.op_addr())) << 8)
+                    | u16::from(self.op_val());
+                self.op_addr_mut(addr);
                 if *mode == InstructionMode::Load {
                     Ok(OpState::Processing)
                 } else {
@@ -6710,7 +6720,8 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
             Tick::Tick5 => {
                 // Addr is in op_addr. If this is a load go ahead and read it.
                 // Otherwise a store will just use it.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 Ok(OpState::Done)
             }
         }
@@ -6735,12 +6746,14 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
             Tick::Tick3 => {
                 // Read the ZP value into op_addr which we can use to mask
                 // below to test.
-                self.op_addr_mut(u16::from(self.ram().borrow().read(self.op_addr())));
+                let addr = u16::from(self.ram().borrow().read(self.op_addr()));
+                self.op_addr_mut(addr);
                 Ok(OpState::Processing)
             }
             Tick::Tick4 => {
                 // Read dest offset
-                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                let val = self.ram().borrow().read(self.pc());
+                self.op_val_mut(val);
                 self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
@@ -6822,7 +6835,8 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                let val = self.ram().borrow().read(self.pc());
+                self.op_val_mut(val);
                 self.op_addr_mut(self.op_addr() | (u16::from(self.op_val()) << 8));
                 // NOTE: Don't increment PC as we read this again in tick 4
                 Ok(OpState::Processing)
@@ -6836,7 +6850,8 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
             }
             Tick::Tick5 => {
                 // Read the high byte.
-                self.op_val_mut(self.ram().borrow().read(self.op_addr()));
+                let val = self.ram().borrow().read(self.op_addr());
+                self.op_val_mut(val);
                 self.op_addr_mut((Wrapping(self.op_addr()) + Wrapping(1)).0);
                 Ok(OpState::Processing)
             }
@@ -6863,7 +6878,8 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
                 Ok(OpState::Processing)
             }
             Tick::Tick3 => {
-                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                let val = self.ram().borrow().read(self.pc());
+                self.op_val_mut(val);
                 self.pc_mut((Wrapping(self.pc()) + Wrapping(1)).0);
                 self.op_addr_mut(self.op_addr() | (u16::from(self.op_val()) << 8));
                 Ok(OpState::Processing)
@@ -6984,7 +7000,8 @@ trait CPUCMOSInternal<'a>: CPUInternal<'a> + CPU<'a> {
             }
             Tick::Tick3 => {
                 // Read the op_val byte again and leave PC alone for when we wake up.
-                self.op_val_mut(self.ram().borrow().read(self.pc()));
+                let val = self.ram().borrow().read(self.pc());
+                self.op_val_mut(val);
                 self.state_mut(State::WaitingForInterrupt);
                 Ok(OpState::Done)
             }
@@ -7132,7 +7149,7 @@ impl Memory for RecordRAM {
     fn read(&self, addr: u16) -> u8 {
         let v = self.ram.read(addr);
         *self.last_action.borrow_mut() = (LastBusAction::Read, addr, v);
-        self.ram.read(addr)
+        v
     }
 
     fn write(&mut self, addr: u16, val: u8) {
