@@ -1721,7 +1721,7 @@ fn cpu_write(
     addr: &Location,
     val: &Val,
 ) -> Result<()> {
-    std::cell::RefCell::<_>::borrow_mut(&cpu.ram()).write(addr.addr, val.val);
+    std::cell::RefCell::<_>::borrow_mut(cpu.ram()).write(addr.addr, val.val);
     state.cpucommandresptx.send(Ok(CommandResponse::Write))?;
     Ok(())
 }
@@ -1734,7 +1734,7 @@ fn cpu_write_range(
 ) -> Result<()> {
     if let Ok(len) = valid_range(range, state.cpucommandresptx) {
         for i in 0..len {
-            std::cell::RefCell::<_>::borrow_mut(&cpu.ram()).write(range.addr + i, val.val);
+            std::cell::RefCell::<_>::borrow_mut(cpu.ram()).write(range.addr + i, val.val);
         }
         state
             .cpucommandresptx
@@ -1859,7 +1859,7 @@ fn cpu_load(
             }
             for (addr, b) in b.iter().enumerate() {
                 let a = u16::try_from(addr)?;
-                std::cell::RefCell::<_>::borrow_mut(&cpu.ram()).write(loc.addr + a, *b);
+                std::cell::RefCell::<_>::borrow_mut(cpu.ram()).write(loc.addr + a, *b);
             }
             if !state.is_init {
                 state.is_init = true;
