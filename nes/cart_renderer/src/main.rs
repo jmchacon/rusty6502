@@ -6,7 +6,7 @@
 use clap::Parser;
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use egui::{
-    Color32, FontFamily, FontId, Pos2, Rect, TextStyle, TextWrapMode, TextureHandle,
+    Color32, FontFamily, FontId, Pos2, Rect, Sense, TextStyle, TextWrapMode, TextureHandle,
     TextureOptions, Ui, Vec2,
 };
 use nes_chr::Tile;
@@ -101,6 +101,29 @@ struct MyApp {
     // The stage of rendering so we can resize correctly.
     render_stage: Stage,
 
+    // Bumped every time we start a new `Stage::PreRender` measurement cycle
+    // (other than the very first one) and folded into the scratch window's
+    // id in `pre_render`. egui remembers a resizable window's size and only
+    // ever grows it (it assumes a size change means the user dragged a
+    // resize handle), so reusing the same window id across multiplier
+    // changes made the measured size latch onto the largest one we'd ever
+    // used. A fresh id per remeasure starts that memory over.
+    remeasure_generation: usize,
+
+    // The single-tile preview column's actual rendered size (heading +
+    // preview image + magnification/Edit controls) from last frame, used to
+    // tell `allocate_ui_with_layout` its true size *before* laying it out
+    // this frame. `Align::Center` centers using the *requested* size, not
+    // the content's eventual size, so a wrong guess (like the default 0
+    // desired height) centers a zero-size placeholder and the real content
+    // then only grows away from that anchor in one direction -- e.g. only
+    // downward, landing low instead of centered. Self-measuring like this
+    // (rather than guessing from ambient available space, which circularly
+    // depends on this same column during the `PreRender` measurement dance)
+    // converges in a frame and matches how every other size in this app is
+    // derived from content rather than the other way around.
+    single_tile_column_size: Vec2,
+
     // The various items defining sizes for all the tiles, etc.
     tile_draw_data: TileDrawData,
 
@@ -149,9 +172,6 @@ struct MyApp {
 
     // The original color data parsed from each PAL file.
     color_source: Vec<Data>,
-
-    // Number of frames we've done.
-    frame_count: usize,
 
     // The tile location for the large middle tile from the tileset.
     single_title: String,
@@ -304,7 +324,7 @@ impl TileDrawData {
         s
     }
 
-    fn _update_multiplier(&mut self, tile_multiplier: usize) {
+    fn update_multiplier(&mut self, tile_multiplier: usize) {
         self.tile_multiplier_x = tile_multiplier;
         self.tile_multiplier_y = tile_multiplier;
 
@@ -318,7 +338,7 @@ impl TileDrawData {
         self.tile_layout_size = self.tile_line_size * self.tile_height_size;
     }
 
-    fn _update_single_tile_multiplier(&mut self, single_tile_multiplier: usize) {
+    fn update_single_tile_multiplier(&mut self, single_tile_multiplier: usize) {
         self.single_tile_multiplier_x = single_tile_multiplier;
         self.single_tile_multiplier_y = single_tile_multiplier;
 
@@ -442,6 +462,8 @@ impl MyApp {
 
         Self {
             render_stage: Stage::PreRender(2_isize),
+            remeasure_generation: 0,
+            single_tile_column_size: Vec2::ZERO,
             tile_draw_data: tdd,
             tiles,
             palette: None,
@@ -458,38 +480,9 @@ impl MyApp {
             data,
             tile_data,
             color_source: datas,
-            frame_count: 0,
             single_title: String::with_capacity(16),
             palette_hover: String::with_capacity(4),
         }
-    }
-
-    // `TileDrawData::_update_multiplier` only recomputes layout sizes; `data`
-    // stays sized for the old layout, so a redraw afterward would write past
-    // the end of the buffer. This keeps the two in sync and forces a full
-    // redraw plus a window resize to the new tile dimensions.
-    //
-    // Both this and `_update_multiplier` are currently unused (no UI control
-    // changes the multiplier yet), hence the leading underscores throughout;
-    // the `used_underscore_items` allow just reflects that same status.
-    #[allow(clippy::used_underscore_items)]
-    fn _resize_tile_multiplier(&mut self, tile_multiplier: usize) {
-        self.tile_draw_data._update_multiplier(tile_multiplier);
-        self.data = vec![Color32::WHITE; self.tile_draw_data.tile_layout_size].into_boxed_slice();
-        self.frame_count = 0;
-        self.render_stage = Stage::PreRender(2_isize);
-    }
-
-    // Same as `_resize_tile_multiplier` but for the single-tile preview's
-    // magnification and its `tile_data` buffer.
-    #[allow(clippy::used_underscore_items)]
-    fn _resize_single_tile_multiplier(&mut self, single_tile_multiplier: usize) {
-        self.tile_draw_data
-            ._update_single_tile_multiplier(single_tile_multiplier);
-        self.tile_data =
-            vec![Color32::WHITE; self.tile_draw_data.single_tile_layout_size].into_boxed_slice();
-        self.frame_count = 0;
-        self.render_stage = Stage::PreRender(2_isize);
     }
 
     // `color_picker` is the modal dialog for chosing a new color when one of
@@ -573,12 +566,10 @@ impl MyApp {
             data,
             tile_data,
             color_source,
-            frame_count,
             single_title,
             palette_hover,
             ..
         } = self;
-        *frame_count += 1;
 
         // If a color picker button has been pressed the modal dialog is up
         // so this window is inactive.
@@ -617,9 +608,16 @@ impl MyApp {
                     .multiply_with_opacity(0.45)
                     .show(ui, |ui| {
                         // Capture the response so we can use it below for hover.
+                        // Fixed at native size (not the default "fill available
+                        // space") since the palette itself shouldn't grow with
+                        // the CHR magnification -- only its centering within
+                        // the now-wider/narrower panel should change.
                         *palette = Some(
-                            ui.image(&self.pals[selection.pal])
-                                .on_hover_text_at_pointer(palette_hover.as_str()),
+                            ui.add(
+                                egui::Image::new(&self.pals[selection.pal])
+                                    .fit_to_original_size(1.0),
+                            )
+                            .on_hover_text_at_pointer(palette_hover.as_str()),
                         );
                     });
             });
@@ -652,24 +650,43 @@ impl MyApp {
         });
 
         // A combo box to select which CHR page to display.
-        // Also indicate how much we've magnified (not currently changeable except by compilation)
-        egui::ComboBox::from_label(format!(
-            "CHR set ({}x magnified)",
-            tile_draw_data.tile_multiplier_x
-        ))
-        .selected_text(format!("{}", selection.chr))
-        .show_ui(ui, |ui| {
-            ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
-            for i in 0..self.tiles.len() {
-                ui.selectable_value(&mut selection.chr, i, format!("{i}"));
-            }
-        });
+        egui::ComboBox::from_label("CHR set")
+            .selected_text(format!("{}", selection.chr))
+            .show_ui(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+                for i in 0..self.tiles.len() {
+                    ui.selectable_value(&mut selection.chr, i, format!("{i}"));
+                }
+            });
+        ui.end_row();
+
+        // A combo box to pick the CHR tile magnification (1x-4x). Selecting
+        // a value resizes `data` to match the new tile size and forces a
+        // full redraw plus a window resize, since the old buffer and window
+        // size no longer fit.
+        egui::ComboBox::from_label("Magnification")
+            .selected_text(format!("{}x", tile_draw_data.tile_multiplier_x))
+            .show_ui(ui, |ui| {
+                for m in 1..=4 {
+                    let selected = tile_draw_data.tile_multiplier_x == m;
+                    if ui.selectable_label(selected, format!("{m}x")).clicked() {
+                        tile_draw_data.update_multiplier(m);
+                        *data = vec![Color32::WHITE; tile_draw_data.tile_layout_size]
+                            .into_boxed_slice();
+                        self.render_stage = Stage::PreRender(2_isize);
+                        self.remeasure_generation += 1;
+                    }
+                }
+            });
         ui.end_row();
 
         // Fill in the selected tile data based on the selected color data
         // from the selected PAL palette data. Only do this when we change
-        // relevant data (or this is the first frame).
-        let full_redraw = *frame_count == 1
+        // relevant data (or this is a `PreRender` warm-up cycle -- covers
+        // both the very first frame and a magnification change, both of
+        // which reset `render_stage` to `Stage::PreRender` specifically to
+        // force this).
+        let full_redraw = matches!(self.render_stage, Stage::PreRender(_))
             || selection.last_pal != selection.pal
             || selection.last_chr != selection.chr
             || selection.last_colors != selection.colors;
@@ -710,8 +727,17 @@ impl MyApp {
             }
             if let Some(cur) = selection.hovered {
                 Self::redraw_hover_box(cur, &chr[cur], true, left, right, &pal, tile_draw_data);
-                Self::redraw_single_preview(single, &chr[cur], &pal, tile_draw_data, tile_data);
             }
+            // Keep the preview showing something real (tile 0) rather than
+            // blank once hover is cleared, instead of leaving it stuck on
+            // whatever was last hovered.
+            Self::redraw_single_preview(
+                single,
+                &chr[selection.hovered.unwrap_or(0)],
+                &pal,
+                tile_draw_data,
+                tile_data,
+            );
             selection.last_hovered = selection.hovered;
         }
 
@@ -721,17 +747,94 @@ impl MyApp {
         ui.horizontal(|ui| {
             ui.add_space(10.0);
 
+            // All 4 images in this row (left/right CHR halves, the preview
+            // below, and the palette above) are pinned to native size rather
+            // than the default "fill available space" sizing, since their
+            // pixel dimensions already encode the exact intended display
+            // size (via the multiplier).
+            // `Sense::click()` (rather than `Image`'s default hover-only
+            // sense) so these register as "the widget being interacted
+            // with" on click. Without it, egui's `Response::hovered()`
+            // unconditionally goes false the instant *any* pointer button
+            // is down for a hover-only widget (see context.rs: "We don't
+            // hover widgets while interacting with *other* widgets" --
+            // which a hover-only widget can never be, so the check always
+            // fires), making click-driven state changes gated on `hovered`
+            // impossible, even with the pointer squarely on the image.
             let hover = "Left button to lock\nRight button to clear";
-            *left_image = Some(ui.image(&*left).on_hover_text(hover));
-            // Space so they fill the space equally.
-            // Determined emperically as a function of the multiplying size.
-            ui.add_space(tile_draw_data.single_tile_image_buffer);
-            ui.vertical(|ui| {
-                ui.heading(&*single_title);
-                ui.image(&*single);
-            });
-            ui.add_space(tile_draw_data.single_tile_image_buffer);
-            *right_image = Some(ui.image(&*right).on_hover_text(hover));
+            *left_image = Some(
+                ui.add(
+                    egui::Image::new(&*left)
+                        .fit_to_original_size(1.0)
+                        .sense(Sense::click()),
+                )
+                .on_hover_text(hover),
+            );
+
+            // The preview column's size is self-measured (see the
+            // `single_tile_column_size` field doc) rather than guessed from
+            // ambient available space, so it's centered correctly (both
+            // axes) and doesn't depend on `PreRender` measurement state
+            // that's still converging -- which was clipping `right_image`.
+            let middle_response = ui.allocate_ui_with_layout(
+                self.single_tile_column_size,
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.heading(&*single_title);
+                    ui.add(egui::Image::new(&*single).fit_to_original_size(1.0));
+
+                    // The single-tile preview's own magnification, plus a not
+                    // yet implemented "Edit" button.
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("single tile magnification")
+                            .selected_text(format!("{}x", tile_draw_data.single_tile_multiplier_x))
+                            .show_ui(ui, |ui| {
+                                for m in 1..=16 {
+                                    let selected = tile_draw_data.single_tile_multiplier_x == m;
+                                    if ui.selectable_label(selected, format!("{m}x")).clicked() {
+                                        tile_draw_data.update_single_tile_multiplier(m);
+                                        *tile_data = vec![
+                                            Color32::WHITE;
+                                            tile_draw_data.single_tile_layout_size
+                                        ]
+                                        .into_boxed_slice();
+                                        // A targeted redraw of just the
+                                        // preview (tile 0 if nothing's
+                                        // hovered) instead of forcing a full
+                                        // redraw of all 512 CHR tiles, which
+                                        // this doesn't affect.
+                                        let pal = PalContext {
+                                            colors: &selection.colors,
+                                            color_source,
+                                            selected_pal: selection.pal,
+                                        };
+                                        let preview_idx = selection.hovered.unwrap_or(0);
+                                        Self::redraw_single_preview(
+                                            single,
+                                            &self.tiles[selection.chr][preview_idx],
+                                            &pal,
+                                            tile_draw_data,
+                                            tile_data,
+                                        );
+                                        self.render_stage = Stage::PreRender(2_isize);
+                                        self.remeasure_generation += 1;
+                                    }
+                                }
+                            });
+                        // Not wired up to anything yet.
+                        let _ = ui.button("Edit");
+                    });
+                },
+            );
+            self.single_tile_column_size = middle_response.response.rect.size();
+            *right_image = Some(
+                ui.add(
+                    egui::Image::new(&*right)
+                        .fit_to_original_size(1.0)
+                        .sense(Sense::click()),
+                )
+                .on_hover_text(hover),
+            );
             ui.add_space(10.0);
         });
 
@@ -748,10 +851,12 @@ impl MyApp {
                 panic!("left image invalid?");
             };
             let left_rect = r.rect;
+            let left_hovered = r.hovered();
             let Some(r) = right_image.as_ref() else {
                 panic!("right image invalid?");
             };
             let right_rect = r.rect;
+            let right_hovered = r.hovered();
 
             let Some(pal) = palette.as_ref() else {
                 panic!("palette image invalid?");
@@ -769,9 +874,21 @@ impl MyApp {
                 )
                 .map_or_else(String::new, |t| format!("{t:#04X}"));
 
+                // `hover_pos` is a raw screen position, so it can fall inside
+                // the tile rects even when something else -- e.g. an open
+                // combo box popup -- is drawn on top and actually receiving
+                // the click. `Response::hovered` is occlusion-aware (it's
+                // what already keeps the `on_hover_text` tooltips below from
+                // showing through an overlay), so gate the two click-driven
+                // state changes (lock/unlock) on it -- but not plain hover
+                // tracking below, which should keep working continuously
+                // regardless of what else is on screen.
+                let over_tiles = left_hovered || right_hovered;
+
                 // If we were locked and inside the tiles and hit the secondary
                 // button clear the lock and return (no other processing this frame).
                 if selection.hover_locked
+                    && over_tiles
                     && i.pointer.secondary_pressed()
                     && Self::hover_tile(tile_draw_data, left_rect, right_rect, None, hp).is_some()
                 {
@@ -782,6 +899,7 @@ impl MyApp {
                 // If we're hovering over something inside the tilesets
                 // and we pressed this frame lock it into place.
                 if !selection.hover_locked
+                    && over_tiles
                     && i.pointer.primary_pressed()
                     && selection.hovered.is_some()
                     && Self::hover_tile(tile_draw_data, left_rect, right_rect, None, hp).is_some()
@@ -931,19 +1049,6 @@ impl MyApp {
                         chrtiles.data[row + x] = Color32::GRAY;
                     }
                 }
-
-                // Draw in the 8x tile in between the 2 CHR images.
-                Self::redraw_single_preview(
-                    chrtiles.single,
-                    t,
-                    &PalContext {
-                        colors,
-                        color_source,
-                        selected_pal: *selected_pal,
-                    },
-                    tile_draw_data,
-                    chrtiles.tile_data,
-                );
             }
 
             // For each actual tile use the offsets computed above to just iterate
@@ -972,6 +1077,24 @@ impl MyApp {
         } else {
             chrtiles.right.set(im, TextureOptions::default());
         }
+
+        // Keep the preview showing something real (tile 0) rather than
+        // blank when nothing is hovered, so its size always matches the
+        // current single-tile multiplier instead of only updating -- and
+        // only then getting its first real content -- once the user hovers
+        // a tile for the first time.
+        let preview_idx = chrtiles.hovered.unwrap_or(0);
+        Self::redraw_single_preview(
+            chrtiles.single,
+            &tiles[*selected_chr][preview_idx],
+            &PalContext {
+                colors,
+                color_source,
+                selected_pal: *selected_pal,
+            },
+            tile_draw_data,
+            chrtiles.tile_data,
+        );
     }
 
     fn draw_a_tile(draw_data: &DrawData, data: &mut [Color32], tile_draw_data: &TileDrawData) {
@@ -1095,7 +1218,11 @@ impl MyApp {
 
     // Used for initial frames to get full layout figured out.
     fn pre_render(&mut self, ctx: &eframe::egui::Context) {
-        egui::Window::new("pre_render")
+        // See the `remeasure_generation` field doc: a fresh id per remeasure
+        // keeps egui from latching this scratch window onto the largest
+        // size it's ever measured.
+        let id = format!("pre_render_{}", self.remeasure_generation);
+        egui::Window::new(id)
             .title_bar(false)
             .fixed_pos((0.0, 0.0))
             .show(ctx, |ui| {
