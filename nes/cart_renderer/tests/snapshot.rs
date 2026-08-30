@@ -67,6 +67,15 @@ fn preview_magnification_16x() -> Result<()> {
     // selected value ("8x") is unique enough to find it by instead.
     harness.get_by_value("8x").click();
     harness.run();
+
+    // With 16 entries the popup is scrollable and "16x" starts out of
+    // view (there's a `ScrollBar` node in the tree once it's open) --
+    // clicking it directly just clicks whatever *is* visible underneath
+    // instead, silently leaving the selection at "8x". Scroll it into
+    // view first, then re-query: `run()` rebuilds the tree, so a `Node`
+    // borrowed before it can't be reused after.
+    harness.get_by_label("16x").scroll_to_me();
+    harness.run();
     harness.get_by_label("16x").click();
     harness.run();
     move_pointer_away(&mut harness);
