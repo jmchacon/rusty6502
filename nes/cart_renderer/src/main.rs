@@ -456,6 +456,34 @@ impl MyApp {
         }
     }
 
+    // `TileDrawData::_update_multiplier` only recomputes layout sizes; `data`
+    // stays sized for the old layout, so a redraw afterward would write past
+    // the end of the buffer. This keeps the two in sync and forces a full
+    // redraw plus a window resize to the new tile dimensions.
+    //
+    // Both this and `_update_multiplier` are currently unused (no UI control
+    // changes the multiplier yet), hence the leading underscores throughout;
+    // the `used_underscore_items` allow just reflects that same status.
+    #[allow(clippy::used_underscore_items)]
+    fn _resize_tile_multiplier(&mut self, tile_multiplier: usize) {
+        self.tile_draw_data._update_multiplier(tile_multiplier);
+        self.data = vec![Color32::WHITE; self.tile_draw_data.tile_layout_size].into_boxed_slice();
+        self.frame_count = 0;
+        self.render_stage = Stage::PreRender(2_isize);
+    }
+
+    // Same as `_resize_tile_multiplier` but for the single-tile preview's
+    // magnification and its `tile_data` buffer.
+    #[allow(clippy::used_underscore_items)]
+    fn _resize_single_tile_multiplier(&mut self, single_tile_multiplier: usize) {
+        self.tile_draw_data
+            ._update_single_tile_multiplier(single_tile_multiplier);
+        self.tile_data =
+            vec![Color32::WHITE; self.tile_draw_data.single_tile_layout_size].into_boxed_slice();
+        self.frame_count = 0;
+        self.render_stage = Stage::PreRender(2_isize);
+    }
+
     // `color_picker` is the modal dialog for chosing a new color when one of
     // the color buttons is selected.
     fn color_picker(&mut self, bidx: usize, ui: &mut Ui) {
