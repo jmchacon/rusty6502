@@ -7132,7 +7132,7 @@ impl Memory for RecordRAM {
     fn read(&self, addr: u16) -> u8 {
         let v = self.ram.read(addr);
         *self.last_action.borrow_mut() = (LastBusAction::Read, addr, v);
-        self.ram.read(addr)
+        v
     }
 
     fn write(&mut self, addr: u16, val: u8) {
