@@ -1331,13 +1331,17 @@ fn read_tests() -> Result<()> {
         panic!("Didn't get an error for invalid range read (len) command. Got {resp:?}");
     }
 
-    // Send a start+len > MAX_SIZE
+    // A start+len past MAX_SIZE wraps around the top of RAM like the hardware.
     inputtx.send("RR 0x0400 0xFFFF".into())?;
     let resp = outputrx.recv()?;
-    if let Output::Error(s) = resp {
-        println!("Got expected error: {s} from invalid range read (total) command");
+    if let Output::RAM(_) = resp {
     } else {
-        panic!("Didn't get an error for invalid range read (total) command. Got {resp:?}");
+        panic!("Didn't get ram for wrapping range read command. Got {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after wrapping range read? - {resp:?}");
     }
 
     // Read 0x0400 for len 1 and validate it
@@ -1466,13 +1470,47 @@ fn write_tests() -> Result<()> {
         panic!("Didn't get an error for invalid range write (parse val) command. Got {resp:?}");
     }
 
-    // Send a start+len > MAX_SIZE
+    // A start+len past MAX_SIZE wraps around the top of RAM like the
+    // hardware. Verify the wrapped write landed at both ends.
     inputtx.send("WR 0x0400 0xFFFF 0xEA".into())?;
     let resp = outputrx.recv()?;
-    if let Output::Error(s) = resp {
-        println!("Got expected error: {s} from invalid range write (total) command");
+    if let Output::Prompt(_) = resp {
     } else {
-        panic!("Didn't get an error for invalid range write (total) command. Got {resp:?}");
+        panic!("Didn't get prompt after wrapping range write? - {resp:?}");
+    }
+    inputtx.send("R 0xFFFF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let exp = "FFFF  EA";
+        assert!(
+            s == exp,
+            "Read return didn't match - Got '{s}' and expected '{exp}'"
+        );
+    } else {
+        panic!("Didn't get prompt after read? - {resp:?}");
+    }
+    inputtx.send("R 0x03FE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let exp = "03FE  EA";
+        assert!(
+            s == exp,
+            "Read return didn't match - Got '{s}' and expected '{exp}'"
+        );
+    } else {
+        panic!("Didn't get prompt after read? - {resp:?}");
+    }
+    // One past the wrapped end must be untouched (0xFF padding in the image).
+    inputtx.send("R 0x03FF".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        let exp = "03FF  FF";
+        assert!(
+            s == exp,
+            "Read return didn't match - Got '{s}' and expected '{exp}'"
+        );
+    } else {
+        panic!("Didn't get prompt after read? - {resp:?}");
     }
 
     // Write 0x0400 for len 2 and validate it
@@ -1609,13 +1647,13 @@ fn disassemble_tests() -> Result<()> {
         panic!("Didn't get an error for invalid disassemble range (count) command. Got {resp:?}");
     }
 
-    // Send an invalid range
+    // A start+len past MAX_SIZE wraps around the top of RAM like the hardware.
     inputtx.send("DR 0x0400 0xFFFF".into())?;
     let resp = outputrx.recv()?;
-    if let Output::Error(s) = resp {
-        println!("Got expected error: {s} from invalid disassemble range (range) command");
+    if let Output::Prompt(Some(s)) = resp {
+        assert!(!s.is_empty(), "Empty disassembly from wrapping DR?");
     } else {
-        panic!("Didn't get an error for invalid disassemble range (range) command. Got {resp:?}");
+        panic!("Didn't get disassembly for wrapping DR? - {resp:?}");
     }
 
     // Send length 2 over and validate
@@ -2046,6 +2084,224 @@ fn step_tests() -> Result<()> {
 
             _ => panic!("Unknown response after C, B, STOP - {resp:?}"),
         }
+    }
+    Ok(())
+}
+
+// A STOP while sitting at the prompt (never having run) used to queue an
+// unsolicited Stop response which desynced the next synchronous command.
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn stop_at_idle_test() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
+    inputtx.send("STOP".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after idle STOP? - {resp:?}");
+    }
+
+    // The next command must still line up with its own response.
+    inputtx.send("CPU".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(_, _) = resp {
+    } else {
+        panic!("Didn't get CPU state after idle STOP then CPU? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after CPU? - {resp:?}");
+    }
+    Ok(())
+}
+
+// A STOP during RUN used to stop draining the streamed responses which left
+// the final Stop response (and any queued Run ones) to desync the next
+// synchronous command.
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn stop_during_run_test() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
+    inputtx.send("C".into())?;
+
+    // Wait until we've seen a couple Run responses then ask for a STOP.
+    let mut run = 0;
+    loop {
+        let resp = outputrx.recv()?;
+        match resp {
+            Output::Prompt(_) => {}
+            Output::CPU(ref st, _) => match st.reason {
+                StopReason::Run => {
+                    run += 1;
+                    if run == 2 {
+                        inputtx.send("STOP".into())?;
+                    }
+                }
+                StopReason::Stop => break,
+                _ => panic!("Unexpected stop reason during run - {resp:?}"),
+            },
+            _ => panic!("Unexpected output during run - {resp:?}"),
+        }
+    }
+    // The stop gets a final prompt.
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after STOP? - {resp:?}");
+    }
+
+    // The next command must still line up with its own response.
+    inputtx.send("CPU".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(_, _) = resp {
+    } else {
+        panic!("Didn't get CPU state after STOP then CPU? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after CPU? - {resp:?}");
+    }
+    Ok(())
+}
+
+// Ranges touching the top of memory used to overflow u16 (panic in debug
+// builds) and a zero length underflowed inside valid_range. Ranges going
+// past the top wrap around like the hardware address bus.
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn range_edge_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
+    // Last byte of RAM is a valid single byte range.
+    inputtx.send("RR 0xFFFF 1".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::RAM(_) = resp {
+    } else {
+        panic!("Didn't get RAM for read of last byte? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after RR? - {resp:?}");
+    }
+
+    // Reading past the end wraps to 0x0000 like the hardware. Put a known
+    // value there first so the wrap is visible.
+    inputtx.send("W 0x0000 0x12".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+    inputtx.send("RR 0xFFFF 2".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::RAM(r) = resp {
+        assert!(
+            r[0xFFFF] == 0x37,
+            "Wrapped RR didn't read 0xFFFF - expected 0x37 got {:02X}",
+            r[0xFFFF]
+        );
+        assert!(
+            r[0x0000] == 0x12,
+            "Wrapped RR didn't wrap to 0x0000 - expected 0x12 got {:02X}",
+            r[0x0000]
+        );
+    } else {
+        panic!("Didn't get RAM for wrapping RR? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after wrapping RR? - {resp:?}");
+    }
+
+    // A zero length is invalid.
+    inputtx.send("RR 0x100 0".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from zero len RR");
+    } else {
+        panic!("Didn't get an error for zero len RR. Got {resp:?}");
+    }
+
+    // Disassembling a range ending exactly at the top of memory is valid.
+    inputtx.send("DR 0xFF00 0x100".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        assert!(!s.is_empty(), "Empty disassembly from DR at top of RAM?");
+    } else {
+        panic!("Didn't get disassembly for DR at top of RAM? - {resp:?}");
+    }
+
+    // Disassembling across the top of memory wraps to 0x0000.
+    inputtx.send("DR 0xFFF0 0x20".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(Some(s)) = resp {
+        assert!(
+            s.contains("\n00"),
+            "Wrapping DR didn't continue at 0x0000 - {s}"
+        );
+    } else {
+        panic!("Didn't get disassembly for wrapping DR? - {resp:?}");
+    }
+    Ok(())
+}
+
+// A STEPN repeat larger than the count used to underflow (panic in debug
+// builds). Now it's capped at the count.
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn stepn_capture_larger_than_reps_test() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
+    inputtx.send("STEPN 5 10 FALSE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::StepN(states) = resp {
+        assert!(
+            states.len() == 5,
+            "Expected 5 states from capped STEPN and got {}",
+            states.len()
+        );
+    } else {
+        panic!("Didn't get StepN output from capped STEPN? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after STEPN? - {resp:?}");
+    }
+    Ok(())
+}
+
+// RUN's RAM snapshot argument is case insensitive like S and T.
+#[test]
+#[timeout(60000)]
+fn run_lowercase_true_test() -> Result<()> {
+    let (cpucommandtx, cpucommandrx) = channel::<Command>();
+    let (_cpucommandresptx, cpucommandresprx) = channel::<Result<CommandResponse>>();
+    let (outputtx, _outputrx) = channel::<Output>();
+
+    let resp = match_cmd(
+        "RUN",
+        &["run", "true"],
+        &outputtx,
+        &cpucommandtx,
+        &cpucommandresprx,
+    )?;
+    assert!(resp.running == 1, "RUN true didn't enter running state");
+    let cmd = cpucommandrx.recv()?;
+    if let Command::Run(ram) = cmd {
+        assert!(ram, "lowercase 'run true' didn't request a RAM snapshot");
+    } else {
+        panic!("Didn't get Run command - {cmd:?}");
     }
     Ok(())
 }

@@ -66,45 +66,67 @@ pub fn input_loop(
 
     let mut res = MatchCmdResult::default();
     loop {
-        match inputtx.try_recv() {
-            Ok(line) => {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() > 4 {
-                    outputtx.send(Output::Error(format!("ERROR: Invalid command - {line}")))?;
-                    continue;
-                }
-                if !parts.is_empty() {
-                    let cmd = parts[0].to_uppercase();
+        // When idle we can block waiting for input. While running we have to
+        // poll instead so the streamed CPU responses get drained below while
+        // still watching for new input (STOP etc).
+        let line = if res.running > 0 {
+            match inputtx.try_recv() {
+                Ok(line) => Some(line),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => return Err(eyre!("stdin died?")),
+            }
+        } else {
+            match inputtx.recv() {
+                Ok(line) => Some(line),
+                Err(_) => return Err(eyre!("stdin died?")),
+            }
+        };
 
-                    // If we're running prevent commands as the other thread is filling the response
-                    // channel which means everything below which assumes synchronous command+response
-                    // will likely fail and panic. Instead just reject outright.
-                    if res.running > 0 {
-                        match cmd.as_str() {
-                            "H" | "HELP" | "QUIT" | "Q" | "RUN" | "C" | "STOP" => {}
-                            _ => {
-                                outputtx.send(Output::Error(format!(
-                                    "ERROR: Invalid command during RUN - {line}"
-                                )))?;
-                                continue;
-                            }
+        if let Some(line) = line {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() > 4 {
+                outputtx.send(Output::Error(format!("ERROR: Invalid command - {line}")))?;
+                continue;
+            }
+            if !parts.is_empty() {
+                let cmd = parts[0].to_uppercase();
+
+                // If we're running prevent commands as the other thread is filling the response
+                // channel which means everything below which assumes synchronous command+response
+                // will likely fail and panic. Instead just reject outright.
+                if res.running > 0 {
+                    match cmd.as_str() {
+                        "H" | "HELP" | "QUIT" | "Q" | "STOP" => {}
+                        _ => {
+                            outputtx.send(Output::Error(format!(
+                                "ERROR: Invalid command during RUN - {line}"
+                            )))?;
+                            continue;
                         }
                     }
-                    res = match_cmd(&cmd, &parts, outputtx, cpucommandtx, cpucommandresprx)?;
-
-                    // The user said to QUIT.
-                    if res.exit {
-                        return Ok(());
-                    }
-                    // If this was an error we just loop back around now.
-                    if res.cont {
-                        continue;
-                    }
                 }
-                outputtx.send(Output::Prompt(res.pre.clone()))?;
+                let prev_running = res.running;
+                res = match_cmd(&cmd, &parts, outputtx, cpucommandtx, cpucommandresprx)?;
+
+                // Only RUN and RESET own the running state. Anything else
+                // processed while running (notably STOP and HELP) must keep
+                // draining the streamed responses until the CPU reports it
+                // stopped or the response channel desyncs.
+                match cmd.as_str() {
+                    "RUN" | "C" | "RESET" => {}
+                    _ => res.running = prev_running,
+                }
+
+                // The user said to QUIT.
+                if res.exit {
+                    return Ok(());
+                }
+                // If this was an error we just loop back around now.
+                if res.cont {
+                    continue;
+                }
             }
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => return Err(eyre!("stdin died?")),
+            outputtx.send(Output::Prompt(res.pre.clone()))?;
         }
 
         // Once it's running we have to juggle stdin vs possibly brk/watch happening.
@@ -220,8 +242,8 @@ fn help_cmd() -> String {
 HELP | H - This usage information
 RUN | C [true] - run continually until either a breakpoint/watchpoint is hit or a STOP is sent.
                  If the bool is set to true then a RAM snapshot will be taken on each instruction.
-STOP - cause the CPU to stop at the current instrunction from continual running
-BP <addr> - Break when PC is equal to the addr
+STOP - cause the CPU to stop at the current instruction from continual running
+B <addr> - Break when PC is equal to the addr
 BPL - List all breakpoints
 DB <num> - Delete the given breakpoint
 S [true] - Step instruction (2-8 clock cycles)
@@ -233,15 +255,18 @@ T [true] - Tick instruction (one clock cycle)
            If the bool is set to true then a RAM snapshot (expensive) will be taken on each tick.
 R <addr> - Read the given memory location and return its value
 RR <addr> <len> - Read starting at the given location for len times.
+                  The range wraps around the top of RAM like the hardware would.
                   NOTE: When printing this will show a memory dump but the only
                         defined values are from the range given
-W <addr> <len> - Write the value to the addr given
-WR <addr> <len> <val> - Write the value to the range of addresses given
+W <addr> <val> - Write the value to the addr given
+WR <addr> <len> <val> - Write the value to the range of addresses given.
+                        The range wraps around the top of RAM like the hardware would.
 CPU - Dump the current CPU state
 RAM - Dump the current RAM contents
 D <addr> - Disassemble at the given address
 DR <addr> <len> - Disassemble starting at the given address for until the address given
-                  by addr+len is hit
+                  by addr+len is hit. The range wraps around the top of RAM like the
+                  hardware would.
 WP <addr> - Set a watchpoint on the given memory location
 WPL - List all watchpoints
 DW <num> - Delete the given watchpoint
@@ -266,7 +291,7 @@ fn run_cmd(
         )))?;
         Ok((0, true))
     } else {
-        let ram = parts.len() == 2 && parts[1] == "TRUE";
+        let ram = parts.len() == 2 && parts[1].to_uppercase() == "TRUE";
         cpucommandtx.send(Command::Run(ram))?;
         Ok((1, false))
     }
@@ -288,7 +313,6 @@ fn b_cmd(
         Ok(addr) => {
             cpucommandtx.send(Command::Break(Location { addr }))?;
             let r = cpucommandresprx.recv()?;
-            println!("Got resp: {r:?}");
             match r {
                 Ok(CommandResponse::Break) => {}
                 Err(e) => {
@@ -428,6 +452,9 @@ fn stepn_cmd(
         }
     };
     let ram = parts[3].to_uppercase() == "TRUE";
+    // Can't return more states than steps executed and CPUState is large so
+    // don't let a typo'd repeat value allocate gigabytes either.
+    let capture = capture.min(reps);
     cpucommandtx.send(Command::StepN(StepN {
         reps,
         capture: vec![CPUState::default(); capture],
@@ -570,7 +597,9 @@ fn rr_cmd(
             // everything will collapse around the nuls.
             let mut r = Box::new([0; MAX_SIZE]);
             for (pos, v) in l.iter().enumerate() {
-                r[addr as usize + pos] = v.val;
+                // The range read wraps at the top of RAM so place the
+                // values at their wrapped addresses.
+                r[usize::from(addr.wrapping_add(u16::try_from(pos)?))] = v.val;
             }
             outputtx.send(Output::RAM(r))?;
             Ok(false)
@@ -1074,8 +1103,10 @@ fn process_running(
                 _ => Err(eyre!("Invalid return from Run: {ret:?}")),
             },
             Err(e) => {
+                // Errors while running are terminal on the CPU side (it has
+                // stopped and will send nothing further) so stop draining.
                 outputtx.send(Output::Error(format!("Run error - {e}")))?;
-                Ok(running)
+                Ok(0)
             }
         },
         Err(TryRecvError::Empty) => Ok(running),
@@ -1161,16 +1192,12 @@ fn valid_range(
     range: &LocationRange,
     cpucommandresptx: &Sender<Result<CommandResponse>>,
 ) -> Result<u16> {
-    let mut len = 0;
-    if let Some(l) = range.len {
-        len = l;
-    }
-    if (usize::from(range.addr) + usize::from(len - 1)) > MAX_SIZE {
-        cpucommandresptx.send(Err(eyre!(
-            "invalid size {} + {} exceeds {MAX_SIZE}",
-            range.addr,
-            len - 1
-        )))?;
+    // Any start+len combination is fine as ranges wrap around the top of
+    // RAM the same way the hardware's address bus does. Only a zero length
+    // is meaningless.
+    let len = range.len.unwrap_or(0);
+    if len == 0 {
+        cpucommandresptx.send(Err(eyre!("invalid size - len must be non-zero")))?;
         return Err(eyre!("range error"));
     }
     Ok(len)
@@ -1190,9 +1217,11 @@ fn reset(cpu: &mut dyn CPU, cpucommandresptx: &Sender<Result<CommandResponse>>) 
     Ok(())
 }
 
+// NOTE: Errors are returned to the caller which must send exactly one
+//       response for them - sending here as well would queue 2 responses
+//       for a single command and desync the response channel.
 fn advance(
     cpu: &mut dyn CPU,
-    cpucommandresptx: &Sender<Result<CommandResponse>>,
     ram: &mut [u8; MAX_SIZE],
     tick_pc: &mut u16,
     breakpoints: &Vec<Location>,
@@ -1218,25 +1247,10 @@ fn advance(
     }
 
     if do_tick {
-        let r = cpu.tick();
-        if let Err(e) = r {
-            let e = eyre!("tick error: {e}");
-            cpucommandresptx.send(Err(e))?;
-            return Ok(StopReason::None);
-        }
-        let r = cpu.tick_done();
-        if let Err(e) = r {
-            let e = eyre!("tick done error: {e}");
-            cpucommandresptx.send(Err(e))?;
-            return Ok(StopReason::None);
-        }
+        cpu.tick().map_err(|e| eyre!("tick error: {e}"))?;
+        cpu.tick_done().map_err(|e| eyre!("tick done error: {e}"))?;
     } else {
-        let r = step(cpu);
-        if let Err(e) = r {
-            let e = eyre!("step error: {e}");
-            cpucommandresptx.send(Err(e))?;
-            return Ok(StopReason::None);
-        }
+        step(cpu).map_err(|e| eyre!("step error: {e}"))?;
     }
 
     if !watchpoints.is_empty() {
@@ -1314,15 +1328,23 @@ pub fn cpu_loop(
 
     loop {
         if state.is_running {
-            let reason = advance(
+            let reason = match advance(
                 cpu,
-                cpucommandresptx,
                 &mut state.ram,
                 &mut state.tick_pc,
                 &state.breakpoints,
                 &state.watchpoints,
                 false,
-            )?;
+            ) {
+                Ok(reason) => reason,
+                Err(e) => {
+                    // The CPU can't continue so stop running and report the
+                    // error as the final response of the run.
+                    state.is_running = false;
+                    cpucommandresptx.send(Err(e))?;
+                    continue;
+                }
+            };
 
             if reason != StopReason::Run {
                 state.is_running = false;
@@ -1376,15 +1398,9 @@ pub fn cpu_loop(
         let c = if let Ok(c) = c {
             // If we pulled one off and we're running make sure it's valid.
             // If not write an error and loop back to running.
-            if state.is_running {
-                match c {
-                    Command::Stop | Command::Reset => {}
-                    _ => {
-                        cpucommandresptx
-                            .send(Err(eyre!("only Stop and Reset allowed in Run state")))?;
-                        continue;
-                    }
-                }
+            if state.is_running && !matches!(c, Command::Stop) {
+                cpucommandresptx.send(Err(eyre!("only Stop allowed in Run state")))?;
+                continue;
             }
             c
         } else {
@@ -1452,6 +1468,12 @@ fn cpu_run(cpu: &mut dyn CPU, state: &mut CPULoopState, ram: bool) -> Result<()>
 }
 
 fn cpu_stop(cpu: &mut dyn CPU, state: &mut CPULoopState) -> Result<()> {
+    // If we're not running there's nothing to stop and the input side isn't
+    // waiting on a response (it may have already seen a break/watch stop for
+    // this run) - queueing one would desync the response channel.
+    if !state.is_running {
+        return Ok(());
+    }
     state.is_running = false;
     cpu.set_debug(Some(state.debug.clone()));
     cpu.debug();
@@ -1497,7 +1519,8 @@ fn cpu_delete_breakpoint(state: &mut CPULoopState, num: usize) -> Result<()> {
         )))?;
         return Ok(());
     }
-    state.breakpoints.swap_remove(num);
+    // Not swap_remove so the remaining entries keep the positions BPL showed.
+    state.breakpoints.remove(num);
     state
         .cpucommandresptx
         .send(Ok(CommandResponse::DeleteBreakpoint))?;
@@ -1509,15 +1532,20 @@ fn cpu_step(cpu: &mut dyn CPU, state: &mut CPULoopState, capture_ram: bool) -> R
         state.is_init = true;
         cpu.power_on()?;
     }
-    let mut reason = advance(
+    let mut reason = match advance(
         cpu,
-        state.cpucommandresptx,
         &mut state.ram,
         &mut state.tick_pc,
         &state.breakpoints,
         &state.watchpoints,
         false,
-    )?;
+    ) {
+        Ok(reason) => reason,
+        Err(e) => {
+            state.cpucommandresptx.send(Err(e))?;
+            return Ok(());
+        }
+    };
     if !capture_ram {
         // Reset RAM to clear as we might have copied before this time and
         // future ones should start clean.
@@ -1562,20 +1590,28 @@ fn cpu_step_n(cpu: &mut dyn CPU, state: &mut CPULoopState, stepn: StepN) -> Resu
     }
     let mut early = false;
     let mut out = stepn.capture;
+    // Can't return more states than steps executed. Also avoids underflow
+    // below when computing where in the capture window we are.
+    out.truncate(stepn.reps);
 
     // Reset RAM to clear as we might have copied before this time and
     // future ones should start clean.
     std::cell::RefCell::<_>::borrow_mut(&state.debug.state).ram = [0; MAX_SIZE];
     for i in 0..stepn.reps {
-        let reason = advance(
+        let reason = match advance(
             cpu,
-            state.cpucommandresptx,
             &mut state.ram,
             &mut state.tick_pc,
             &state.breakpoints,
             &state.watchpoints,
             false,
-        )?;
+        ) {
+            Ok(reason) => reason,
+            Err(e) => {
+                state.cpucommandresptx.send(Err(e))?;
+                return Ok(());
+            }
+        };
         // Might have triggered a break/watch so return early then.
         if reason != StopReason::Run {
             cpu.set_debug(Some(state.debug.clone()));
@@ -1642,15 +1678,20 @@ fn cpu_tick(cpu: &mut dyn CPU, state: &mut CPULoopState, capture_ram: bool) -> R
         state.is_init = true;
         cpu.power_on()?;
     }
-    let mut reason = advance(
+    let mut reason = match advance(
         cpu,
-        state.cpucommandresptx,
         &mut state.ram,
         &mut state.tick_pc,
         &state.breakpoints,
         &state.watchpoints,
         true,
-    )?;
+    ) {
+        Ok(reason) => reason,
+        Err(e) => {
+            state.cpucommandresptx.send(Err(e))?;
+            return Ok(());
+        }
+    };
     if !capture_ram {
         // Reset RAM to clear as we might have copied before this time and
         // future ones should start clean.
@@ -1705,7 +1746,8 @@ fn cpu_read_range(
     if let Ok(len) = valid_range(range, state.cpucommandresptx) {
         let mut r = Vec::new();
         for i in 0..len {
-            let val = cpu.ram().borrow().read(range.addr + i);
+            // Wrap like the hardware address bus does.
+            let val = cpu.ram().borrow().read(range.addr.wrapping_add(i));
             r.push(Val { val });
         }
         state
@@ -1734,7 +1776,9 @@ fn cpu_write_range(
 ) -> Result<()> {
     if let Ok(len) = valid_range(range, state.cpucommandresptx) {
         for i in 0..len {
-            std::cell::RefCell::<_>::borrow_mut(cpu.ram()).write(range.addr + i, val.val);
+            // Wrap like the hardware address bus does.
+            std::cell::RefCell::<_>::borrow_mut(cpu.ram())
+                .write(range.addr.wrapping_add(i), val.val);
         }
         state
             .cpucommandresptx
@@ -1785,11 +1829,20 @@ fn cpu_disassemble_range(
 ) -> Result<()> {
     if let Ok(len) = valid_range(range, state.cpucommandresptx) {
         let mut r = Vec::new();
+        // Track bytes consumed rather than comparing PCs directly so the
+        // range can wrap around the top of RAM like the hardware would.
+        let mut consumed = 0u32;
         let mut pc = range.addr;
         let mut s = String::with_capacity(32);
-        while pc < range.addr + len {
+        loop {
             let newpc = cpu.disassemble(&mut s, pc, &*cpu.ram().borrow(), false);
             r.push(s.clone());
+            // Instructions are 1-3 bytes so the wrapping sub gives the
+            // right size even across the top of RAM.
+            consumed += u32::from(newpc.wrapping_sub(pc));
+            if consumed >= u32::from(len) {
+                break;
+            }
             pc = newpc;
         }
         state
@@ -1826,7 +1879,8 @@ fn cpu_delete_watchpoint(state: &mut CPULoopState, num: usize) -> Result<()> {
         }
         return Ok(());
     }
-    state.watchpoints.swap_remove(num);
+    // Not swap_remove so the remaining entries keep the positions WPL showed.
+    state.watchpoints.remove(num);
     state
         .cpucommandresptx
         .send(Ok(CommandResponse::DeleteWatchpoint))?;
@@ -1869,8 +1923,8 @@ fn cpu_load(
             if let Some(start) = start {
                 cpu.pc_mut(start.addr);
             } else {
-                // We don't always reset so force start PC
-                // to reset vector always.
+                // No start given so use the reset vector (which the reset
+                // sequence above also loads - make it explicit here).
                 let addr = u16::from(cpu.ram().borrow().read(RESET_VECTOR + 1)) << 8
                     | u16::from(cpu.ram().borrow().read(RESET_VECTOR));
                 cpu.pc_mut(addr);
