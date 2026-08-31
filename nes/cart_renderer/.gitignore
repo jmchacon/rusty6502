@@ -1,0 +1,5 @@
+# egui_kittest snapshot test failure artifacts. The baseline images in
+# tests/snapshots/*.png are committed; these are only written on a failing
+# comparison and shouldn't be.
+tests/snapshots/*.new.png
+tests/snapshots/*.diff.png
