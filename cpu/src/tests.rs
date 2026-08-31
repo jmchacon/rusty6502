@@ -258,6 +258,34 @@ fn tick_next() {
 }
 
 #[test]
+fn cpustate_format() {
+    // Validate Display/Debug handle both a missing and present RAM buffer.
+    let mut cpustate = CPUState::default();
+    let out = format!("{cpustate}");
+    assert!(
+        out.contains("Memory: None"),
+        "Display missing 'Memory: None' - {out}"
+    );
+    let dbg = format!("{cpustate:?}");
+    assert!(
+        dbg.contains("ram: None"),
+        "Debug missing 'ram: None' - {dbg}"
+    );
+
+    cpustate.ram = Some(Box::new([0; MAX_SIZE]));
+    let out = format!("{cpustate}");
+    assert!(
+        out.contains("Memory:") && !out.contains("Memory: None"),
+        "Display missing memory dump - {out}"
+    );
+    let dbg = format!("{cpustate:?}");
+    assert!(
+        !dbg.contains("ram: None"),
+        "Debug shouldn't say 'ram: None' with a buffer - {dbg}"
+    );
+}
+
+#[test]
 fn shallow_cpustate() {
     // Validate shallow copy skips ram.
     let mut cpustate = CPUState::default();

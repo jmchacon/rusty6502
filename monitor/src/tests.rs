@@ -2306,6 +2306,238 @@ fn run_lowercase_true_test() -> Result<()> {
     Ok(())
 }
 
+// A halted CPU (HLT opcode) errors on tick which exercises the error
+// handling in each stepping command plus RUN, and the monitor must keep
+// accepting commands afterwards.
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn halted_cpu_error_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
+    // Put a HLT (0x12 on NMOS) at 0x0300 and point the PC at it.
+    inputtx.send("W 0x0300 0x12".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after write? - {resp:?}");
+    }
+    inputtx.send("PC 0x0300".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(_, _) = resp {
+    } else {
+        panic!("Didn't get CPU after PC? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after PC? - {resp:?}");
+    }
+
+    // Step onto the HLT. Depending on where the halt surfaces this either
+    // errors immediately or completes one step and errors on the next.
+    inputtx.send("S".into())?;
+    let resp = outputrx.recv()?;
+    match resp {
+        Output::Error(ref s) => {
+            assert!(s.contains("Step error"), "wrong step error - {s}");
+        }
+        Output::CPU(_, _) => {
+            let resp = outputrx.recv()?;
+            if let Output::Prompt(_) = resp {
+            } else {
+                panic!("Didn't get prompt after step? - {resp:?}");
+            }
+            inputtx.send("S".into())?;
+            let resp = outputrx.recv()?;
+            if let Output::Error(s) = resp {
+                assert!(s.contains("Step error"), "wrong step error - {s}");
+            } else {
+                panic!("Didn't get error stepping halted CPU? - {resp:?}");
+            }
+        }
+        _ => panic!("Unexpected output stepping into HLT - {resp:?}"),
+    }
+
+    // Tick a halted CPU.
+    inputtx.send("T".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        assert!(s.contains("Tick error"), "wrong tick error - {s}");
+    } else {
+        panic!("Didn't get error ticking halted CPU? - {resp:?}");
+    }
+
+    // StepN a halted CPU.
+    inputtx.send("STEPN 5 1 FALSE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        assert!(s.contains("StepN error"), "wrong stepn error - {s}");
+    } else {
+        panic!("Didn't get error stepn'ing halted CPU? - {resp:?}");
+    }
+
+    // RUN a halted CPU. The initial Run state streams out and then the
+    // error surfaces which drops us back to accepting commands.
+    inputtx.send("C".into())?;
+    loop {
+        let resp = outputrx.recv()?;
+        match resp {
+            Output::Prompt(_) => {}
+            Output::CPU(ref st, _) => {
+                assert!(
+                    st.reason == StopReason::Run,
+                    "Unexpected stop reason running halted CPU - {resp:?}"
+                );
+            }
+            Output::Error(ref s) => {
+                assert!(s.contains("Run error"), "wrong run error - {s}");
+                break;
+            }
+            _ => panic!("Unexpected output running halted CPU - {resp:?}"),
+        }
+    }
+
+    // RESET clears the halt and the monitor must still work.
+    inputtx.send("RESET".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(_, _) = resp {
+    } else {
+        panic!("Didn't get CPU after reset? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after reset? - {resp:?}");
+    }
+    inputtx.send("S".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::CPU(st, _) = resp {
+        assert!(
+            st.reason == StopReason::Step,
+            "Reason incorrect after reset. Should be Step and got {st}"
+        );
+    } else {
+        panic!("Didn't get CPU stepping after reset? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after step? - {resp:?}");
+    }
+    Ok(())
+}
+
+// Blank/whitespace input just reprints the prompt and zero length ranges
+// error for the write/disassemble flavors too.
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn blank_input_and_zero_len_tests() -> Result<()> {
+    let (inputtx, outputrx) = init_with_load()?;
+
+    inputtx.send("   ".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after blank input? - {resp:?}");
+    }
+
+    inputtx.send("WR 0x100 0 0x12".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from zero len WR");
+    } else {
+        panic!("Didn't get an error for zero len WR. Got {resp:?}");
+    }
+
+    inputtx.send("DR 0x100 0".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::Error(s) = resp {
+        println!("Got expected error: {s} from zero len DR");
+    } else {
+        panic!("Didn't get an error for zero len DR. Got {resp:?}");
+    }
+    Ok(())
+}
+
+// STEPN as the first command has to power the CPU on itself.
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn stepn_before_init_test() -> Result<()> {
+    let (inputtx, outputrx, _) = setup(CPUType::NMOS, false)?;
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after startup? - {resp:?}");
+    }
+
+    inputtx.send("STEPN 2 1 FALSE".into())?;
+    let resp = outputrx.recv()?;
+    if let Output::StepN(states) = resp {
+        assert!(
+            states.len() == 1,
+            "Expected 1 state from STEPN and got {}",
+            states.len()
+        );
+    } else {
+        panic!("Didn't get StepN output before init? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after STEPN? - {resp:?}");
+    }
+    Ok(())
+}
+
+// Dropping stdin while running must surface as an input_loop error rather
+// than hanging.
+#[test]
+#[cfg_attr(not(miri), timeout(60000))]
+#[cfg_attr(miri, timeout(900000))]
+fn stdin_disconnect_during_run_test() -> Result<()> {
+    let (inputtx, outputrx, ilh) = setup(CPUType::NMOS, true)?;
+
+    // Consume the preload CPU state and prompt.
+    let resp = outputrx.recv()?;
+    if let Output::CPU(_, _) = resp {
+    } else {
+        panic!("Didn't get CPU after startup load? - {resp:?}");
+    }
+    let resp = outputrx.recv()?;
+    if let Output::Prompt(_) = resp {
+    } else {
+        panic!("Didn't get prompt after startup load? - {resp:?}");
+    }
+
+    inputtx.send("C".into())?;
+    // Wait until we know it's running.
+    loop {
+        let resp = outputrx.recv()?;
+        if let Output::CPU(ref st, _) = resp {
+            if st.reason == StopReason::Run {
+                break;
+            }
+        }
+    }
+    // Now kill stdin and drain the output side until input_loop exits.
+    drop(inputtx);
+    while outputrx.recv().is_ok() {}
+
+    #[allow(clippy::unwrap_used)]
+    let res = ilh.join().unwrap();
+    let Err(e) = res else {
+        panic!("input_loop should have errored on stdin drop");
+    };
+    assert!(
+        e.to_string().contains("stdin died?"),
+        "wrong error from input_loop - {e}"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_trim() {
     let mut input: String = "test\r\n".into();
