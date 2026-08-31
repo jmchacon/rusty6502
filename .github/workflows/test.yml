@@ -16,10 +16,22 @@ jobs:
     strategy:
       matrix:
         toolchain: [stable, beta]
+    # cart_renderer's egui_kittest snapshot tests render headlessly via wgpu,
+    # which needs a GPU adapter -- ubuntu-latest has none. Point it at Mesa's
+    # software Vulkan driver (installed below) instead of letting it probe
+    # every backend (which includes a Vulkan loader crash on driverless
+    # Windows runners; here it just fails cleanly, but pinning it is also
+    # faster and avoids the GL/DX12 probes).
+    env:
+      WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: true
+      - name: Install Mesa lavapipe (software Vulkan) for headless wgpu tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dri mesa-vulkan-drivers
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v6
@@ -60,10 +72,17 @@ jobs:
   minimal:
     runs-on: ubuntu-latest
     name: ubuntu / stable / minimal-versions
+    # See the `required` job's comment on `WGPU_BACKEND`.
+    env:
+      WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: true
+      - name: Install Mesa lavapipe (software Vulkan) for headless wgpu tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dri mesa-vulkan-drivers
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v6
@@ -126,6 +145,16 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      # cart_renderer's egui_kittest snapshot tests render headlessly via
+      # wgpu. windows-latest has no GPU adapter, and letting wgpu probe every
+      # backend crashes outright (Vulkan loader access violation) rather than
+      # failing cleanly, so pin it to DX12, which can fall back to the
+      # software WARP adapter built into Windows. macOS already passes as-is
+      # (its Metal software fallback works headlessly), so leave it alone.
+      - name: Set WGPU_BACKEND for headless wgpu tests (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "WGPU_BACKEND=dx12" >> "$GITHUB_ENV"
       - name: cargo test
         run: cargo test -r --locked --all-features --all-targets
         env:

@@ -16,10 +16,17 @@ jobs:
   nightly:
     runs-on: ubuntu-latest
     name: ubuntu / nightly
+    # See test.yml's `required` job comment on `WGPU_BACKEND`.
+    env:
+      WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: true
+      - name: Install Mesa lavapipe (software Vulkan) for headless wgpu tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dri mesa-vulkan-drivers
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v6
@@ -55,10 +62,17 @@ jobs:
     # first place, since we'd just redo what happened in the regular test job.
     # Unfortunately, hashFiles only works in if on steps, so we reepeat it.
     # if: hashFiles('Cargo.lock') != ''
+    # See test.yml's `required` job comment on `WGPU_BACKEND`.
+    env:
+      WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: true
+      - name: Install Mesa lavapipe (software Vulkan) for headless wgpu tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dri mesa-vulkan-drivers
       - name: Cache git folder
         id: cache-git
         uses: actions/cache@v6
