@@ -807,8 +807,10 @@ pub struct CPUState {
     /// Program counter
     pub pc: u16,
 
-    /// RAM contents
-    pub ram: [u8; MAX_SIZE],
+    /// RAM contents. None unless a RAM copy was requested (it's 64k so
+    /// copying/cloning it per instruction is expensive) or a partial fill
+    /// was done for disassembly (see `debug` on `CPU`).
+    pub ram: Option<Box<[u8; MAX_SIZE]>>,
 
     /// How many clocks have run since power on
     pub clocks: usize,
@@ -857,7 +859,7 @@ impl Default for CPUState {
             clocks: 0,
             op_val: 0x00,
             op_addr: 0x0000,
-            ram: [0; MAX_SIZE],
+            ram: None,
             dis: String::with_capacity(32),
             op_tick: Tick::default(),
         }
@@ -866,7 +868,6 @@ impl Default for CPUState {
 
 impl fmt::Debug for CPUState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let r = &(&(self.ram) as &dyn Memory) as &dyn std::fmt::Debug;
         f.debug_struct("CPU State")
             .field("state", &self.state)
             .field("clocks", &self.clocks)
@@ -882,7 +883,12 @@ impl fmt::Debug for CPUState {
             .field("op_tick", &self.op_tick)
             .finish()?;
         // Pull RAM out so it formats a bit more nicely and lines up.
-        writeln!(f, "\nram:\n{r:?}")
+        if let Some(ram) = &self.ram {
+            let r = &(&(**ram) as &dyn Memory) as &dyn std::fmt::Debug;
+            writeln!(f, "\nram:\n{r:?}")
+        } else {
+            writeln!(f, "\nram: None")
+        }
     }
 }
 
@@ -893,9 +899,13 @@ impl fmt::Display for CPUState {
             "{:>6} {:<24}: A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} PC: {:04X} op_val: {:02X} op_addr: {:04X} op_tick: {}",
             self.clocks, self.dis, self.a, self.x, self.y, self.s, self.p, self.pc, self.op_val, self.op_addr, self.op_tick,
         )?;
-        writeln!(f, "Memory:")?;
-        writeln!(f)?;
-        writeln!(f, "{}", &self.ram as &dyn Memory)
+        if let Some(ram) = &self.ram {
+            writeln!(f, "Memory:")?;
+            writeln!(f)?;
+            writeln!(f, "{}", &(**ram) as &dyn Memory)
+        } else {
+            writeln!(f, "Memory: None")
+        }
     }
 }
 
@@ -5068,16 +5078,19 @@ macro_rules! cpu_impl {
                 let ram = self.ram.borrow();
                 if full {
                     // Do a full copy. This is expensive for every instruction.
-                    ram.ram(&mut state.ram);
-                } else {
+                    ram.ram(state.ram.get_or_insert_with(|| Box::new([0; MAX_SIZE])));
+                } else if let Some(st_ram) = &mut state.ram {
                     // We don't need to memcpy 64k. We just need
-                    // the 3 possible instructions bytes at PC.
-                    state.ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
+                    // the 3 possible instructions bytes at PC so disassembly
+                    // can function. If the caller didn't supply a RAM buffer
+                    // they don't want any copies (allocating one here would
+                    // make every later state clone copy 64k again).
+                    st_ram[usize::from(self.pc.0)] = ram.read(self.pc.0);
                     // These could wrap around so make sure we don't go out of range.
                     let pc1 = (self.pc + Wrapping(1)).0;
-                    state.ram[usize::from(pc1)] = ram.read(pc1);
+                    st_ram[usize::from(pc1)] = ram.read(pc1);
                     let pc2 = (self.pc + Wrapping(2)).0;
-                    state.ram[usize::from(pc2)] = ram.read(pc2);
+                    st_ram[usize::from(pc2)] = ram.read(pc2);
                 }
             }
         }

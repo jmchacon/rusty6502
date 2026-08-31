@@ -49,6 +49,40 @@ macro_rules! check_thread {
     };
 }
 
+fn output_loop(outputrx: &std::sync::mpsc::Receiver<monitor::Output>) -> Result<()> {
+    loop {
+        match outputrx.recv()? {
+            monitor::Output::Prompt(p) => {
+                if let Some(o) = p {
+                    println!("{o}");
+                }
+                print!("> ");
+            }
+            monitor::Output::Error(e) => {
+                println!("{e}");
+                print!("> ");
+            }
+            monitor::Output::CPU(st, pre) => {
+                if let Some(pre) = pre {
+                    println!("{pre}");
+                }
+                print_cpustate(&st.state);
+            }
+            monitor::Output::RAM(r) => {
+                print!("{}", r.as_ref() as &dyn Memory);
+            }
+            monitor::Output::StepN(stepn) => {
+                for st in &stepn {
+                    print_cpustate(st);
+                }
+            }
+        }
+        // Different from just using Display for CPUState since we don't want the
+        // memory dump and slightly differeing order.
+        io::stdout().flush()?;
+    }
+}
+
 fn print_cpustate(st: &CPUState) {
     println!("{:<33}A: {:02X} X: {:02X} Y: {:02X} S: {:02X} P: {} op_val: {:02X} op_addr: {:04X} op_tick: {} cycles: {}", st.dis, st.a, st.x, st.y, st.s, st.p, st.op_val, st.op_addr, st.op_tick, st.clocks);
 }
@@ -79,17 +113,26 @@ fn main() -> Result<()> {
 
     let (inputtx, inputrx) = channel();
     if let Some(file) = &args.filename {
-        let loc = args.offset.unwrap_or_default();
-        let pc = args.start.unwrap_or_default();
-        let load = format!("L {file} {loc} {pc}");
         // One time initial load handling by simulating it typed in.
         // Much simpler than replicating load logic.
+        // Only pass along the args actually given - the 3 arg form of L
+        // forces the PC rather than using the reset vector.
+        let load = match (args.offset, args.start) {
+            (None, None) => format!("L {file}"),
+            (Some(loc), None) => format!("L {file} {loc}"),
+            (loc, Some(pc)) => format!("L {file} {} {pc}", loc.unwrap_or_default()),
+        };
         inputtx.send(load)?;
     }
     let s = thread::spawn(move || -> Result<()> {
         loop {
             let mut buffer = String::new();
-            io::stdin().read_line(&mut buffer)?;
+            if io::stdin().read_line(&mut buffer)? == 0 {
+                // EOF - no more input is coming so act as if the user typed
+                // QUIT and let everything wind down cleanly.
+                inputtx.send("Q".into())?;
+                return Ok(());
+            }
             inputtx.send(buffer)?;
         }
     });
@@ -100,39 +143,7 @@ fn main() -> Result<()> {
     };
 
     let (outputtx, outputrx) = channel();
-    let o = thread::spawn(move || -> Result<()> {
-        loop {
-            match outputrx.recv()? {
-                monitor::Output::Prompt(p) => {
-                    if let Some(o) = p {
-                        println!("{o}");
-                    }
-                    print!("> ");
-                }
-                monitor::Output::Error(e) => {
-                    println!("{e}");
-                    print!("> ");
-                }
-                monitor::Output::CPU(st, pre) => {
-                    if let Some(pre) = pre {
-                        println!("{pre}");
-                    }
-                    print_cpustate(&st.state);
-                }
-                monitor::Output::RAM(r) => {
-                    print!("{}", r.as_ref() as &dyn Memory);
-                }
-                monitor::Output::StepN(stepn) => {
-                    for st in &stepn {
-                        print_cpustate(st);
-                    }
-                }
-            }
-            // Different from just using Display for CPUState since we don't want the
-            // memory dump and slightly differeing order.
-            io::stdout().flush()?;
-        }
-    });
+    let o = thread::spawn(move || output_loop(&outputrx));
     let mut stdout = Runner {
         h: o,
         n: "Stdout",
