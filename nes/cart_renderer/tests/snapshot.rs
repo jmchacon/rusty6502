@@ -18,13 +18,6 @@ fn workspace_path(rel: &str) -> String {
 /// Loads the shared `NTSC.pal` + `nestest.nes` fixtures already used by
 /// this crate's other tests and by manual smoke-testing during development.
 fn load_fixtures() -> Result<(Data, Vec<Vec<Tile>>)> {
-    // Surfaces wgpu/egui_kittest's own log output (set RUST_LOG, e.g.
-    // `wgpu_hal=debug`) when debugging a headless-rendering failure. `Once`
-    // because every test calls this and `env_logger::init` panics if called
-    // twice in one process.
-    static LOG_INIT: std::sync::Once = std::sync::Once::new();
-    LOG_INIT.call_once(env_logger::init);
-
     let pal = load_pal(&workspace_path("testdata/NTSC.pal"))?;
     let tiles = load_cart(&workspace_path("testdata/nestest.nes"))?;
     Ok((pal, tiles))
