@@ -161,6 +161,11 @@ jobs:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
           SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
+          # TEMPORARY: diagnosing a windows-latest-only access violation in
+          # cart_renderer's snapshot tests (preview_magnification_16x)
+          # under DX12. Surfaces wgpu-hal's own trace output so we can see
+          # what it was doing right before the crash. Remove once diagnosed.
+          RUST_LOG: wgpu_hal=debug,wgpu_core=debug,egui_kittest=debug
   coverage:
     runs-on: ubuntu-latest
     name: ubuntu / beta / coverage
