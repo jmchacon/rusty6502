@@ -749,7 +749,7 @@ fn disassemble_test() -> Result<()> {
                 (vec![0x03], "NOP"),                               // NOPCmos
                 (vec![0x5C, 0x34, 0x12], "NOP $1234"),             // Absolute NOP
                 (vec![0x80, 0x69], "BRA $69 ($006A)"),             // Relative,
-                (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
+                (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006B)"), // Zero Page Relative
                 (vec![0xCB], "WAI"), // Implied but needed for WDC specific testing.
                 (vec![0xDB], "STP"), // Implied but needed for WDC specific testing.
             ],
@@ -762,7 +762,7 @@ fn disassemble_test() -> Result<()> {
             vec![
                 (vec![0xCB], "NOP"),                               // Implied
                 (vec![0xDB, 0xFA], "NOP $FA,X"),                   // ZPX
-                (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006A)"), // Zero Page Relative
+                (vec![0x1F, 0x55, 0x69], "BBR 1,$55,$69 ($006B)"), // Zero Page Relative
             ],
         ),
         (

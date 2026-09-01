@@ -237,7 +237,7 @@ bad_assemble_test!(
   CPUType::NMOS
   bad_opcode4: BadAssembleTest{
       asm: "bad_opcode4.asm",
-      error: "Indirect must have a 16 bit arg",
+      error: "opcode JMP doesn't support mode - Indirect",
   },
   CPUType::NMOS
   bad_token: BadAssembleTest{
@@ -443,6 +443,7 @@ fn bad_generate_immediate_no_op_val_opcode() {
             width: 1,
             x_index: false,
             y_index: false,
+            paren: false,
         })]],
         labels: HashMap::new(),
     };
@@ -464,6 +465,7 @@ fn bad_generate_implied_opcode() {
             width: 2,
             x_index: false,
             y_index: false,
+            paren: false,
         })]],
         labels: HashMap::new(),
     };
@@ -489,6 +491,7 @@ fn bad_generate_bad_zprel_vals() {
             width: 3,
             x_index: false,
             y_index: false,
+            paren: false,
         })]],
         labels: HashMap::new(),
     };
@@ -514,6 +517,7 @@ fn bad_generate_bad_zprel_width() {
             width: 2,
             x_index: false,
             y_index: false,
+            paren: false,
         })]],
         labels: HashMap::new(),
     };
@@ -533,6 +537,7 @@ fn bad_find_mode_u8() {
         y_index: true,
         width: 3,
         pc: 0x0000,
+        paren: false,
     };
     find_mode(tv, &op);
 }
@@ -549,6 +554,7 @@ fn bad_find_mode_u16() {
         y_index: true,
         width: 3,
         pc: 0x0000,
+        paren: false,
     };
     find_mode(tv, &op);
 }
