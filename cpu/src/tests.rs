@@ -815,6 +815,43 @@ fn disassemble_test() -> Result<()> {
     Ok(())
 }
 
+// Regression test for a bug where disassemble()'s returned "next pc" (used
+// by callers like the disassembler CLI and the monitor to drive an
+// iterative disassembly loop) was off by one for ZeroPageRelative
+// (BBR/BBS): it's a 3 byte instruction (opcode + zp addr + offset) but the
+// returned pc only advanced as if it were 2 bytes, desyncing every
+// subsequent line of disassembly.
+#[test]
+fn disassemble_next_pc_test() {
+    let cpu = CPU65C02::new(ChipDef::default());
+    let mut s = String::with_capacity(32);
+
+    let cases: Vec<(u16, Vec<u8>, u16)> = vec![
+        // Implied (1 byte): INC
+        (0x1000, vec![0x1A], 0x1001),
+        // Immediate (2 bytes): LDA #$69
+        (0x1000, vec![0xA9, 0x69], 0x1002),
+        // Absolute (3 bytes): LDA $5569
+        (0x1000, vec![0xAD, 0x69, 0x55], 0x1003),
+        // Relative (2 bytes): BRA $69
+        (0x1000, vec![0x80, 0x69], 0x1002),
+        // ZeroPageRelative (3 bytes): BBR 1,$55,$69
+        (0x1000, vec![0x1F, 0x55, 0x69], 0x1003),
+    ];
+
+    for (pc, bytes, want_next_pc) in cases {
+        for (i, b) in bytes.iter().enumerate() {
+            #[allow(clippy::cast_possible_truncation)]
+            cpu.ram().borrow_mut().write(pc + i as u16, *b);
+        }
+        let got = cpu.disassemble(&mut s, pc, &*cpu.ram().borrow(), false);
+        assert!(
+            got == want_next_pc,
+            "disassemble({pc:04X}, {bytes:02X?}) returned next pc {got:04X}, want {want_next_pc:04X} - {s}"
+        );
+    }
+}
+
 #[test]
 fn flags_test() {
     let mut f = Flags::default();

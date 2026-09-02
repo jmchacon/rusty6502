@@ -10,7 +10,7 @@ use std::fmt::Write;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::num::Wrapping;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::LazyLock;
 
@@ -807,16 +807,44 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
                     pc = *npc;
                 }
 
-                // Word, Byte and AsciiZ all just emit a set of bytes that move the PC along.
-                Token::Word(md) | Token::Byte(md) | Token::AsciiZ(md) => {
+                // WORD always emits 16 bit values. A label ref there is always
+                // a 2 byte jump (its resolved value gets zero extended in
+                // word_byte_output if it turns out to be 8 bit). A literal
+                // WORD value was already split into 2 separate 1 byte MemDef
+                // entries (low, high) back in word_byte_state, so each of
+                // those only advances by 1.
+                Token::Word(md) => {
                     for m in md.iter_mut() {
                         m.pc = pc;
-                        // If this is a label ref this is always a 2 byte jump.
-                        if let OpVal8::Label(_) = m.val {
-                            pc += 2;
-                        } else {
-                            pc += 1;
-                        }
+                        pc += match &m.val {
+                            OpVal8::Label(_) => 2,
+                            OpVal8::Val(_) => 1,
+                        };
+                    }
+                }
+
+                // BYTE normally emits 8 bit values (1 byte per entry), but a
+                // label reference is allowed to resolve to a location address
+                // (16 bit) too, in which case it takes 2 bytes - so reserve
+                // however many bytes word_byte_output will actually emit for
+                // this entry. If the label is already resolved at this point
+                // in the pass (the common case: an EQU'd constant or location
+                // label defined earlier in the file) use its real width.
+                // Otherwise (a forward reference) default to 2 bytes, since a
+                // forward reference is most commonly to a location label
+                // (always 16 bit once resolved) - this matches word_byte_output
+                // and preserves the pre-existing behavior for that case.
+                // AsciiZ never contains a label reference so it's always 1 byte.
+                Token::Byte(md) | Token::AsciiZ(md) => {
+                    for m in md.iter_mut() {
+                        m.pc = pc;
+                        pc += match &m.val {
+                            OpVal8::Label(l) => match get_label(&ast_output.labels, l).val {
+                                Some(TokenVal::Val8(_)) => 1,
+                                _ => 2,
+                            },
+                            OpVal8::Val(_) => 1,
+                        };
                     }
                 }
 
@@ -1161,9 +1189,11 @@ fn generate_output(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<Assembly
 }
 
 fn word_byte_output(oa: &mut OutputArgs, md: &[MemDef], is_word: bool) {
-    // Other than the type these are very similar as BYTE may have a label ref
-    // which could be a u16 and is then treated as 2 bytes. So similar to WORD
-    // enough most of the logic is the same.
+    // Other than the type these are very similar. WORD always emits 2 bytes
+    // per entry (a label resolving to an 8 bit value is zero extended) while
+    // BYTE emits either 1 byte (a label resolving to an 8 bit value) or 2
+    // bytes (a label resolving to a 16 bit location address) per entry,
+    // matching whatever width compute_refs reserved for it above.
     let t = if is_word { "WORD" } else { "BYTE" };
     let (mut post_bytes, mut byte_dump) = compute_md_leader(oa, md, t);
 
@@ -1172,9 +1202,18 @@ fn word_byte_output(oa: &mut OutputArgs, md: &[MemDef], is_word: bool) {
     let mut it = md.iter();
     while let Some(m) = it.next() {
         let (val, lbl) = match &m.val {
-            OpVal8::Label(l) => match get_label_val(oa.labels, l) {
-                TokenVal::Val8(v) => (vec![v], l.clone()),
-                TokenVal::Val16(v) => {
+            OpVal8::Label(l) => match (is_word, get_label_val(oa.labels, l)) {
+                (true, TokenVal::Val8(v)) => (vec![v, 0x00], l.clone()),
+                (false, TokenVal::Val8(v)) => (vec![v], l.clone()),
+                (true, TokenVal::Val16(v)) => {
+                    let low = (v & 0x00FF) as u8;
+                    let high = ((v & 0xFF00) >> 8) as u8;
+                    (vec![low, high], l.clone())
+                }
+                (false, TokenVal::Val16(v)) => {
+                    // A BYTE entry may reference a location label (always 16
+                    // bit) to embed its address - emitted low byte first,
+                    // matching the width compute_refs already reserved for it.
                     let low = (v & 0x00FF) as u8;
                     let high = ((v & 0xFF00) >> 8) as u8;
                     (vec![low, high], l.clone())
@@ -1539,6 +1578,39 @@ pub fn parse_file(cpu: &dyn CPU, filename: &Path, debug: bool) -> Result<Assembl
 }
 
 fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -> Result<()> {
+    let mut stack = Vec::new();
+    read_file_and_process_inner(filename, lines, &mut stack)
+}
+
+// read_file_and_process_inner does the actual work. `stack` tracks the chain
+// of files currently being included (an ancestor stack, not just "seen
+// anywhere") so a diamond include (A and B both including C) is fine, but a
+// cycle (A including itself, or A -> B -> A) is caught and reported instead
+// of recursing until a stack overflow.
+fn read_file_and_process_inner(
+    filename: &Path,
+    lines: &mut Vec<(FileInfo, String)>,
+    stack: &mut Vec<PathBuf>,
+) -> Result<()> {
+    // Canonicalize so the same file reached via different relative paths is
+    // still recognized as the same file for cycle detection purposes.
+    let canonical = filename
+        .canonicalize()
+        .unwrap_or_else(|_| filename.to_path_buf());
+    if stack.contains(&canonical) {
+        let chain = stack
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        return Err(eyre!(
+            "INCLUDE cycle detected: {} is already being included ({chain} -> {})",
+            filename.display(),
+            filename.display()
+        ));
+    }
+    stack.push(canonical);
+
     let file = File::open(filename)?;
     let rdr = BufReader::new(file).lines();
     for (line_num, line) in rdr.map_while(Result::ok).enumerate() {
@@ -1560,7 +1632,8 @@ fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -
                         line_num + 1
                     ));
                 }
-                if fields[1].as_bytes()[0] != b'"'
+                if fields[1].len() < 2
+                    || fields[1].as_bytes()[0] != b'"'
                     || fields[1].as_bytes()[fields[1].len() - 1] != b'"'
                 {
                     return Err(eyre!(
@@ -1585,7 +1658,7 @@ fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -
                     format!("; {line}"),
                 ));
                 let mut sub_lines = Vec::new();
-                read_file_and_process(&path, &mut sub_lines)?;
+                read_file_and_process_inner(&path, &mut sub_lines, stack)?;
                 lines.append(&mut sub_lines);
                 lines.push((
                     FileInfo {
@@ -1605,6 +1678,7 @@ fn read_file_and_process(filename: &Path, lines: &mut Vec<(FileInfo, String)>) -
             }
         }
     }
+    stack.pop();
     Ok(())
 }
 
