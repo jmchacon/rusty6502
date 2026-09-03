@@ -894,6 +894,7 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn compute_opcode_refs(
     o: &mut Operation,
     labels: &mut HashMap<String, LabelDef>,
@@ -1444,7 +1445,11 @@ fn fixup_relative_addr(
                     // The actual diff is from the pc following the instruction.
                     // Relative is a 2 byte instruction (opcode + offset) while
                     // ZeroPageRelative is 3 bytes (opcode + zp addr + offset).
-                    let width = if o.mode == AddressMode::Relative { 2 } else { 3 };
+                    let width = if o.mode == AddressMode::Relative {
+                        2
+                    } else {
+                        3
+                    };
                     #[allow(clippy::cast_possible_wrap)]
                     let diff = (Wrapping(r) - Wrapping(o.pc + width)).0 as i16;
                     if (i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&diff) {
