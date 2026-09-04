@@ -156,11 +156,54 @@ jobs:
         shell: bash
         run: echo "WGPU_BACKEND=dx12" >> "$GITHUB_ENV"
       - name: cargo test
+        if: runner.os != 'Windows'
         run: cargo test -r --locked --all-features --all-targets
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.
           SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
+      # Windows only: run everything except cart_renderer normally, then run
+      # cart_renderer on its own below with a crash-signature-specific
+      # retry, instead of one cargo test invocation covering the workspace.
+      - name: cargo test (excluding cart_renderer)
+        if: runner.os == 'Windows'
+        run: cargo test -r --locked --all-features --all-targets --workspace --exclude cart_renderer
+        env:
+          # The package is checked out at the same level as the cpu package
+          # so this ref is one level back.
+          SINGLE_STEP_6502_PROCESSOR_TESTS: "../SingleStepTests"
+      # cart_renderer's egui_kittest snapshot tests create a real wgpu GPU
+      # device to render headlessly. windows-latest has no GPU, so this runs
+      # through the software WARP adapter (see the WGPU_BACKEND note above),
+      # which intermittently crashes the *entire test process* with
+      # STATUS_ACCESS_VIOLATION (0xc0000005) during device/adapter setup -
+      # this is a known class of upstream wgpu/WARP flakiness on Windows
+      # (e.g. gfx-rs/wgpu#5879, #6571, #993), not a bug in this repo.
+      # Because it's a hard OS-level access violation rather than a Rust
+      # panic, it can't be caught or retried from inside the test itself -
+      # the process is gone before any in-test retry logic could run - so
+      # this retries at the process level instead. Only retries when the
+      # failure matches the known crash signature; anything else (a real
+      # test regression) fails immediately without burning through retries.
+      - name: cargo test cart_renderer (retry on known headless WARP/DX12 crash)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            output=$(cargo test -r --locked --all-features --all-targets -p cart_renderer 2>&1)
+            status=$?
+            echo "$output"
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! echo "$output" | grep -q "STATUS_ACCESS_VIOLATION"; then
+              echo "cart_renderer tests failed with a non-flaky error - not retrying"
+              exit "$status"
+            fi
+            echo "::warning::cart_renderer tests crashed with the known headless WARP/DX12 STATUS_ACCESS_VIOLATION (attempt $attempt/5), retrying..."
+          done
+          echo "::error::cart_renderer tests still crashing with STATUS_ACCESS_VIOLATION after 5 attempts"
+          exit 1
   coverage:
     runs-on: ubuntu-latest
     name: ubuntu / beta / coverage
