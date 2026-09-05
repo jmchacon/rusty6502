@@ -1128,12 +1128,14 @@ pub trait CPU<'a>: Chip + Send {
                 .unwrap();
             }
             AddressMode::ZeroPageRelative => {
+                // ZeroPageRelative is a 3 byte instruction (opcode + zp addr + offset)
+                // so the branch is computed from pc+3, not pc+2 like a plain Relative branch.
                 #[allow(clippy::unwrap_used)]
                 write!(
                     out,
                     "{opcode} {},${ov1:02X},${ov2:02X} (${:04X})",
                     (op & 0xF0) >> 4,
-                    Wrapping(pc) + pc216 + Wrapping(2u16)
+                    Wrapping(pc) + pc216 + Wrapping(3u16)
                 )
                 .unwrap();
             }

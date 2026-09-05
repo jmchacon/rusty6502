@@ -110,6 +110,11 @@ struct Operation {
     op_val: Option<Vec<OpVal>>,
     x_index: bool,
     y_index: bool,
+    // paren is set for a bare "(val)" operand which is ambiguous between
+    // AddressMode::Indirect (a CMOS 8 bit zero page indirect) and
+    // AddressMode::AbsoluteIndirect (a 16 bit absolute indirect, e.g. JMP)
+    // until the operand's width is known.
+    paren: bool,
     width: u16,
     pc: u16,
 }
@@ -730,9 +735,11 @@ fn op_state(
             operation.mode = AddressMode::IndirectY;
             val
         }
-        // Indirect - (val)
+        // Indirect (8 bit zero page, CMOS only) or Absolute Indirect (16 bit, e.g. JMP) - (val)
+        // Which one this is depends on the width of val so leave mode as Implied
+        // (unresolved) for now and pick the correct mode once the value is known.
         [b'(', val @ .., b')'] => {
-            operation.mode = AddressMode::AbsoluteIndirect;
+            operation.paren = true;
             val
         }
         // AbsoluteX or ZeroPageX - val,x
@@ -758,7 +765,14 @@ fn op_state(
         OpVal::Val(v) => {
             // Fixup the address mode now that we have an arg.
             if operation.mode == AddressMode::Implied {
-                operation.mode = find_mode(v, &operation);
+                operation.mode = if operation.paren {
+                    match v {
+                        TokenVal::Val8(_) => AddressMode::Indirect,
+                        TokenVal::Val16(_) => AddressMode::AbsoluteIndirect,
+                    }
+                } else {
+                    find_mode(v, &operation)
+                };
             }
         }
     }
@@ -880,6 +894,7 @@ fn compute_refs(cpu: &dyn CPU, ast_output: &mut ASTOutput) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn compute_opcode_refs(
     o: &mut Operation,
     labels: &mut HashMap<String, LabelDef>,
@@ -898,7 +913,17 @@ fn compute_opcode_refs(
             if let Some(v) = &o.op_val {
                 if let OpVal::Label(l) = &v[0] {
                     let ld = get_label(labels, l);
-                    if let Some(TokenVal::Val8(_)) = ld.val {
+                    let is8 = matches!(ld.val, Some(TokenVal::Val8(_)));
+                    if o.paren {
+                        // A "(val)" operand is ambiguous between Indirect (8 bit)
+                        // and AbsoluteIndirect (16 bit) until the label's width is known.
+                        o.mode = if is8 {
+                            AddressMode::Indirect
+                        } else {
+                            width = 3;
+                            AddressMode::AbsoluteIndirect
+                        };
+                    } else if is8 {
                         o.mode = find_mode(TokenVal::Val8(0), o);
                     } else {
                         // Anything else is either 16 bit or a label we don't know which
@@ -1417,9 +1442,16 @@ fn fixup_relative_addr(
                     _ => {}
                 }
                 if let Some(r) = r {
-                    #[allow(clippy::cast_possible_wrap)]
                     // The actual diff is from the pc following the instruction.
-                    let diff = (Wrapping(r) - Wrapping(o.pc + 2)).0 as i16;
+                    // Relative is a 2 byte instruction (opcode + offset) while
+                    // ZeroPageRelative is 3 bytes (opcode + zp addr + offset).
+                    let width = if o.mode == AddressMode::Relative {
+                        2
+                    } else {
+                        3
+                    };
+                    #[allow(clippy::cast_possible_wrap)]
+                    let diff = (Wrapping(r) - Wrapping(o.pc + width)).0 as i16;
                     if (i16::from(i8::MIN)..=i16::from(i8::MAX)).contains(&diff) {
                         ok = true;
                         // Remove the label ref here and insert the relative offset
