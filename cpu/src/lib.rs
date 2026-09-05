@@ -1138,6 +1138,9 @@ pub trait CPU<'a>: Chip + Send {
                     Wrapping(pc) + pc216 + Wrapping(3u16)
                 )
                 .unwrap();
+                // count starts at pc+2; this is a 3 byte instruction so bump it
+                // the same way the Absolute* group below does.
+                count += 1;
             }
         }
 

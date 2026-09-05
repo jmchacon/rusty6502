@@ -8,8 +8,8 @@ struct AssembleTest<'a> {
 }
 
 use crate::{
-    find_mode, generate_output, parse_file, ASTOutput, LabelDef, MemDef, OpVal, OpVal8, Operation,
-    Token, TokenVal,
+    find_mode, generate_output, parse, parse_file, ASTOutput, FileInfo, LabelDef, MemDef, OpVal,
+    OpVal8, Operation, Token, TokenVal,
 };
 
 macro_rules! assemble_test {
@@ -340,6 +340,21 @@ bad_assemble_test!(
     error: "INCLUDE directive must have filename surrounded by quotes",
   },
   CPUType::NMOS
+  bad_include3: BadAssembleTest{
+    asm: "bad_include3.asm",
+    error: "INCLUDE cycle detected",
+  },
+  CPUType::NMOS
+  bad_include4: BadAssembleTest{
+    asm: "bad_include4.asm",
+    error: "INCLUDE directive must have filename surrounded by quotes",
+  },
+  CPUType::NMOS
+  bad_include5: BadAssembleTest{
+    asm: "bad_include5.asm",
+    error: "INCLUDE cycle detected",
+  },
+  CPUType::NMOS
 );
 
 #[test]
@@ -557,4 +572,68 @@ fn bad_find_mode_u16() {
         paren: false,
     };
     find_mode(tv, &op);
+}
+
+fn line(line_num: usize, s: &str) -> (FileInfo, String) {
+    (
+        FileInfo {
+            filename: "test".into(),
+            line_num,
+        },
+        s.to_string(),
+    )
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn word_zero_extends_a_label_that_resolves_to_an_8_bit_value() {
+    let cpu = CPU6502::new(ChipDef::default());
+    let lines = vec![
+        line(1, "ORG $10"),
+        line(2, "VAL EQU $05"),
+        line(3, "WORD VAL"),
+        line(4, "WORD $AABB"),
+    ];
+    let asm = parse(&cpu, &lines, false).unwrap();
+    // VAL resolves to an 8 bit value (5) so WORD must zero extend it to a
+    // full 2 byte word rather than only writing 1 byte and leaving PC
+    // reservation and actual emitted bytes out of sync.
+    assert_eq!(asm.bin[0x10], 0x05);
+    assert_eq!(asm.bin[0x11], 0x00);
+    // And the following WORD must land immediately after those 2 bytes,
+    // not be shifted by a stray reserved-but-unwritten byte.
+    assert_eq!(asm.bin[0x12], 0xBB);
+    assert_eq!(asm.bin[0x13], 0xAA);
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn byte_only_reserves_and_emits_1_byte_for_a_label_that_resolves_to_8_bits() {
+    let cpu = CPU6502::new(ChipDef::default());
+    let lines = vec![
+        line(1, "ORG $10"),
+        line(2, "VAL EQU $05"),
+        line(3, "BYTE VAL $AA"),
+    ];
+    let asm = parse(&cpu, &lines, false).unwrap();
+    // VAL only takes 1 byte inside BYTE, so $AA must immediately follow it
+    // rather than being shifted right by a phantom reserved-but-unwritten
+    // byte (the original bug: 2 bytes were always reserved for any label
+    // reference regardless of its resolved width).
+    assert_eq!(asm.bin[0x10], 0x05);
+    assert_eq!(asm.bin[0x11], 0xAA);
+}
+
+#[test]
+#[allow(clippy::unwrap_used)]
+fn byte_allows_a_16_bit_location_label_reference() {
+    let cpu = CPU6502::new(ChipDef::default());
+    // A location label (always 16 bit) embedded directly in a BYTE list -
+    // this pattern is relied on elsewhere (see testdata/testasm.asm's
+    // BLABEL/END usage) so BYTE must still support it, emitting 2 bytes.
+    let lines = vec![line(1, "ORG $10"), line(2, "HERE BYTE HERE $AA")];
+    let asm = parse(&cpu, &lines, false).unwrap();
+    assert_eq!(asm.bin[0x10], 0x10);
+    assert_eq!(asm.bin[0x11], 0x00);
+    assert_eq!(asm.bin[0x12], 0xAA);
 }
