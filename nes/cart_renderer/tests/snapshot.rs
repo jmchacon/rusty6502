@@ -3,13 +3,12 @@
 //! committed under `tests/snapshots/`. Run with `UPDATE_SNAPSHOTS=1 cargo
 //! test -p cart_renderer` to (re)generate the baselines after an
 //! intentional UI change.
-use cart_renderer::{load_cart, load_pal, Data, MyApp};
+use cart_renderer::{load_cart_for_editing, load_pal, Data, EditableCart, MyApp};
 use color_eyre::eyre::{eyre, Result};
 use egui::accesskit::Role;
 use egui::Pos2;
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::Harness;
-use nes_chr::Tile;
 
 fn workspace_path(rel: &str) -> String {
     format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"))
@@ -17,10 +16,10 @@ fn workspace_path(rel: &str) -> String {
 
 /// Loads the shared `NTSC.pal` + `nestest.nes` fixtures already used by
 /// this crate's other tests and by manual smoke-testing during development.
-fn load_fixtures() -> Result<(Data, Vec<Vec<Tile>>)> {
+fn load_fixtures() -> Result<(Data, EditableCart)> {
     let pal = load_pal(&workspace_path("testdata/NTSC.pal"))?;
-    let tiles = load_cart(&workspace_path("testdata/nestest.nes"))?;
-    Ok((pal, tiles))
+    let cart = load_cart_for_editing(&workspace_path("testdata/nestest.nes"))?;
+    Ok((pal, cart))
 }
 
 /// Moves the pointer off the rendered content and lets a frame settle. Used
@@ -35,17 +34,44 @@ fn move_pointer_away<S>(harness: &mut Harness<S>) {
 
 #[test]
 fn default_view() -> Result<()> {
-    let (pal, tiles) = load_fixtures()?;
-    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], tiles));
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
 
     harness.snapshot("default_view");
     Ok(())
 }
 
 #[test]
+#[allow(clippy::unnecessary_wraps)] // matches the other tests' `Result<()>` signature
+fn blank_start_renders() -> Result<()> {
+    // No PAL/cart file given (see `EditableCart::blank`, and `MyApp::new`
+    // synthesizing an all-white palette when `datas` is empty) -- this is
+    // what happens if `cart_renderer` is launched with no filename.
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![], EditableCart::blank(), None));
+
+    harness.run();
+    move_pointer_away(&mut harness);
+
+    harness.snapshot("blank_start_renders");
+    Ok(())
+}
+
+#[test]
+fn file_menu_opens() -> Result<()> {
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
+
+    harness.get_by_label("File").click();
+    harness.run();
+
+    harness.snapshot("file_menu_opens");
+    Ok(())
+}
+
+#[test]
 fn chr_magnification_4x() -> Result<()> {
-    let (pal, tiles) = load_fixtures()?;
-    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], tiles));
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
 
     harness.get_by_label("Magnification").click();
     harness.run();
@@ -59,8 +85,8 @@ fn chr_magnification_4x() -> Result<()> {
 
 #[test]
 fn preview_magnification_16x() -> Result<()> {
-    let (pal, tiles) = load_fixtures()?;
-    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], tiles));
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
 
     // The preview's magnification combo (unlike "CHR set"/"Magnification")
     // has no `.from_label(...)`, so it isn't found by label; its default
@@ -86,8 +112,8 @@ fn preview_magnification_16x() -> Result<()> {
 
 #[test]
 fn color_picker_changes_tile_color() -> Result<()> {
-    let (pal, tiles) = load_fixtures()?;
-    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], tiles));
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
 
     // This ROM's CHR tiles only use palette indices 0 (background) and 3,
     // so "Color 3" is the button that visibly affects the rendered tiles;
@@ -112,5 +138,72 @@ fn color_picker_changes_tile_color() -> Result<()> {
     move_pointer_away(&mut harness);
 
     harness.snapshot("color_picker_changes_tile_color");
+    Ok(())
+}
+
+/// Hovers, then primary-clicks, a point inside the left CHR tile image to
+/// lock hover onto whatever tile is there -- the "Edit" button is disabled
+/// until a tile is locked in this way (see `render_image_row`'s gating on
+/// `hover_locked`). This needs 2 separate frames: locking checks the
+/// *previous* frame's hover state, so hovering and clicking in the same
+/// frame wouldn't register.
+fn lock_tile_0<S>(harness: &mut Harness<S>) {
+    // A few pixels inside the left image's top-left corner, comfortably
+    // inside tile 0 regardless of magnification.
+    let pos = Pos2::new(15.0, 319.0);
+    harness.hover_at(pos);
+    harness.run();
+    harness.drag_at(pos);
+    harness.run();
+    harness.drop_at(pos);
+    harness.run();
+}
+
+#[test]
+fn edit_panel_opens() -> Result<()> {
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
+
+    lock_tile_0(&mut harness);
+    harness.get_by_label("Edit").click();
+    harness.run();
+    move_pointer_away(&mut harness);
+
+    harness.snapshot("edit_panel_opens");
+    Ok(())
+}
+
+#[test]
+fn edit_button_disabled_until_a_tile_is_locked() -> Result<()> {
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
+
+    harness.run();
+    move_pointer_away(&mut harness);
+
+    harness.snapshot("edit_button_disabled_until_a_tile_is_locked");
+    Ok(())
+}
+
+#[test]
+fn edit_panel_pixel_dropdown() -> Result<()> {
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
+
+    lock_tile_0(&mut harness);
+    harness.get_by_label("Edit").click();
+    harness.run();
+
+    // The 64 pixel-grid cells are unlabeled (image-only), same as the
+    // palette swatches in `color_picker_changes_tile_color` -- click the
+    // first one to open its color menu.
+    let cell_0 = harness
+        .get_all_by_role(Role::Button)
+        .find(|n| n.accesskit_node().label().is_none())
+        .ok_or_else(|| eyre!("expected at least one unlabeled pixel-grid cell"))?;
+    cell_0.click();
+    harness.run();
+
+    harness.snapshot("edit_panel_pixel_dropdown");
     Ok(())
 }

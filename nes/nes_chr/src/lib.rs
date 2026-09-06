@@ -66,6 +66,46 @@ pub fn map_chr_rom(data: &[u8]) -> Result<Vec<Tile>> {
     Ok(ret)
 }
 
+/// Encodes a tile's palette lookup data (0-3 per pixel) back into the 2 bit
+/// plane, 16 byte CHR ROM format -- the exact inverse of the decoding done
+/// by [`map_chr_rom`] for a single tile.
+#[must_use]
+pub fn tile_to_chr_bytes(tile: &Tile) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    for idx in 0..8 {
+        let mut first = 0u8;
+        let mut second = 0u8;
+        for bit in 0..8 {
+            let e = tile.data[idx * 8 + 7 - bit];
+            first |= (e & 0x01) << bit;
+            second |= ((e & 0x02) >> 1) << bit;
+        }
+        out[idx] = first;
+        out[idx + 8] = second;
+    }
+    out
+}
+
+/// Encodes a full set of tiles (as produced by [`map_chr_rom`]) back into a
+/// raw CHR ROM byte block.
+///
+/// # Errors
+/// Returns an error if `tiles` isn't a multiple of the number of tiles
+/// [`map_chr_rom`] would produce for a whole number of 8KB blocks.
+pub fn tiles_to_chr_rom(tiles: &[Tile]) -> Result<Vec<u8>> {
+    if !(tiles.len() * 16).is_multiple_of(8_192) {
+        return Err(eyre!(
+            "Number of tiles ({}) doesn't divide evenly into 8KB blocks",
+            tiles.len()
+        ));
+    }
+    let mut out = Vec::with_capacity(tiles.len() * 16);
+    for tile in tiles {
+        out.extend_from_slice(&tile_to_chr_bytes(tile));
+    }
+    Ok(out)
+}
+
 /// Given a tile of data in palette lookup form (0-3 values) return
 /// a set of strings describing it where . == background (0) and 1-3
 /// for palette lookups.

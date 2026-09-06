@@ -1,4 +1,4 @@
-use crate::{map_chr_rom, tile_print};
+use crate::{map_chr_rom, tile_print, tile_to_chr_bytes, tiles_to_chr_rom};
 use color_eyre::eyre::Result;
 
 #[test]
@@ -44,4 +44,41 @@ fn parse_tile() -> Result<()> {
         panic!();
     }
     Ok(())
+}
+
+#[test]
+fn round_trip_tile_encoding() -> Result<()> {
+    // A full 8KB block (512 tiles) of varied bytes so the round trip
+    // exercises every bit pattern, not just one hand picked tile.
+    let mut data = [0_u8; 8_192];
+    for (i, b) in data.iter_mut().enumerate() {
+        // We know this cast is safe since it's masked to a byte.
+        #[allow(clippy::cast_possible_truncation)]
+        {
+            *b = (i * 37 + 11) as u8;
+        }
+    }
+
+    let tiles = map_chr_rom(&data)?;
+    let re_encoded = tiles_to_chr_rom(&tiles)?;
+    assert_eq!(
+        re_encoded, data,
+        "re-encoding decoded tiles didn't reproduce the original CHR bytes"
+    );
+
+    // A single tile's worth also round trips through `tile_to_chr_bytes`
+    // directly.
+    let single = tile_to_chr_bytes(&tiles[0]);
+    assert_eq!(single, data[0..16]);
+    Ok(())
+}
+
+#[test]
+fn tiles_to_chr_rom_rejects_non_block_sized_input() {
+    let tiles: Vec<_> = (0..3).map(|_| crate::Tile::default()).collect();
+    let res = tiles_to_chr_rom(&tiles);
+    assert!(
+        res.is_err(),
+        "expected error for non-8KB-aligned tile count"
+    );
 }

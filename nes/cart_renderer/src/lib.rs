@@ -2,8 +2,9 @@
 //! CHR sections, with color selection from a chosen palette.
 //!
 //! This is the library half of the crate: [`MyApp`] (an [`eframe::App`])
-//! plus the [`load_pal`]/[`load_cart`] helpers used to build the arguments
-//! it needs. The `cart_renderer` binary is a thin CLI wrapper around this.
+//! plus the [`load_pal`]/[`load_cart_for_editing`] helpers used to build the
+//! arguments it needs. The `cart_renderer` binary is a thin CLI wrapper
+//! around this.
 use color_eyre::eyre::{eyre, Result, WrapErr};
 use egui::{
     Color32, FontFamily, FontId, Pos2, Rect, Sense, TextStyle, TextWrapMode, TextureHandle,
@@ -13,8 +14,11 @@ use nes_chr::Tile;
 use nes_pal::{parse_pal, Color};
 use nes_pal_gui::texture_from_palette;
 use std::collections::BTreeMap;
-use std::fs::read;
-use std::path::Path;
+use std::fs::{read, write};
+use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+mod tests;
 
 /// A parsed `.pal` file: its colors, plus the file's base name (used as its
 /// display label in the palette selector).
@@ -41,19 +45,118 @@ pub fn load_pal(path: &str) -> Result<Data> {
     Ok(Data { filename, colors })
 }
 
-/// Loads an INES cart file and decodes its CHR ROM into per-page tile sets.
-/// Each 8KB CHR block becomes a 2x256 set of tiles.
+// The fixed iNES header layout this crate relies on (see
+// http://wiki.nesdev.com/w/index.php/INES and .../NES_2.0): a 16 byte
+// header, an optional 512 byte trainer, then the PRG ROM, then the CHR ROM.
+// These never change regardless of cart contents, so they're small enough
+// to just hardcode here rather than depend on `ines`'s (private) constants.
+const INES_HEADER_SIZE: usize = 16;
+const INES_TRAINER_SIZE: usize = 512;
+const INES_PRG_BLOCK_SIZE: usize = 16_384;
+
+/// An NES cart loaded for viewing/editing: its decoded tiles (see
+/// [`load_cart_for_editing`]) plus enough of the original file to write CHR
+/// edits back out to it later (see [`MyApp`]'s Save/Save As handling).
+///
+/// Saving only ever replaces the CHR ROM region -- everything else in the
+/// original file this app doesn't understand or ever changes (PRG code,
+/// mapper-specific header fields, trainer, misc ROM, ...) round trips byte
+/// for byte instead of being reconstructed from scratch.
+pub struct EditableCart {
+    /// The decoded tiles, one `Vec` per CHR ROM page (8KB/256 tiles each).
+    pub tiles: Vec<Vec<Tile>>,
+    // The original file's bytes verbatim, or empty if there was no original
+    // file (see `blank`) -- in which case Save/Save As synthesize a minimal
+    // new file instead of patching one.
+    raw: Vec<u8>,
+    // Byte offset of the CHR ROM region within `raw`. Always valid even
+    // though CHR edits never change the file's size (only re-encoding the
+    // same number of tiles back to the same number of bytes).
+    chr_offset: usize,
+}
+
+impl EditableCart {
+    /// The starting state when no file was given: all white colors have
+    /// nothing to do with this (see [`MyApp::new`]), but this is the "empty
+    /// tile sets" half of that -- one blank (all background) CHR page, and
+    /// no original file to patch on Save (see `raw`'s doc comment above).
+    #[must_use]
+    pub fn blank() -> Self {
+        let blank_page = (0..256).map(|_| Tile::default()).collect();
+        Self {
+            tiles: vec![blank_page],
+            raw: Vec::new(),
+            chr_offset: 0,
+        }
+    }
+}
+
+/// Loads an INES cart file and decodes its CHR ROM into per-page tile sets
+/// (each 8KB CHR block becomes a 2x256 set of tiles), retaining what's
+/// needed to write edits back out to the same file later.
 ///
 /// # Errors
 /// Returns an error if the file can't be read or doesn't parse as a valid
 /// INES cart.
-pub fn load_cart(path: &str) -> Result<Vec<Vec<Tile>>> {
-    let bytes = read(path).wrap_err_with(|| format!("reading {path}"))?;
+pub fn load_cart_for_editing(path: &str) -> Result<EditableCart> {
+    let raw = read(path).wrap_err_with(|| format!("reading {path}"))?;
+    let nes = ines::parse(&raw)?;
     let mut tiles = Vec::new();
-    for t in &ines::parse(&bytes)?.chr {
+    for t in &nes.chr {
         tiles.push(nes_chr::map_chr_rom(t)?);
     }
-    Ok(tiles)
+    let chr_offset = INES_HEADER_SIZE
+        + if nes.trainer.is_some() {
+            INES_TRAINER_SIZE
+        } else {
+            0
+        }
+        + nes.prg.len() * INES_PRG_BLOCK_SIZE;
+    Ok(EditableCart {
+        tiles,
+        raw,
+        chr_offset,
+    })
+}
+
+// Re-encodes every currently loaded CHR page's (possibly edited) tile data
+// back into raw CHR ROM bytes and either patches it into the original
+// file's bytes at `chr_offset` (preserving everything else -- PRG code,
+// header flags (including any NES 2.0-only fields: submapper, exact
+// PRG/CHR RAM sizes, CPU timing, ...), trainer, misc ROM -- byte for byte,
+// since only the CHR ROM region between `chr_offset` and `chr_offset +
+// chr_bytes.len()` is ever touched) or, if `raw` is empty (this session
+// started with no file -- see `EditableCart::blank`), synthesizes a
+// minimal new plain iNES 1.0 file around it (there being no original
+// header to preserve in that case).
+fn build_output_bytes(raw: &[u8], chr_offset: usize, tiles: &[Vec<Tile>]) -> Result<Vec<u8>> {
+    let mut chr_bytes = Vec::new();
+    for page in tiles {
+        chr_bytes.extend(nes_chr::tiles_to_chr_rom(page)?);
+    }
+
+    if raw.is_empty() {
+        let chr_pages = u8::try_from(tiles.len()).unwrap_or(u8::MAX);
+        let mut out = Vec::with_capacity(INES_HEADER_SIZE + INES_PRG_BLOCK_SIZE + chr_bytes.len());
+        out.extend_from_slice(b"NES\x1A");
+        out.push(1); // 1 (empty) PRG bank -- an INES file needs at least one.
+        out.push(chr_pages);
+        out.extend_from_slice(&[0u8; 10]); // flags 6/7 and the rest of the header default to 0.
+        out.extend_from_slice(&[0u8; INES_PRG_BLOCK_SIZE]);
+        out.extend_from_slice(&chr_bytes);
+        Ok(out)
+    } else {
+        let mut out = raw.to_vec();
+        let end = chr_offset + chr_bytes.len();
+        if end > out.len() {
+            return Err(eyre!(
+                "Edited CHR data ({} bytes) doesn't fit back into the original file's CHR region",
+                chr_bytes.len()
+            ));
+        }
+        out[chr_offset..end].copy_from_slice(&chr_bytes);
+        Ok(out)
+    }
 }
 
 enum Stage {
@@ -146,6 +249,26 @@ pub struct MyApp {
 
     // If non-blank is the hover text displayed over the palette.
     palette_hover: String,
+
+    // If a tile is being edited (the "Edit" button was pressed) this holds
+    // all of that panel's state. `None` means the panel is closed.
+    edit_panel: Option<Box<EditPanelState>>,
+
+    // The original file bytes for the currently loaded cart (see
+    // `EditableCart::raw`'s doc comment) and the byte offset of its CHR ROM
+    // region within them, both needed by File > Save/Save As.
+    raw: Vec<u8>,
+    chr_offset: usize,
+
+    // The path last loaded from or saved to. `None` until the first
+    // successful Save/Save As if the app started with no file (see
+    // `EditableCart::blank`) -- in which case File > Save behaves like
+    // Save As (there's nothing to overwrite yet).
+    current_path: Option<PathBuf>,
+
+    // If Save/Save As is about to overwrite an existing file, the path
+    // pending confirmation. `None` means no confirmation dialog is showing.
+    pending_overwrite: Option<PathBuf>,
 }
 
 const PALETTE_SQ_X: usize = 40;
@@ -385,6 +508,7 @@ struct ImageRow<'a> {
     tile_data: &'a mut Box<[Color32]>,
     tiles: &'a [Vec<Tile>],
     selection: &'a Selection,
+    edit_panel: &'a mut Option<Box<EditPanelState>>,
     color_source: &'a [Data],
     column_size: Vec2,
     render_stage: &'a mut Stage,
@@ -418,12 +542,71 @@ struct HoverInput<'a> {
     single_title: &'a mut String,
 }
 
+// All the state for the "Edit tile" side panel: which tile it's editing, a
+// working copy of that tile's pixels (0-3 indices, same as `Tile::data`) and
+// a local copy of the 4 color slots used only to preview the tile while
+// editing it. Both are snapshotted on open (`original_*`) so Revert can
+// restore them without needing to re-read the source tile.
+//
+// The local colors never change what's actually saved -- only `pixels` is
+// written back to the real tile's data on Save. They just control how this
+// panel (and its own preview) renders the tile while you're picking which of
+// the 4 slots each pixel uses; the tile's real on-screen look afterwards
+// still depends on whatever colors are selected on the main screen.
+struct EditPanelState {
+    chr: usize,
+    tile_idx: usize,
+
+    pixels: [u8; 64],
+    original_pixels: [u8; 64],
+
+    colors: [usize; NUM_COLORS],
+    original_colors: [usize; NUM_COLORS],
+
+    // If one of the 4 local color swatches is pressed, which one (mirrors
+    // `MyApp::button`/`MyApp::dialog_selected` but scoped to this panel so
+    // it doesn't fight with the main screen's color picker).
+    color_button: Option<usize>,
+    dialog_selected: usize,
+
+    // The panel's own single-tile preview, rendered the same way as the main
+    // screen's (see `redraw_single_preview`) but sized by this panel's own
+    // magnification, independent of the main preview's.
+    preview: TextureHandle,
+    preview_data: Box<[Color32]>,
+    preview_draw_data: TileDrawData,
+}
+
 impl MyApp {
-    /// Builds the app from already-loaded palette and CHR tile data (see
-    /// [`load_pal`] and [`load_cart`]).
+    /// Builds the app from already-loaded palette data (see [`load_pal`]) and
+    /// cart data (see [`load_cart_for_editing`] and [`EditableCart::blank`]).
+    ///
+    /// `datas` may be empty (no PAL file given at startup) -- this then uses
+    /// a single synthetic all-white palette instead, so the rest of the app
+    /// (which otherwise assumes at least one palette exists) doesn't need to
+    /// special-case it. `current_path` is the file `cart` was loaded from, or
+    /// `None` for [`EditableCart::blank`]/no file given.
     #[must_use]
-    pub fn new(cc: &eframe::CreationContext<'_>, datas: Vec<Data>, tiles: Vec<Vec<Tile>>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        mut datas: Vec<Data>,
+        cart: EditableCart,
+        current_path: Option<PathBuf>,
+    ) -> Self {
         use FontFamily::{Monospace, Proportional};
+
+        if datas.is_empty() {
+            datas.push(Data {
+                filename: "(no palette)".to_string(),
+                colors: (0..64)
+                    .map(|_| Color {
+                        r: 255,
+                        g: 255,
+                        b: 255,
+                    })
+                    .collect(),
+            });
+        }
 
         let text_styles: BTreeMap<_, _> = [
             (TextStyle::Heading, FontId::new(25.0, Proportional)),
@@ -495,7 +678,7 @@ impl MyApp {
             remeasure_generation: 0,
             single_tile_column_size: Vec2::ZERO,
             tile_draw_data: tdd,
-            tiles,
+            tiles: cart.tiles,
             palette: None,
             left,
             left_image: None,
@@ -512,23 +695,31 @@ impl MyApp {
             color_source: datas,
             single_title: String::with_capacity(16),
             palette_hover: String::with_capacity(4),
+            edit_panel: None,
+            raw: cart.raw,
+            chr_offset: cart.chr_offset,
+            current_path,
+            pending_overwrite: None,
         }
     }
 
     // `color_picker` is the modal dialog for chosing a new color when one of
-    // the color buttons is selected.
-    fn color_picker(&mut self, bidx: usize, ui: &mut Ui) {
+    // the color buttons is selected. Takes its target state explicitly
+    // (rather than `&mut self`) so it can back both the main screen's global
+    // color selection and the edit panel's local one.
+    #[allow(clippy::too_many_arguments)]
+    fn color_picker(
+        colors_per_pal: &[Vec<TextureHandle>],
+        pal: usize,
+        button: &mut Option<usize>,
+        dialog_selected: &mut usize,
+        target_colors: &mut [usize; NUM_COLORS],
+        bidx: usize,
+        ui: &mut Ui,
+    ) {
         const NUM_PER_ROW: usize = 16;
 
-        let Self {
-            colors_per_pal,
-            selection,
-            button,
-            dialog_selected,
-            ..
-        } = self;
-
-        let clrs = &colors_per_pal[selection.pal];
+        let clrs = &colors_per_pal[pal];
 
         // Create a 16 x 4 set of colors where each entry is a distinct button
         // rather than just a pallete displayed in the main UI. This way any
@@ -556,7 +747,7 @@ impl MyApp {
             ui.image(&clrs[*dialog_selected]);
             ui.add_space(100.0);
             if ui.button("Select").clicked() {
-                selection.colors[bidx] = *dialog_selected;
+                target_colors[bidx] = *dialog_selected;
                 *button = None;
             }
             if ui.button("Cancel").clicked() {
@@ -664,6 +855,7 @@ impl MyApp {
                 tile_data,
                 tiles: &self.tiles,
                 selection: &*selection,
+                edit_panel: &mut self.edit_panel,
                 color_source,
                 column_size: self.single_tile_column_size,
                 render_stage: &mut self.render_stage,
@@ -882,6 +1074,7 @@ impl MyApp {
     // (heading, preview image, its own magnification combo, and the "Edit"
     // button) between them. Returns the preview column's measured size for
     // next frame's centering (see `single_tile_column_size`'s field doc).
+    #[allow(clippy::too_many_lines)]
     fn render_image_row(ui: &mut Ui, r: &mut ImageRow) -> Vec2 {
         let mut new_column_size = r.column_size;
         ui.horizontal(|ui| {
@@ -964,8 +1157,71 @@ impl MyApp {
                                     }
                                 }
                             });
-                        // Not wired up to anything yet.
-                        let _ = ui.button("Edit");
+                        // Only meaningful once a tile is locked in (hovering
+                        // alone means the preview can still change out from
+                        // under an open edit panel), so disable it otherwise.
+                        let edit_clicked = ui
+                            .add_enabled(r.selection.hover_locked, egui::Button::new("Edit"))
+                            .clicked();
+                        if edit_clicked {
+                            let tile_idx = r.selection.hovered.unwrap_or(0);
+                            let chr = r.selection.chr;
+                            let pixels = r.tiles[chr][tile_idx].data;
+                            let colors = r.selection.colors;
+
+                            // Starts at the same default (8x) as the main
+                            // preview and supports the same 1x-16x range.
+                            let preview_draw_data = TileDrawData::default();
+                            let mut preview_data =
+                                vec![Color32::WHITE; preview_draw_data.single_tile_layout_size]
+                                    .into_boxed_slice();
+                            let im = egui::ColorImage::new(
+                                [
+                                    preview_draw_data.single_tile_x_total,
+                                    preview_draw_data.single_tile_y_total,
+                                ],
+                                preview_data.to_vec(),
+                            );
+                            let mut preview = ui.ctx().load_texture(
+                                "Edit tile preview",
+                                egui::ImageData::Color(im.into()),
+                                TextureOptions::default(),
+                            );
+
+                            let tile = Tile { data: pixels };
+                            let pal = PalContext {
+                                colors: &colors,
+                                color_source: r.color_source,
+                                selected_pal: r.selection.pal,
+                            };
+                            Self::redraw_single_preview(
+                                &mut preview,
+                                &tile,
+                                &pal,
+                                &preview_draw_data,
+                                &mut preview_data,
+                            );
+
+                            *r.edit_panel = Some(Box::new(EditPanelState {
+                                chr,
+                                tile_idx,
+                                pixels,
+                                original_pixels: pixels,
+                                colors,
+                                original_colors: colors,
+                                color_button: None,
+                                dialog_selected: 0,
+                                preview,
+                                preview_data,
+                                preview_draw_data,
+                            }));
+
+                            // The side panel changes the window's total
+                            // width, so force a remeasure/resize just like a
+                            // magnification change does.
+                            *r.render_stage = Stage::PreRender(2_isize);
+                            *r.remeasure_generation += 1;
+                        }
                     });
                 },
             );
@@ -981,6 +1237,176 @@ impl MyApp {
             ui.add_space(10.0);
         });
         new_column_size
+    }
+
+    // Renders the "Edit tile" side panel: the local color slots, the large
+    // interactive 8x8 pixel grid, this panel's own single-tile preview, and
+    // the Save/Revert/Exit buttons. Does nothing if the panel isn't open.
+    #[allow(clippy::too_many_lines)]
+    fn render_edit_panel(&mut self, ui: &mut Ui) {
+        const CELL: f32 = 32.0;
+
+        let Self {
+            colors_per_pal,
+            color_source,
+            selection,
+            tiles,
+            edit_panel,
+            render_stage,
+            remeasure_generation,
+            ..
+        } = self;
+
+        let Some(edit) = edit_panel.as_mut() else {
+            return;
+        };
+
+        ui.heading(format!("Edit Tile #{}", edit.tile_idx));
+        ui.add_space(8.0);
+
+        // The 4 local color slots. Editing these only changes how this
+        // panel previews the tile -- see `EditPanelState`'s doc comment.
+        ui.label("Local colors (preview only)");
+        egui::Grid::new("edit_panel_colors")
+            .num_columns(2)
+            .show(ui, |ui| {
+                for i in 0..NUM_COLORS {
+                    let texture = &colors_per_pal[selection.pal][edit.colors[i]];
+                    if ui
+                        .add(egui::Button::image_and_text(texture, BUTTONS[i]))
+                        .clicked()
+                    {
+                        edit.color_button = Some(i);
+                        edit.dialog_selected = edit.colors[i];
+                    }
+                    if i % 2 == 1 {
+                        ui.end_row();
+                    }
+                }
+            });
+
+        ui.add_space(8.0);
+        ui.separator();
+
+        // The large interactive pixel grid. Each cell shows which of the 4
+        // local colors that pixel currently uses; hovering names it and
+        // clicking opens a menu to change it.
+        egui::Grid::new("edit_panel_grid")
+            .spacing(egui::vec2(1.0, 1.0))
+            .show(ui, |ui| {
+                for y in 0..8 {
+                    for x in 0..8 {
+                        let i = y * 8 + x;
+                        let idx = usize::from(edit.pixels[i]);
+                        let pal_idx = edit.colors[idx];
+                        let c = &color_source[selection.pal].colors[pal_idx];
+                        let color = Color32::from_rgb(c.r, c.g, c.b);
+
+                        let (rect, response) =
+                            ui.allocate_exact_size(egui::vec2(CELL, CELL), Sense::click());
+                        ui.painter().rect_filled(rect, 0.0, color);
+                        ui.painter().rect_stroke(
+                            rect,
+                            0.0,
+                            egui::Stroke::new(1.0, Color32::from_gray(80)),
+                            egui::StrokeKind::Inside,
+                        );
+                        // A manually-painted rect (rather than an `egui::Button`)
+                        // has no widget role by default, which would make it
+                        // both invisible to accessibility tools and unfindable
+                        // by the `egui_kittest` snapshot tests by role/label.
+                        response.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::Button));
+                        let response = response.on_hover_text(BUTTONS[idx]);
+
+                        egui::Popup::menu(&response).show(|ui| {
+                            for (ci, label) in BUTTONS.iter().enumerate() {
+                                if ui.selectable_label(ci == idx, *label).clicked() {
+                                    edit.pixels[i] = u8::try_from(ci).unwrap_or(0);
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                    ui.end_row();
+                }
+            });
+
+        ui.add_space(8.0);
+        ui.separator();
+
+        // This panel's own single-tile preview, redrawn every frame (it's
+        // one 8x8 tile, not the 512-tile CHR sets, so there's no need for
+        // the main screen's change-detection before redrawing it).
+        let tile = Tile { data: edit.pixels };
+        let pal = PalContext {
+            colors: &edit.colors,
+            color_source: color_source.as_slice(),
+            selected_pal: selection.pal,
+        };
+        Self::redraw_single_preview(
+            &mut edit.preview,
+            &tile,
+            &pal,
+            &edit.preview_draw_data,
+            &mut edit.preview_data,
+        );
+        ui.vertical_centered(|ui| {
+            ui.add(egui::Image::new(&edit.preview).fit_to_original_size(1.0));
+        });
+
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("edit panel preview magnification")
+                .selected_text(format!(
+                    "{}x",
+                    edit.preview_draw_data.single_tile_multiplier_x
+                ))
+                .show_ui(ui, |ui| {
+                    for m in 1..=16 {
+                        let selected = edit.preview_draw_data.single_tile_multiplier_x == m;
+                        if ui.selectable_label(selected, format!("{m}x")).clicked() {
+                            edit.preview_draw_data.update_single_tile_multiplier(m);
+                            edit.preview_data = vec![
+                                Color32::WHITE;
+                                edit.preview_draw_data.single_tile_layout_size
+                            ]
+                            .into_boxed_slice();
+                        }
+                    }
+                });
+            ui.label("Magnification");
+        });
+
+        ui.add_space(8.0);
+        ui.separator();
+
+        // Collect which button (if any) was clicked before acting on it, so
+        // acting on "Exit" (which needs to write through `edit_panel`
+        // itself, not just `edit`) doesn't fight with `edit`'s borrow of it.
+        let mut revert_clicked = false;
+        let mut save_clicked = false;
+        let mut exit_clicked = false;
+        ui.horizontal(|ui| {
+            revert_clicked = ui.button("Revert").clicked();
+            save_clicked = ui.button("Save").clicked();
+            exit_clicked = ui.button("Exit").clicked();
+        });
+
+        if revert_clicked {
+            edit.pixels = edit.original_pixels;
+            edit.colors = edit.original_colors;
+        }
+        if save_clicked {
+            tiles[edit.chr][edit.tile_idx].data = edit.pixels;
+            edit.original_pixels = edit.pixels;
+            edit.original_colors = edit.colors;
+            *render_stage = Stage::PreRender(2_isize);
+            *remeasure_generation += 1;
+        }
+        if exit_clicked {
+            *edit_panel = None;
+            *render_stage = Stage::PreRender(2_isize);
+            *remeasure_generation += 1;
+        }
     }
 
     // Interprets pointer input against the palette/CHR images: palette
@@ -1378,11 +1804,158 @@ impl MyApp {
             });
     }
 
+    // Renders the top "File" menu bar (Load/Save/Save As/Exit) and, when
+    // one is pending, the confirm-overwrite dialog Save/Save As show before
+    // clobbering an existing file.
+    fn render_menu_bar(&mut self, ui: &mut Ui) {
+        egui::Panel::top("menu_bar").show(ui, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Load...").clicked() {
+                        ui.close();
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("NES ROM", &["nes"])
+                            .pick_file()
+                        {
+                            match load_cart_for_editing(&path.to_string_lossy()) {
+                                Ok(cart) => self.load_new_cart(cart, path),
+                                Err(e) => eprintln!("Failed to load {}: {e:?}", path.display()),
+                            }
+                        }
+                    }
+                    if ui.button("Save").clicked() {
+                        ui.close();
+                        self.handle_save(false);
+                    }
+                    if ui.button("Save As...").clicked() {
+                        ui.close();
+                        self.handle_save(true);
+                    }
+                    ui.separator();
+                    if ui.button("Exit").clicked() {
+                        ui.close();
+                        ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                });
+            });
+        });
+
+        if let Some(path) = self.pending_overwrite.clone() {
+            egui::Window::new("Overwrite file?").show(ui.ctx(), |ui| {
+                ui.label(format!("{} already exists. Overwrite it?", path.display()));
+                ui.horizontal(|ui| {
+                    if ui.button("Overwrite").clicked() {
+                        self.pending_overwrite = None;
+                        match self.write_to(&path) {
+                            Ok(()) => self.current_path = Some(path.clone()),
+                            Err(e) => eprintln!("Failed to save {}: {e:?}", path.display()),
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.pending_overwrite = None;
+                    }
+                });
+            });
+        }
+    }
+
+    // Handles a "Save" (`force_dialog` false) or "Save As" (`force_dialog`
+    // true) click: picks the target path (prompting via a native save
+    // dialog for Save As, or plain Save with nothing saved yet), then either
+    // writes immediately or -- if that path already exists -- defers to the
+    // confirm-overwrite dialog rendered by `render_menu_bar`.
+    fn handle_save(&mut self, force_dialog: bool) {
+        let target = if force_dialog || self.current_path.is_none() {
+            rfd::FileDialog::new()
+                .add_filter("NES ROM", &["nes"])
+                .save_file()
+        } else {
+            self.current_path.clone()
+        };
+        let Some(path) = target else {
+            return;
+        };
+        if path.exists() {
+            self.pending_overwrite = Some(path);
+        } else {
+            match self.write_to(&path) {
+                Ok(()) => self.current_path = Some(path),
+                Err(e) => eprintln!("Failed to save {}: {e:?}", path.display()),
+            }
+        }
+    }
+
+    // Writes the current (possibly edited) cart out to `path`.
+    fn write_to(&self, path: &Path) -> Result<()> {
+        let bytes = build_output_bytes(&self.raw, self.chr_offset, &self.tiles)?;
+        write(path, bytes)?;
+        Ok(())
+    }
+
+    // Replaces the currently loaded cart with a freshly loaded one (from
+    // File > Load), resetting selection/edit state that no longer applies
+    // to the new cart and forcing the window to remeasure/resize.
+    fn load_new_cart(&mut self, cart: EditableCart, path: PathBuf) {
+        self.tiles = cart.tiles;
+        self.raw = cart.raw;
+        self.chr_offset = cart.chr_offset;
+        self.current_path = Some(path);
+        self.selection = Selection::new();
+        self.edit_panel = None;
+        self.render_stage = Stage::PreRender(2_isize);
+        self.remeasure_generation += 1;
+    }
+
     // The actual UI itself.
     fn render(&mut self, ui: &mut egui::Ui) {
+        self.render_menu_bar(ui);
+
         // If a color picker button has been selected display the dialog.
         if let Some(bidx) = self.button {
-            egui::Window::new("Color picker").show(ui.ctx(), |ui| self.color_picker(bidx, ui));
+            egui::Window::new("Color picker").show(ui.ctx(), |ui| {
+                Self::color_picker(
+                    &self.colors_per_pal,
+                    self.selection.pal,
+                    &mut self.button,
+                    &mut self.dialog_selected,
+                    &mut self.selection.colors,
+                    bidx,
+                    ui,
+                );
+            });
+        }
+
+        // If the tile edit panel is open show it (and its own color picker
+        // dialog, if one of its local color slots is being changed) before
+        // the central panel, since side panels must be added before it for
+        // egui to give the central panel the remaining space correctly.
+        if self.edit_panel.is_some() {
+            if let Some(bidx) = self.edit_panel.as_ref().and_then(|e| e.color_button) {
+                let Self {
+                    colors_per_pal,
+                    selection,
+                    edit_panel,
+                    ..
+                } = self;
+                let pal = selection.pal;
+                #[allow(clippy::unwrap_used)]
+                let edit = edit_panel.as_mut().unwrap();
+                egui::Window::new("Edit tile color picker").show(ui.ctx(), |ui| {
+                    Self::color_picker(
+                        colors_per_pal.as_slice(),
+                        pal,
+                        &mut edit.color_button,
+                        &mut edit.dialog_selected,
+                        &mut edit.colors,
+                        bidx,
+                        ui,
+                    );
+                });
+            }
+
+            egui::Panel::right("edit_panel").show(ui, |ui| {
+                self.render_edit_panel(ui);
+            });
         }
 
         // Always show the main window.

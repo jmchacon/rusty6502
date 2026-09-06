@@ -15,6 +15,7 @@ ines = { workspace = true }
 nes_chr = { workspace = true }
 nes_pal = { workspace = true }
 nes_pal_gui = { workspace = true }
+rfd = { workspace = true }
 
 [dev-dependencies]
 egui_kittest = { version = "0.36.1", features = ["wgpu", "snapshot", "eframe"] }
