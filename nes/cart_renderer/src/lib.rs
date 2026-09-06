@@ -181,6 +181,20 @@ pub struct MyApp {
     // used. A fresh id per remeasure starts that memory over.
     remeasure_generation: usize,
 
+    // The window size last measured while the edit panel was closed. The
+    // edit panel is a fixed-width (`EDIT_PANEL_WIDTH`) `egui::Panel::right`
+    // added on top of the normal layout, so remeasuring the *whole* window
+    // via `globally_used_rect()` while it's open is unreliable: at the
+    // moment it's added the window is still its old, narrower size, so the
+    // main content (fixed-size CHR images that don't shrink) gets squeezed
+    // and clipped by the panel rather than contributing its true width to
+    // the measurement (see PR discussion on the edit panel overlapping the
+    // CHR grid). Opening/closing the panel instead targets this remembered
+    // base size plus/minus `EDIT_PANEL_WIDTH` directly, so the window always
+    // grows to the right to fit the panel and shrinks back exactly when it
+    // closes, with the original content laid out identically either way.
+    base_size: Option<Vec2>,
+
     // The single-tile preview column's actual rendered size (heading +
     // preview image + magnification/Edit controls) from last frame, used to
     // tell `allocate_ui_with_layout` its true size *before* laying it out
@@ -448,15 +462,20 @@ impl TileDrawData {
 const BUTTONS: [&str; NUM_COLORS] = ["Background", "Color 1", "Color 2", "Color 3"];
 
 // `egui::Panel` doesn't auto-size to its content -- it defaults to a fixed
-// 200px width, which is narrower than the edit panel's 8x8 pixel grid alone
-// (8 * 32px cells + spacing, ~263px). Left at the default, the grid painted
-// past the panel's right edge into the main window's CHR grid instead of the
-// window growing to fit it. An explicit `exact_size` gives the panel a fixed
-// width wide enough for its content and, just as importantly, keeps that
-// width identical between the `pre_render` measurement pass and the real
-// render, since a resizable panel's drag-adjusted width could otherwise
-// drift from what was measured.
-const EDIT_PANEL_WIDTH: f32 = 300.0;
+// 200px width, narrower than the edit panel's own content (the 8x8 pixel
+// grid, color slots, preview, etc. -- measured to need ~344px). An explicit
+// `exact_size` gives it a fixed width instead, which matters for two
+// separate reasons: first, so its content doesn't need more room than it's
+// given -- when it does, egui lets the content overflow past the panel's
+// allotted slot and then clamps the panel back down to this width *anchored
+// on that overflowed edge* rather than the window's true edge, which
+// visibly pushed the whole panel past the right edge of the window; second,
+// so the width stays identical between the `pre_render` measurement pass
+// and the real render, since a resizable panel's drag-adjusted width could
+// otherwise drift from what was measured. Kept comfortably above the
+// measured minimum since both failure modes return if content ever needs
+// more than this again.
+const EDIT_PANEL_WIDTH: f32 = 380.0;
 
 // All the data needed for building up the chr tile images and setting new textures.
 struct ChrTiles<'a> {
@@ -687,6 +706,7 @@ impl MyApp {
         Self {
             render_stage: Stage::PreRender(2_isize),
             remeasure_generation: 0,
+            base_size: None,
             single_tile_column_size: Vec2::ZERO,
             tile_draw_data: tdd,
             tiles: cart.tiles,
@@ -1811,7 +1831,7 @@ impl MyApp {
             .title_bar(false)
             .fixed_pos((0.0, 0.0))
             .show(ctx, |ui| {
-                self.render(ui);
+                self.render(ui, false);
             });
     }
 
@@ -1918,7 +1938,18 @@ impl MyApp {
     }
 
     // The actual UI itself.
-    fn render(&mut self, ui: &mut egui::Ui) {
+    // `show_edit_panel` gates the edit panel's own `egui::Panel::right` (and
+    // its color-picker dialog) separately from `self.edit_panel.is_some()`.
+    // It's `false` during `pre_render`'s scratch-window warm-up passes: the
+    // panel's target width is now computed analytically from `base_size`
+    // (see its doc comment) rather than measured, so there's nothing to
+    // gain from showing it there -- and showing it would actively hurt,
+    // since `egui::Panel` persists its layout state keyed by its id across
+    // frames, and invoking the same "edit_panel" id from inside the
+    // scratch measurement window (a very different available width than
+    // the real top-level `ui`) corrupted that state and made the panel
+    // render clipped/misplaced once shown for real.
+    fn render(&mut self, ui: &mut egui::Ui, show_edit_panel: bool) {
         self.render_menu_bar(ui);
 
         // If a color picker button has been selected display the dialog.
@@ -1940,7 +1971,7 @@ impl MyApp {
         // dialog, if one of its local color slots is being changed) before
         // the central panel, since side panels must be added before it for
         // egui to give the central panel the remaining space correctly.
-        if self.edit_panel.is_some() {
+        if show_edit_panel && self.edit_panel.is_some() {
             if let Some(bidx) = self.edit_panel.as_ref().and_then(|e| e.color_button) {
                 let Self {
                     colors_per_pal,
@@ -1990,13 +2021,27 @@ impl eframe::App for MyApp {
                 if pre_render_cycle > 0 {
                     self.render_stage = Stage::PreRender(pre_render_cycle);
                 } else {
-                    self.render_stage = Stage::FirstRender(ui.ctx().globally_used_rect().size());
+                    let measured = ui.ctx().globally_used_rect().size();
+                    let target = if self.edit_panel.is_some() {
+                        // See `base_size`'s doc comment: don't trust a
+                        // remeasure taken while the edit panel is open.
+                        self.base_size
+                            .map_or(measured, |base| base + Vec2::new(EDIT_PANEL_WIDTH, 0.0))
+                    } else {
+                        self.base_size = Some(measured);
+                        measured
+                    };
+                    self.render_stage = Stage::FirstRender(target);
                 }
             }
             // Now do a render and then a resize to correctly shape the final window.
             Stage::FirstRender(size) => {
+                // Still at the pre-resize window size here (the resize is
+                // requested below, and only takes effect for a later
+                // frame), so, same as `pre_render`, don't show the edit
+                // panel against a width that isn't its final one yet.
                 ui.ctx().request_discard(r"render");
-                self.render(ui);
+                self.render(ui, false);
                 self.render_stage = Stage::FirstResize(size);
             }
             Stage::FirstResize(size) => {
@@ -2006,7 +2051,7 @@ impl eframe::App for MyApp {
                 self.render_stage = Stage::Initialized(size);
             }
             Stage::Initialized(_size) => {
-                self.render(ui);
+                self.render(ui, true);
             }
         }
     }
