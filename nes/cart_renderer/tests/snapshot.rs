@@ -197,13 +197,70 @@ fn edit_panel_pixel_dropdown() -> Result<()> {
     // The 64 pixel-grid cells are unlabeled (image-only), same as the
     // palette swatches in `color_picker_changes_tile_color` -- click the
     // first one to open its color menu.
+    click_pixel_0(&mut harness)?;
+
+    harness.snapshot("edit_panel_pixel_dropdown");
+    Ok(())
+}
+
+/// Opens pixel #0's color menu (see `edit_panel_pixel_dropdown` -- same
+/// approach, factored out since this test needs it twice).
+fn click_pixel_0<S>(harness: &mut Harness<S>) -> Result<()> {
     let cell_0 = harness
         .get_all_by_role(Role::Button)
         .find(|n| n.accesskit_node().label().is_none())
         .ok_or_else(|| eyre!("expected at least one unlabeled pixel-grid cell"))?;
     cell_0.click();
     harness.run();
+    Ok(())
+}
 
-    harness.snapshot("edit_panel_pixel_dropdown");
+/// Picks an entry from pixel #0's open color menu (see `click_pixel_0`) by
+/// label. There are two same-labeled buttons once the menu is open -- this
+/// one, and the panel's own "Local colors" swatch above it -- so a plain
+/// `get_by_label` is ambiguous. The popup renders lower on screen (it opens
+/// at the clicked pixel, below the color slots), so picking the node with
+/// the larger `rect().min.y` disambiguates them.
+fn choose_pixel_color<S>(harness: &mut Harness<S>, label: &str) -> Result<()> {
+    let node = harness
+        .get_all_by_label(label)
+        .max_by(|a, b| a.rect().min.y.total_cmp(&b.rect().min.y))
+        .ok_or_else(|| eyre!("expected a \"{label}\" button in the open pixel color menu"))?;
+    node.click();
+    harness.run();
+    Ok(())
+}
+
+#[test]
+fn revert_undoes_a_save_back_to_the_panel_opened_state() -> Result<()> {
+    let (pal, cart) = load_fixtures()?;
+    let mut harness = Harness::new_eframe(|cc| MyApp::new(cc, vec![pal], cart, None));
+
+    lock_tile_0(&mut harness);
+    harness.get_by_label("Edit").click();
+    harness.run();
+
+    // Pixel #0 starts on "Background" (black). Set it to "Color 3" (white)
+    // and Save -- this commits to the main CHR data, which is the point:
+    // Revert afterward should still undo it, not treat it as a new baseline.
+    click_pixel_0(&mut harness)?;
+    choose_pixel_color(&mut harness, "Color 3")?;
+    harness.get_by_label("Save").click();
+    harness.run();
+
+    // Edit it again post-save (to "Color 1", also white -- the exact color
+    // doesn't matter, only that there's now an unsaved edit on top of the
+    // saved one) so Revert has two layers of change to undo in one go.
+    click_pixel_0(&mut harness)?;
+    choose_pixel_color(&mut harness, "Color 1")?;
+
+    harness.get_by_label("Revert").click();
+    harness.run();
+    move_pointer_away(&mut harness);
+
+    // Pixel #0 should be back to "Background" (black), as it was when the
+    // panel was first opened -- not "Color 3" (the saved state) and not
+    // "Color 1" (the last unsaved edit).
+    harness.snapshot("revert_undoes_a_save_back_to_the_panel_opened_state");
     Ok(())
 }

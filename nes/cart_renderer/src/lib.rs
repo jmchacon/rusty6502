@@ -54,6 +54,11 @@ const INES_HEADER_SIZE: usize = 16;
 const INES_TRAINER_SIZE: usize = 512;
 const INES_PRG_BLOCK_SIZE: usize = 16_384;
 
+// FLAGS_7_BYTE bits 2-3: identifies the header as NES 2.0 rather than plain
+// iNES. See `build_output_bytes`'s doc comment for why a from-scratch save
+// always uses this.
+const NES20_CART_SIG: u8 = 0x08;
+
 /// An NES cart loaded for viewing/editing: its decoded tiles (see
 /// [`load_cart_for_editing`]) plus enough of the original file to write CHR
 /// edits back out to it later (see [`MyApp`]'s Save/Save As handling).
@@ -82,7 +87,10 @@ impl EditableCart {
     /// no original file to patch on Save (see `raw`'s doc comment above).
     #[must_use]
     pub fn blank() -> Self {
-        let blank_page = (0..256).map(|_| Tile::default()).collect();
+        // One full CHR ROM bank's worth of tiles (8KB / 16 bytes each) --
+        // anything less doesn't divide evenly into a bank and `Save` can't
+        // encode it back to CHR ROM bytes (see `nes_chr::tiles_to_chr_rom`).
+        let blank_page = (0..512).map(|_| Tile::default()).collect();
         Self {
             tiles: vec![blank_page],
             raw: Vec::new(),
@@ -127,8 +135,11 @@ pub fn load_cart_for_editing(path: &str) -> Result<EditableCart> {
 // since only the CHR ROM region between `chr_offset` and `chr_offset +
 // chr_bytes.len()` is ever touched) or, if `raw` is empty (this session
 // started with no file -- see `EditableCart::blank`), synthesizes a
-// minimal new plain iNES 1.0 file around it (there being no original
-// header to preserve in that case).
+// minimal new NES 2.0 file around it (there being no original header to
+// preserve in that case) -- mapper 0 (NROM), no PRG/CHR RAM, NTSC timing,
+// nothing else declared, but marked as NES 2.0 rather than plain iNES so a
+// from-scratch cart doesn't start life looking like it predates a format
+// that's been standard for new content for years.
 fn build_output_bytes(raw: &[u8], chr_offset: usize, tiles: &[Vec<Tile>]) -> Result<Vec<u8>> {
     let mut chr_bytes = Vec::new();
     for page in tiles {
@@ -141,7 +152,9 @@ fn build_output_bytes(raw: &[u8], chr_offset: usize, tiles: &[Vec<Tile>]) -> Res
         out.extend_from_slice(b"NES\x1A");
         out.push(1); // 1 (empty) PRG bank -- an INES file needs at least one.
         out.push(chr_pages);
-        out.extend_from_slice(&[0u8; 10]); // flags 6/7 and the rest of the header default to 0.
+        out.push(0); // flags 6: mapper low nibble 0, no battery/trainer/four-screen.
+        out.push(NES20_CART_SIG); // flags 7: mapper high nibble 0, marked NES 2.0.
+        out.extend_from_slice(&[0u8; 8]); // submapper/sizes/timing/etc. all default to 0.
         out.extend_from_slice(&[0u8; INES_PRG_BLOCK_SIZE]);
         out.extend_from_slice(&chr_bytes);
         Ok(out)
@@ -1392,7 +1405,13 @@ impl MyApp {
                     edit.preview_draw_data.single_tile_multiplier_x
                 ))
                 .show_ui(ui, |ui| {
-                    for m in 1..=16 {
+                    // Capped below the main preview's 16x: this preview's
+                    // size doesn't factor into the window resize logic (its
+                    // panel has a fixed width and the window's height never
+                    // grows for it), so past ~14x it starts pushing the
+                    // Revert/Save/Exit buttons out of view instead of just
+                    // growing the panel to fit.
+                    for m in 1..=12 {
                         let selected = edit.preview_draw_data.single_tile_multiplier_x == m;
                         if ui.selectable_label(selected, format!("{m}x")).clicked() {
                             edit.preview_draw_data.update_single_tile_multiplier(m);
@@ -1427,9 +1446,14 @@ impl MyApp {
             edit.colors = edit.original_colors;
         }
         if save_clicked {
+            // Deliberately doesn't touch `edit.original_pixels`/`original_colors`:
+            // Save commits to the main CHR data but doesn't move Revert's
+            // baseline, so Revert always goes back to how the tile looked
+            // when the panel was opened, however many times Save has been
+            // hit since. Only Exit (closing the panel, implicitly
+            // confirming whatever's currently saved) starts a fresh baseline
+            // for the next time this tile is edited.
             tiles[edit.chr][edit.tile_idx].data = edit.pixels;
-            edit.original_pixels = edit.pixels;
-            edit.original_colors = edit.colors;
             *render_stage = Stage::PreRender(2_isize);
             *remeasure_generation += 1;
         }

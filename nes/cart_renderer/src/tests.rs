@@ -1,4 +1,4 @@
-use crate::{build_output_bytes, EditableCart};
+use crate::{build_output_bytes, EditableCart, NES20_CART_SIG};
 use color_eyre::eyre::Result;
 
 // Byte offsets/values from the iNES/NES 2.0 header layout (see
@@ -8,7 +8,6 @@ use color_eyre::eyre::Result;
 const HEADER_SIZE: usize = 16;
 const PRG_BLOCK_SIZE: usize = 16_384;
 const CHR_BLOCK_SIZE: usize = 8_192;
-const NES20_CART_SIG: u8 = 0x08; // FLAGS_7_BYTE bits 2-3
 
 /// Builds a minimal, valid NES 2.0 file (1 PRG bank, 1 CHR bank, and a
 /// distinguishing non-default submapper value that only NES 2.0 headers can
@@ -74,6 +73,25 @@ fn saving_an_nes20_file_with_no_edits_reproduces_it_byte_for_byte() -> Result<()
         out, data,
         "saving with no edits should reproduce the original NES 2.0 file exactly"
     );
+    Ok(())
+}
+
+#[test]
+fn saving_a_blank_start_synthesizes_an_nes20_file() -> Result<()> {
+    let cart = EditableCart::blank();
+
+    let out = build_output_bytes(&cart.raw, cart.chr_offset, &cart.tiles)?;
+
+    assert_eq!(&out[0..4], b"NES\x1A", "missing iNES/NES 2.0 magic");
+    assert_eq!(
+        out[7] & NES20_CART_SIG,
+        NES20_CART_SIG,
+        "a from-scratch save should be marked NES 2.0, not plain iNES"
+    );
+    // Default mapper (0, NROM): both the low nibble (flags 6) and high
+    // nibble (flags 7) of the mapper number are 0.
+    assert_eq!(out[6] & 0xF0, 0, "expected mapper 0 (low nibble)");
+    assert_eq!(out[7] & 0xF0, 0, "expected mapper 0 (high nibble)");
     Ok(())
 }
 
