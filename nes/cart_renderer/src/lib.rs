@@ -835,9 +835,12 @@ impl MyApp {
             ..
         } = self;
 
-        // If a color picker button has been pressed the modal dialog is up
-        // so this window is inactive.
-        if button.is_some() {
+        // If a color picker button has been pressed the modal dialog is up,
+        // or the edit panel is open (which has its own color picker, and
+        // shouldn't let the main screen change hover lock, colors, CHR
+        // set/magnification etc. out from under whatever it's editing), the
+        // main window is inactive.
+        if button.is_some() || self.edit_panel.is_some() {
             ui.disable();
         }
 
