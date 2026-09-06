@@ -447,6 +447,17 @@ impl TileDrawData {
 // The labels for the 4 buttons used to select colors.
 const BUTTONS: [&str; NUM_COLORS] = ["Background", "Color 1", "Color 2", "Color 3"];
 
+// `egui::Panel` doesn't auto-size to its content -- it defaults to a fixed
+// 200px width, which is narrower than the edit panel's 8x8 pixel grid alone
+// (8 * 32px cells + spacing, ~263px). Left at the default, the grid painted
+// past the panel's right edge into the main window's CHR grid instead of the
+// window growing to fit it. An explicit `exact_size` gives the panel a fixed
+// width wide enough for its content and, just as importantly, keeps that
+// width identical between the `pre_render` measurement pass and the real
+// render, since a resizable panel's drag-adjusted width could otherwise
+// drift from what was measured.
+const EDIT_PANEL_WIDTH: f32 = 300.0;
+
 // All the data needed for building up the chr tile images and setting new textures.
 struct ChrTiles<'a> {
     tiles: &'a [Vec<Tile>],
@@ -1953,9 +1964,11 @@ impl MyApp {
                 });
             }
 
-            egui::Panel::right("edit_panel").show(ui, |ui| {
-                self.render_edit_panel(ui);
-            });
+            egui::Panel::right("edit_panel")
+                .exact_size(EDIT_PANEL_WIDTH)
+                .show(ui, |ui| {
+                    self.render_edit_panel(ui);
+                });
         }
 
         // Always show the main window.
