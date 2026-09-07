@@ -13,8 +13,8 @@ egui = { workspace = true }
 env_logger = { workspace = true }
 ines = { workspace = true }
 nes_chr = { workspace = true }
+nes_gui = { workspace = true }
 nes_pal = { workspace = true }
-nes_pal_gui = { workspace = true }
 rfd = { workspace = true }
 
 [dev-dependencies]

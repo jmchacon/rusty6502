@@ -1,5 +1,5 @@
 [package]
-name = "nes_pal_gui"
+name = "nes_gui"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,9 +8,11 @@ authors.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+clap = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 nes_pal = { workspace = true }
+rfd = { workspace = true }
 
 [lib]
 test = false

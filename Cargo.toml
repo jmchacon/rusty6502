@@ -20,9 +20,9 @@ members = [
     "./nes/ines",
     "./nes/ines_debug",
     "./nes/nes_chr",
+    "./nes/nes_gui",
     "./nes/nes_memory",
     "./nes/nes_pal",
-    "./nes/nes_pal_gui",
     "./nes/nes_pal_render",
     "./nes/ppu",
 ]
@@ -47,9 +47,9 @@ default-members = [
     "./nes/ines",
     "./nes/ines_debug",
     "./nes/nes_chr",
+    "./nes/nes_gui",
     "./nes/nes_memory",
     "./nes/nes_pal",
-    "./nes/nes_pal_gui",
     "./nes/nes_pal_render",
     "./nes/ppu",
 ]
@@ -83,8 +83,8 @@ irq = { path = "./irq", version = "~0.1" }
 memory = { path = "./memory", version = "~0.1" }
 monitor = { path="./monitor", version = "~0.1" }
 nes_chr = { path="./nes/nes_chr", version = "~0.1" }
+nes_gui = { path="./nes/nes_gui", version = "~0.1" }
 nes_pal = { path="./nes/nes_pal", version = "~0.1" }
-nes_pal_gui = { path="./nes/nes_pal_gui", version = "~0.1" }
 ntest = "0.9.5"
 ppu = { path = "./nes/ppu", version = "~0.1" }
 rand = "0.10.2"

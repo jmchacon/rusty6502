@@ -239,8 +239,11 @@ jobs:
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
       - name: cargo llvm-cov
-        # Exclude nes_pal_gui package as calloop (*nix requirement) can't handle coverage on the version we inherit.
-        run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info --lib --workspace --exclude nes_pal_gui
+        # Was: --exclude nes_pal_gui (calloop, a *nix requirement egui pulls
+        # in, previously couldn't handle coverage instrumentation). Testing
+        # whether that's still needed now that the crate's been renamed to
+        # nes_gui and grown beyond PAL-only use -- see if this job passes.
+        run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info --lib --workspace
         env:
           # The package is checked out at the same level as the cpu package
           # so this ref is one level back.

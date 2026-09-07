@@ -748,8 +748,8 @@ dependencies = [
  "env_logger",
  "ines",
  "nes_chr",
+ "nes_gui",
  "nes_pal",
- "nes_pal_gui",
  "rfd",
 ]
 
@@ -2482,6 +2482,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "nes_gui"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "eframe",
+ "egui",
+ "nes_pal",
+ "rfd",
+]
+
+[[package]]
 name = "nes_memory"
 version = "0.1.0"
 dependencies = [
@@ -2499,15 +2510,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nes_pal_gui"
-version = "0.1.0"
-dependencies = [
- "eframe",
- "egui",
- "nes_pal",
-]
-
-[[package]]
 name = "nes_pal_render"
 version = "0.1.0"
 dependencies = [
@@ -2516,8 +2518,8 @@ dependencies = [
  "eframe",
  "egui",
  "env_logger",
+ "nes_gui",
  "nes_pal",
- "nes_pal_gui",
 ]
 
 [[package]]
