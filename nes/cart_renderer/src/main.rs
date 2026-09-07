@@ -1,22 +1,26 @@
 //! `cart_renderer` CLI entry point: parses arguments and hands off to the
 //! `cart_renderer` library crate (see `lib.rs`) for the actual app.
-use cart_renderer::{load_cart, load_pal, MyApp};
+use cart_renderer::{load_cart_for_editing, load_pal, EditableCart, MyApp};
 use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
+use std::path::PathBuf;
 
 /// `cart_renderer` will load the given PAL files and the NES and render the CHR sections
-/// along with color selection.
+/// along with color selection. At least one `--pal` is required; the cart
+/// filename is optional -- with none, it starts with an empty tile set,
+/// ready for File > Load.
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
     #[arg(
-        help = "Filenames containing .pal data (can be specified N times)",
-        long
+        help = "Filenames containing .pal data (must be specified at least once, can be specified N times)",
+        long,
+        required = true
     )]
     pal: Vec<String>,
 
     #[arg(help = "Filename for cart in INES format")]
-    filename: String,
+    filename: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -35,21 +39,24 @@ fn main() -> Result<()> {
         ..Default::default()
     };
 
-    if args.pal.is_empty() {
-        return Err(eyre!("Must supply at least one PAL filename"));
-    }
-
     let mut colors = Vec::new();
     for f in &args.pal {
         colors.push(load_pal(f)?);
     }
 
-    let tiles = load_cart(&args.filename)?;
+    let (cart, current_path) = if let Some(filename) = &args.filename {
+        (
+            load_cart_for_editing(filename)?,
+            Some(PathBuf::from(filename)),
+        )
+    } else {
+        (EditableCart::blank(), None)
+    };
 
     let res = eframe::run_native(
         "NES file CHR renderer",
         options,
-        Box::new(|cc| Ok(Box::new(MyApp::new(cc, colors, tiles)))),
+        Box::new(|cc| Ok(Box::new(MyApp::new(cc, colors, cart, current_path)))),
     );
 
     if let Err(e) = res {
