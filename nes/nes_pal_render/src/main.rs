@@ -4,21 +4,21 @@
 use std::{collections::BTreeMap, fs::read, path::Path};
 
 use ::egui::{FontFamily, FontId, TextStyle};
-use clap::Parser;
 use eframe::egui;
 use egui::{TextureHandle, Vec2};
+use nes_gui::texture_from_palette;
 use nes_pal::{parse_pal, Color};
-use nes_pal_gui::texture_from_palette;
 
 use color_eyre::eyre::{eyre, Result};
 
 /// `nes_pal_render` will load the given PAL file and render the color scheme.
-#[derive(Parser)]
+#[derive(clap::Parser)]
 #[command(author, version, about)]
 struct Args {
     #[arg(
-        help = "Filenames containing .pal data (can be specified N times)",
-        long
+        help = "Filenames containing .pal data (must be specified at least once, can be specified N times)",
+        long,
+        required = true
     )]
     filename: Vec<String>,
 }
@@ -28,16 +28,22 @@ struct Data {
     colors: Vec<Color>,
 }
 
-fn main() -> Result<()> {
+// This is a GUI app with no attached console to print an error to (see the
+// `windows_subsystem` attribute above), on any platform -- so any startup
+// failure goes through `nes_gui::show_error_and_exit` instead of being
+// returned/printed, which would otherwise be silently lost.
+fn main() {
+    if let Err(e) = run() {
+        nes_gui::show_error_and_exit(&format!("{e:?}"));
+    }
+}
+
+fn run() -> Result<()> {
     color_eyre::install()?;
-    let args: Args = Args::parse();
+    let args: Args = nes_gui::parse_args_or_show();
 
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
     let options = eframe::NativeOptions::default();
-
-    if args.filename.is_empty() {
-        return Err(eyre!("Must supply at least one filename"));
-    }
 
     let mut colors = Vec::new();
     for f in &args.filename {
@@ -52,15 +58,12 @@ fn main() -> Result<()> {
         });
     }
 
-    let res = eframe::run_native(
+    eframe::run_native(
         "NES PAL file renderer",
         options,
         Box::new(|cc| Ok(Box::new(MyApp::new(cc, colors)))),
-    );
-
-    if let Err(e) = res {
-        return Err(eyre!("EGUI error: {e:?}"));
-    }
+    )
+    .map_err(|e| eyre!("EGUI error: {e:?}"))?;
     Ok(())
 }
 

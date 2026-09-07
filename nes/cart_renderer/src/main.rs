@@ -1,7 +1,8 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
+
 //! `cart_renderer` CLI entry point: parses arguments and hands off to the
 //! `cart_renderer` library crate (see `lib.rs`) for the actual app.
 use cart_renderer::{load_cart_for_editing, load_pal, EditableCart, MyApp};
-use clap::Parser;
 use color_eyre::eyre::{eyre, Result};
 use std::path::PathBuf;
 
@@ -9,7 +10,7 @@ use std::path::PathBuf;
 /// along with color selection. At least one `--pal` is required; the cart
 /// filename is optional -- with none, it starts with an empty tile set,
 /// ready for File > Load.
-#[derive(Parser)]
+#[derive(clap::Parser)]
 #[command(author, version, about)]
 struct Args {
     #[arg(
@@ -23,9 +24,19 @@ struct Args {
     filename: Option<String>,
 }
 
-fn main() -> Result<()> {
+// This is a GUI app with no attached console to print an error to (see the
+// `windows_subsystem` attribute above), on any platform -- so any startup
+// failure goes through `nes_gui::show_error_and_exit` instead of being
+// returned/printed, which would otherwise be silently lost.
+fn main() {
+    if let Err(e) = run() {
+        nes_gui::show_error_and_exit(&format!("{e:?}"));
+    }
+}
+
+fn run() -> Result<()> {
     color_eyre::install()?;
-    let args: Args = Args::parse();
+    let args: Args = nes_gui::parse_args_or_show();
 
     env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
 
@@ -53,15 +64,12 @@ fn main() -> Result<()> {
         (EditableCart::blank(), None)
     };
 
-    let res = eframe::run_native(
+    eframe::run_native(
         "NES file CHR renderer",
         options,
         Box::new(|cc| Ok(Box::new(MyApp::new(cc, colors, cart, current_path)))),
-    );
-
-    if let Err(e) = res {
-        return Err(eyre!("EGUI error: {e:?}"));
-    }
+    )
+    .map_err(|e| eyre!("EGUI error: {e:?}"))?;
 
     Ok(())
 }

@@ -11,8 +11,8 @@ use egui::{
     TextureOptions, Ui, Vec2,
 };
 use nes_chr::Tile;
+use nes_gui::texture_from_palette;
 use nes_pal::{parse_pal, Color};
-use nes_pal_gui::texture_from_palette;
 use std::collections::BTreeMap;
 use std::fs::{read, write};
 use std::path::{Path, PathBuf};
@@ -1478,8 +1478,8 @@ impl MyApp {
                 *h.palette_hover = Self::tile_num(
                     palette_rect,
                     hp,
-                    nes_pal_gui::NUM_PER_LINE_F,
-                    nes_pal_gui::NUM_LINES_F,
+                    nes_gui::NUM_PER_LINE_F,
+                    nes_gui::NUM_LINES_F,
                 )
                 .map_or_else(String::new, |t| format!("{t:#04X}"));
 

@@ -11,7 +11,7 @@ color-eyre = { workspace = true }
 eframe = { workspace = true }
 egui = { workspace = true }
 env_logger = { workspace = true }
+nes_gui = { workspace = true }
 nes_pal = { workspace = true }
-nes_pal_gui = { workspace = true }
 
 
