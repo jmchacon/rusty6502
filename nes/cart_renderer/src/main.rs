@@ -6,14 +6,16 @@ use color_eyre::eyre::{eyre, Result};
 use std::path::PathBuf;
 
 /// `cart_renderer` will load the given PAL files and the NES and render the CHR sections
-/// along with color selection. Both are optional: with neither, it starts
-/// with an all-white palette and an empty tile set, ready for File > Load.
+/// along with color selection. At least one `--pal` is required; the cart
+/// filename is optional -- with none, it starts with an empty tile set,
+/// ready for File > Load.
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
     #[arg(
-        help = "Filenames containing .pal data (can be specified N times)",
-        long
+        help = "Filenames containing .pal data (must be specified at least once, can be specified N times)",
+        long,
+        required = true
     )]
     pal: Vec<String>,
 

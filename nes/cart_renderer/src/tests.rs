@@ -1,13 +1,6 @@
-use crate::{build_output_bytes, EditableCart, NES20_CART_SIG};
+use crate::{build_output_bytes, EditableCart};
 use color_eyre::eyre::Result;
-
-// Byte offsets/values from the iNES/NES 2.0 header layout (see
-// http://wiki.nesdev.com/w/index.php/NES_2.0) -- `ines`'s own equivalents
-// are crate-private, so this mirrors them directly rather than depending on
-// them (they're a stable file format, not implementation detail).
-const HEADER_SIZE: usize = 16;
-const PRG_BLOCK_SIZE: usize = 16_384;
-const CHR_BLOCK_SIZE: usize = 8_192;
+use ines::{CHR_BLOCK_SIZE_U, HEADER_SIZE_U, NES20_CART_SIG, PRG_BLOCK_SIZE_U};
 
 /// Builds a minimal, valid NES 2.0 file (1 PRG bank, 1 CHR bank, and a
 /// distinguishing non-default submapper value that only NES 2.0 headers can
@@ -15,7 +8,7 @@ const CHR_BLOCK_SIZE: usize = 8_192;
 /// tell "unchanged" from "corrupted" instead of everything coincidentally
 /// looking like zeros.
 fn nes20_fixture() -> Vec<u8> {
-    let mut data = vec![0u8; HEADER_SIZE + PRG_BLOCK_SIZE + CHR_BLOCK_SIZE];
+    let mut data = vec![0u8; HEADER_SIZE_U + PRG_BLOCK_SIZE_U + CHR_BLOCK_SIZE_U];
     data[0..4].copy_from_slice(b"NES\x1A");
     data[4] = 1; // 1 PRG bank
     data[5] = 1; // 1 CHR bank
@@ -25,7 +18,7 @@ fn nes20_fixture() -> Vec<u8> {
                     // bytes 9-15 (PRG/CHR MSB, RAM sizes, timing, systems, misc ROMs,
                     // expansion device) all stay 0/default.
 
-    for (i, b) in data[HEADER_SIZE..HEADER_SIZE + PRG_BLOCK_SIZE]
+    for (i, b) in data[HEADER_SIZE_U..HEADER_SIZE_U + PRG_BLOCK_SIZE_U]
         .iter_mut()
         .enumerate()
     {
@@ -34,8 +27,8 @@ fn nes20_fixture() -> Vec<u8> {
             *b = i as u8;
         }
     }
-    let chr_start = HEADER_SIZE + PRG_BLOCK_SIZE;
-    for (i, b) in data[chr_start..chr_start + CHR_BLOCK_SIZE]
+    let chr_start = HEADER_SIZE_U + PRG_BLOCK_SIZE_U;
+    for (i, b) in data[chr_start..chr_start + CHR_BLOCK_SIZE_U]
         .iter_mut()
         .enumerate()
     {
@@ -55,10 +48,11 @@ fn to_editable_cart(data: &[u8]) -> Result<EditableCart> {
     for t in &nes.chr {
         tiles.push(nes_chr::map_chr_rom(t)?);
     }
+    let chr_offset = nes.chr_offset();
     Ok(EditableCart {
         tiles,
         raw: data.to_vec(),
-        chr_offset: HEADER_SIZE + nes.prg.len() * PRG_BLOCK_SIZE,
+        chr_offset,
     })
 }
 

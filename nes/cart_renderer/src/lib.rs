@@ -45,20 +45,6 @@ pub fn load_pal(path: &str) -> Result<Data> {
     Ok(Data { filename, colors })
 }
 
-// The fixed iNES header layout this crate relies on (see
-// http://wiki.nesdev.com/w/index.php/INES and .../NES_2.0): a 16 byte
-// header, an optional 512 byte trainer, then the PRG ROM, then the CHR ROM.
-// These never change regardless of cart contents, so they're small enough
-// to just hardcode here rather than depend on `ines`'s (private) constants.
-const INES_HEADER_SIZE: usize = 16;
-const INES_TRAINER_SIZE: usize = 512;
-const INES_PRG_BLOCK_SIZE: usize = 16_384;
-
-// FLAGS_7_BYTE bits 2-3: identifies the header as NES 2.0 rather than plain
-// iNES. See `build_output_bytes`'s doc comment for why a from-scratch save
-// always uses this.
-const NES20_CART_SIG: u8 = 0x08;
-
 /// An NES cart loaded for viewing/editing: its decoded tiles (see
 /// [`load_cart_for_editing`]) plus enough of the original file to write CHR
 /// edits back out to it later (see [`MyApp`]'s Save/Save As handling).
@@ -113,13 +99,7 @@ pub fn load_cart_for_editing(path: &str) -> Result<EditableCart> {
     for t in &nes.chr {
         tiles.push(nes_chr::map_chr_rom(t)?);
     }
-    let chr_offset = INES_HEADER_SIZE
-        + if nes.trainer.is_some() {
-            INES_TRAINER_SIZE
-        } else {
-            0
-        }
-        + nes.prg.len() * INES_PRG_BLOCK_SIZE;
+    let chr_offset = nes.chr_offset();
     Ok(EditableCart {
         tiles,
         raw,
@@ -134,12 +114,9 @@ pub fn load_cart_for_editing(path: &str) -> Result<EditableCart> {
 // PRG/CHR RAM sizes, CPU timing, ...), trainer, misc ROM -- byte for byte,
 // since only the CHR ROM region between `chr_offset` and `chr_offset +
 // chr_bytes.len()` is ever touched) or, if `raw` is empty (this session
-// started with no file -- see `EditableCart::blank`), synthesizes a
-// minimal new NES 2.0 file around it (there being no original header to
-// preserve in that case) -- mapper 0 (NROM), no PRG/CHR RAM, NTSC timing,
-// nothing else declared, but marked as NES 2.0 rather than plain iNES so a
-// from-scratch cart doesn't start life looking like it predates a format
-// that's been standard for new content for years.
+// started with no file -- see `EditableCart::blank`), synthesizes a minimal
+// new NES 2.0 file around it via `ines::minimal_nes20_header` (there being
+// no original header to preserve in that case).
 fn build_output_bytes(raw: &[u8], chr_offset: usize, tiles: &[Vec<Tile>]) -> Result<Vec<u8>> {
     let mut chr_bytes = Vec::new();
     for page in tiles {
@@ -148,14 +125,10 @@ fn build_output_bytes(raw: &[u8], chr_offset: usize, tiles: &[Vec<Tile>]) -> Res
 
     if raw.is_empty() {
         let chr_pages = u8::try_from(tiles.len()).unwrap_or(u8::MAX);
-        let mut out = Vec::with_capacity(INES_HEADER_SIZE + INES_PRG_BLOCK_SIZE + chr_bytes.len());
-        out.extend_from_slice(b"NES\x1A");
-        out.push(1); // 1 (empty) PRG bank -- an INES file needs at least one.
-        out.push(chr_pages);
-        out.push(0); // flags 6: mapper low nibble 0, no battery/trainer/four-screen.
-        out.push(NES20_CART_SIG); // flags 7: mapper high nibble 0, marked NES 2.0.
-        out.extend_from_slice(&[0u8; 8]); // submapper/sizes/timing/etc. all default to 0.
-        out.extend_from_slice(&[0u8; INES_PRG_BLOCK_SIZE]);
+        let mut out =
+            Vec::with_capacity(ines::HEADER_SIZE_U + ines::PRG_BLOCK_SIZE_U + chr_bytes.len());
+        out.extend_from_slice(&ines::minimal_nes20_header(chr_pages));
+        out.extend_from_slice(&[0u8; ines::PRG_BLOCK_SIZE_U]);
         out.extend_from_slice(&chr_bytes);
         Ok(out)
     } else {
@@ -624,11 +597,13 @@ impl MyApp {
     /// Builds the app from already-loaded palette data (see [`load_pal`]) and
     /// cart data (see [`load_cart_for_editing`] and [`EditableCart::blank`]).
     ///
-    /// `datas` may be empty (no PAL file given at startup) -- this then uses
-    /// a single synthetic all-white palette instead, so the rest of the app
-    /// (which otherwise assumes at least one palette exists) doesn't need to
-    /// special-case it. `current_path` is the file `cart` was loaded from, or
-    /// `None` for [`EditableCart::blank`]/no file given.
+    /// `datas` may be empty -- the `cart_renderer` binary itself always
+    /// requires at least one `--pal`, but this stays a safety net for other
+    /// callers (tests included) by using a single synthetic all-white
+    /// palette instead, so the rest of the app (which otherwise assumes at
+    /// least one palette exists) doesn't need to special-case it.
+    /// `current_path` is the file `cart` was loaded from, or `None` for
+    /// [`EditableCart::blank`]/no file given.
     #[must_use]
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -1217,7 +1192,9 @@ impl MyApp {
                             let colors = r.selection.colors;
 
                             // Starts at the same default (8x) as the main
-                            // preview and supports the same 1x-16x range.
+                            // preview, but only up to 12x (see its magnification
+                            // combo below for why it's capped lower than the
+                            // main preview's 16x).
                             let preview_draw_data = TileDrawData::default();
                             let mut preview_data =
                                 vec![Color32::WHITE; preview_draw_data.single_tile_layout_size]

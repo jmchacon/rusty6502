@@ -142,6 +142,23 @@ impl Debug for NES {
     }
 }
 
+impl NES {
+    /// The byte offset of the CHR ROM region within the original file this
+    /// `NES` was parsed from: the header, an optional trainer, then every
+    /// PRG bank. Useful for patching just the CHR ROM bytes back into an
+    /// existing file without needing to reconstruct anything else.
+    #[must_use]
+    pub fn chr_offset(&self) -> usize {
+        HEADER_SIZE_U
+            + if self.trainer.is_some() {
+                TRAINER_SIZE_U
+            } else {
+                0
+            }
+            + self.prg.len() * PRG_BLOCK_SIZE_U
+    }
+}
+
 impl Display for NES {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "NES: {}", self.cart_style)?;
@@ -583,7 +600,9 @@ const MAPPER_SUBMAPPER_SHIFT: usize = 4;
 const TRAINER_SIZE: u64 = 512;
 const TRAINER_SIZE_U: usize = 512;
 const HEADER_SIZE: u64 = 16;
-const HEADER_SIZE_U: usize = 16;
+
+/// The size of an iNES/NES 2.0 header in usize format.
+pub const HEADER_SIZE_U: usize = 16;
 
 /// The size of a PRG block in u64 format.
 pub const PRG_BLOCK_SIZE: u64 = 16_384;
@@ -636,7 +655,9 @@ const VS_HARDWARE_TYPE_SHIFT: u8 = 4;
 
 const INES1_TV_MASK: u8 = 0x01;
 
-const NES20_CART_SIG: u8 = 0x08;
+/// `FLAGS_7_BYTE` bits 2-3: identifies the header as NES 2.0 rather than
+/// plain iNES.
+pub const NES20_CART_SIG: u8 = 0x08;
 const INES_CART_SIG: u8 = 0x00;
 
 /// Parse a given set of .ines data into an NES struct. This can handle legacy
@@ -813,11 +834,7 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
             nes.chr.push([0; CHR_BLOCK_SIZE_U]);
         }
         // Copy over the data
-        let start = if nes.trainer.is_some() {
-            HEADER_SIZE_U + TRAINER_SIZE_U + nes.prg.len() * PRG_BLOCK_SIZE_U
-        } else {
-            HEADER_SIZE_U + nes.prg.len() * PRG_BLOCK_SIZE_U
-        };
+        let start = nes.chr_offset();
         for i in 0..nes.chr.len() {
             // SAFETY: We know this fits from the size checks above.
             // Copy the ROM data over.
@@ -984,4 +1001,22 @@ pub fn parse(data: &[u8]) -> Result<Box<NES>> {
     }
 
     Ok(nes)
+}
+
+/// Builds a minimal, valid NES 2.0 header for a cart with one PRG bank and
+/// `chr_pages` CHR-ROM banks: mapper 0 (NROM), no PRG/CHR RAM, NTSC timing,
+/// no trainer/battery/mirroring -- nothing else declared, but marked NES 2.0
+/// rather than plain iNES 1.0. Useful for synthesizing a from-scratch file
+/// around freshly encoded CHR ROM data with no original header to preserve.
+#[must_use]
+pub fn minimal_nes20_header(chr_pages: u8) -> [u8; HEADER_SIZE_U] {
+    let mut header = [0u8; HEADER_SIZE_U];
+    header[SIG_BYTE_0] = b'N';
+    header[SIG_BYTE_1] = b'E';
+    header[SIG_BYTE_2] = b'S';
+    header[SIG_BYTE_3] = 0x1A;
+    header[PRG_BYTE] = 1;
+    header[CHR_BYTE] = chr_pages;
+    header[FLAGS_7_BYTE] = NES20_CART_SIG;
+    header
 }
