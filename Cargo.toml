@@ -85,7 +85,7 @@ monitor = { path="./monitor", version = "~0.1" }
 nes_chr = { path="./nes/nes_chr", version = "~0.1" }
 nes_gui = { path="./nes/nes_gui", version = "~0.1" }
 nes_pal = { path="./nes/nes_pal", version = "~0.1" }
-ntest = "0.9.5"
+ntest = "0.10.0"
 ppu = { path = "./nes/ppu", version = "~0.1" }
 rand = "0.10.2"
 regex = "1.13.1"
